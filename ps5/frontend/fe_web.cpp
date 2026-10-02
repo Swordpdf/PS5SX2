@@ -5,6 +5,7 @@
 
 #include "fe_web.h"
 #include "fe_settings.h"
+#include "OrbisPaths.h" // OrbisRoot(), OrbisSetRoot() for ApiRootDir/ApiSetRootDir
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -692,6 +693,10 @@ void WebServer::Route(const Request& req, Response& res)
 		ApiMemcards(res);
 	else if (req.path == "/api/memcards" && req.method == "POST")
 		ApiMemcardCreate(req, res);
+	else if (req.path == "/api/rootdir" && req.method == "GET")
+		ApiRootDir(res);
+	else if (req.path == "/api/rootdir" && req.method == "POST")
+		ApiSetRootDir(req, res);
 	else
 	{
 		res.status = req.method == "GET" || req.method == "POST" ? 404 : 405;
@@ -761,7 +766,10 @@ void WebServer::ApiState(Response& res)
 			game = "{\"id\":" + Json(playing) + ",\"title\":" + Json(playing) + ",\"serial\":\"\"}";
 	}
 	res.body = "{\"app\":\"PS5SX2\",\"build\":" + Json(m_cfg.build_tag) + ",\"test\":" + std::to_string(m_cfg.test_build) +
-	           ",\"mode\":" + Json(playing.empty() ? "menu" : "game") + ",\"playing\":" + game + "}";
+	           ",\"mode\":" + Json(playing.empty() ? "menu" : "game") + ",\"playing\":" + game +
+	           ",\"root_dir\":" + Json(OrbisRoot()) +
+	           ",\"root_pending_restart\":" + (m_root_pending_restart ? std::string("true") : std::string("false")) +
+	           "}";
 }
 
 void WebServer::ApiGames(Response& res)
@@ -1365,4 +1373,200 @@ void WebServer::Log(const Request& req, const std::string& what)
 	AppendSettingsLog(m_cfg.change_log, "web " + (req.peer.empty() ? std::string("?") : req.peer) + ": " + what +
 	                                        (playing.empty() ? std::string(" [on the shelf]") : " [playing " + playing + "]"));
 }
+
+// ---- Configurable data root -------------------------------------------------
+
+namespace
+{
+// Probe a candidate directory: count disc images and check for a bios/ subfolder.
+struct RootInfo
+{
+	bool exists  = false;
+	int  games   = 0;
+	bool has_bios = false;
+};
+
+RootInfo ProbeRoot(const std::string& path)
+{
+	RootInfo info;
+	struct stat st = {};
+	if (stat(path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+		return info;
+	info.exists = true;
+
+	// Count disc images in <path>/games/ or directly in <path>
+	auto count_images = [](const std::string& dir) -> int {
+		DIR* d = opendir(dir.c_str());
+		if (!d) return -1;
+		int n = 0;
+		while (const dirent* e = readdir(d))
+			n += fe::IsDiscImageName(e->d_name) ? 1 : 0;
+		closedir(d);
+		return n;
+	};
+	const int in_games = count_images(path + "/games");
+	info.games = (in_games >= 0) ? in_games : std::max(0, count_images(path));
+
+	struct stat bs = {};
+	info.has_bios = stat((path + "/bios").c_str(), &bs) == 0 && S_ISDIR(bs.st_mode);
+	return info;
+}
+
+// Build the list of candidate root paths to show in the page.
+std::vector<std::string> RootCandidates(const std::string& current)
+{
+	std::vector<std::string> out;
+	// Always show the current one first (even if it doesn't exist yet)
+	out.push_back(current);
+	// Internal storage default
+	if (current != "/data/PCSX2")
+		out.push_back("/data/PCSX2");
+	// USB drives
+	for (int i = 0; i < 8; i++)
+	{
+		char p[16];
+		std::snprintf(p, sizeof(p), "/mnt/usb%d", i);
+		struct stat st = {};
+		if (stat(p, &st) == 0 && S_ISDIR(st.st_mode))
+		{
+			if (p != current && std::string("/data/PCSX2") != p)
+				out.push_back(p);
+			// Check for a PCSX2 subfolder
+			const std::string sub = std::string(p) + "/PCSX2";
+			if (sub != current && stat(sub.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+				out.push_back(sub);
+		}
+	}
+	// External drives
+	for (int i = 0; i <= 1; i++)
+	{
+		char p[16];
+		std::snprintf(p, sizeof(p), "/mnt/ext%d", i);
+		struct stat st = {};
+		if (stat(p, &st) == 0 && S_ISDIR(st.st_mode))
+		{
+			if (p != current)
+				out.push_back(p);
+			const std::string sub = std::string(p) + "/PCSX2";
+			if (sub != current && stat(sub.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+				out.push_back(sub);
+		}
+	}
+	// Remove duplicates while preserving order
+	std::vector<std::string> unique;
+	for (const std::string& s : out)
+		if (std::find(unique.begin(), unique.end(), s) == unique.end())
+			unique.push_back(s);
+	return unique;
+}
+} // namespace
+
+// GET /api/rootdir — returns the active root and candidate paths with their status.
+// {"current":"<path>","candidates":[{"path":"<p>","exists":bool,"games":n,"has_bios":bool},...]}
+void WebServer::ApiRootDir(Response& res)
+{
+	const std::string current = OrbisRoot();
+	const std::vector<std::string> candidates = RootCandidates(current);
+
+	std::string out = "{\"current\":" + Json(current) + ",\"candidates\":[";
+	bool first = true;
+	for (const std::string& c : candidates)
+	{
+		const RootInfo info = ProbeRoot(c);
+		out += (first ? "" : ",") +
+		       std::string("{\"path\":") + Json(c) +
+		       ",\"exists\":" + (info.exists ? "true" : "false") +
+		       ",\"games\":" + std::to_string(info.games) +
+		       ",\"has_bios\":" + (info.has_bios ? "true" : "false") +
+		       "}";
+		first = false;
+	}
+	out += "]}";
+	res.body = out;
+}
+
+// POST /api/rootdir — body: {"path":"/mnt/usb0/PCSX2"}
+// Validates, writes /data/ps5sx2_root.txt, logs the change.
+// Returns {"ok":true,"restart_needed":true} or {"error":"..."}.
+void WebServer::ApiSetRootDir(const Request& req, Response& res)
+{
+	if (m_cfg.root_config_path.empty())
+	{
+		res.status = 503;
+		res.body = Error("root config path not set");
+		return;
+	}
+
+	// Parse the path value from the JSON body (simple extraction, no full JSON parser needed).
+	const std::string& body = req.body;
+	const std::string key = "\"path\"";
+	const size_t kpos = body.find(key);
+	if (kpos == std::string::npos)
+	{
+		res.status = 400;
+		res.body = Error("missing path field");
+		return;
+	}
+	// Find the opening quote after the colon
+	const size_t colon = body.find(':', kpos + key.size());
+	if (colon == std::string::npos)
+	{
+		res.status = 400;
+		res.body = Error("malformed JSON");
+		return;
+	}
+	const size_t q1 = body.find('"', colon + 1);
+	const size_t q2 = q1 != std::string::npos ? body.find('"', q1 + 1) : std::string::npos;
+	if (q1 == std::string::npos || q2 == std::string::npos)
+	{
+		res.status = 400;
+		res.body = Error("malformed path value");
+		return;
+	}
+	const std::string new_root = body.substr(q1 + 1, q2 - q1 - 1);
+
+	// Validate
+	if (new_root.empty() || new_root.front() != '/' ||
+	    new_root.find("..") != std::string::npos || new_root.size() > 480)
+	{
+		res.status = 400;
+		res.body = Error("invalid path: must start with /, no .., max 480 chars");
+		return;
+	}
+
+	// Check the directory exists on the console
+	struct stat st = {};
+	if (stat(new_root.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+	{
+		res.status = 400;
+		res.body = Error("directory does not exist: " + new_root);
+		return;
+	}
+
+	// Write the config file
+	if (!OrbisSetRoot(new_root))
+	{
+		res.status = 500;
+		res.body = Error("could not write " + m_cfg.root_config_path);
+		return;
+	}
+
+	// Log the change
+	const std::string old_root = OrbisRoot();
+	Log(req, "PCSX2 root changed to " + new_root + " (was " + old_root +
+	    ") — restart PS5SX2 to apply");
+
+	// Mark pending restart so /api/state reflects it
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_root_pending_restart = true;
+	}
+
+	std::printf("[web] root dir set to %s (was %s); restart needed\n",
+	            new_root.c_str(), old_root.c_str());
+	std::fflush(stdout);
+
+	res.body = "{\"ok\":true,\"restart_needed\":true}";
+}
+
 } // namespace fe

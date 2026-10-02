@@ -51,6 +51,11 @@ enum class Str : int
 	NotifyGsFailed,     // "PS5SX2: the game's graphics didn't start. ..."
 	// vk-285-116: the sheet's second tab (L2 and R2 switch: "Settings" is HintSettings).
 	SheetControls,      // "Controls"
+	// Configurable data root: the directory browser shown on first launch.
+	PickRootTitle,      // "Choose the PCSX2 data folder"
+	PickRootCurrent,    // "Current: %s"
+	PickRootNotFound,   // "Folder not found: %s"
+	PickRootHint,       // "Cross Enter · D-pad Navigate · Triangle Confirm · Circle Cancel"
 	Count
 };
 

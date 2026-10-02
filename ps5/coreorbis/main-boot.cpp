@@ -219,7 +219,7 @@ static void orbis_boot_log_release(const char* when)
   if (!g_boot_held.load(std::memory_order_acquire))
     return;
   struct stat st = {};
-  if (stat("/data/PCSX2", &st) != 0 || !S_ISDIR(st.st_mode))
+  if (stat(OrbisRoot().c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
     return; // still not there
   OrbisBootLogHold* h = g_boot_hold;
   fflush(stdout);
@@ -996,7 +996,7 @@ static void orbis_apply_ini_file(MemorySettingsInterface& si, const char* path, 
 
 static void orbis_apply_gs_ini(MemorySettingsInterface& si)
 {
-  orbis_apply_ini_file(si, "/data/PCSX2/gs.ini", "gs.ini");
+  orbis_apply_ini_file(si, (OrbisRoot() + "/gs.ini").c_str(), "gs.ini");
   if (!s_game_ini_path.empty()) // vk-285-32: then the game's own
     orbis_apply_ini_file(si, s_game_ini_path.c_str(), "game ini");
 }
@@ -1681,9 +1681,9 @@ static OrbisFrontendPaths orbis_frontend_paths(bool allow_download)
   fe.logs_dir = OrbisDir("logs");
   fe.report_header = orbis_report_header();
   fe.games_dir = OrbisDir("games");
-  fe.top_dir = "/data/PCSX2";
-  fe.settings_dir = "/data/PCSX2/settings";
-  fe.gs_ini = "/data/PCSX2/gs.ini";
+  fe.top_dir = OrbisRoot();
+  fe.settings_dir = OrbisRoot() + "/settings";
+  fe.gs_ini = OrbisRoot() + "/gs.ini";
   fe.patches_dir = OrbisDir("patches");
   fe.covers_dir = OrbisDir("covers");
   fe.cache_dir = OrbisDir("cache") + "/covers";
@@ -1702,9 +1702,10 @@ static OrbisFrontendPaths orbis_frontend_paths(bool allow_download)
 static void orbis_log_flag_access(const char* when)
 {
   struct stat st{};
-  const int rc = stat("/data/PCSX2/flags", &st);
+  const std::string flags_dir = OrbisRoot() + "/flags";
+  const int rc = stat(flags_dir.c_str(), &st);
   const int stat_errno = rc ? errno : 0;
-  const int acc = access("/data/PCSX2/flags", R_OK | X_OK);
+  const int acc = access(flags_dir.c_str(), R_OK | X_OK);
   const int acc_errno = acc ? errno : 0;
   printf("[boot] flags folder %s: stat rc=%d errno=%d mode=%o uid=%u, access rc=%d errno=%d\n", when, rc,
          stat_errno, rc ? 0u : (unsigned)(st.st_mode & 07777), rc ? 0u : (unsigned)st.st_uid, acc, acc_errno);
@@ -1727,23 +1728,23 @@ static const char* const kOrbisReleaseFlags[] = {"fastmem", "jitdirect", "sw_ren
 
 static void orbis_ensure_data_layout()
 {
-  static const char kRoot[] = "/data/PCSX2";
+  const std::string root = OrbisRoot();
   struct stat st{};
-  if (stat(kRoot, &st) != 0 || !S_ISDIR(st.st_mode))
+  if (stat(root.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
   {
-    printf("[boot] data layout: no %s folder (errno %d)\n", kRoot, errno);
+    printf("[boot] data layout: no %s folder (errno %d)\n", root.c_str(), errno);
     fflush(stdout);
     return;
   }
-  const std::string games = std::string(kRoot) + "/games";
+  const std::string games = root + "/games";
   if (stat(games.c_str(), &st) != 0)
   {
     const int rc = mkdir(games.c_str(), 0777);
     printf("[boot] data layout: created %s (rc=%d errno=%d)\n", games.c_str(), rc, rc ? errno : 0);
     if (rc == 0)
-      orbis_eventf("created /data/PCSX2/games/ for the disc images");
+      orbis_eventf("created %s/games/ for the disc images", root.c_str());
   }
-  const std::string flags = std::string(kRoot) + "/flags";
+  const std::string flags = root + "/flags";
   const bool have_dir = stat(flags.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
   int entries = 0;
   if (have_dir)
@@ -1766,10 +1767,10 @@ static void orbis_ensure_data_layout()
   }
   for (const char* name : kOrbisReleaseFlags)
   {
-    if (stat((std::string(kRoot) + "/" + name).c_str(), &st) == 0)
+    if (stat((root + "/" + name).c_str(), &st) == 0)
     {
       printf("[boot] data layout: flags/ is %s but %s/%s is there (the older layout): switch files left as they are\n",
-             have_dir ? "empty" : "missing", kRoot, name);
+             have_dir ? "empty" : "missing", root.c_str(), name);
       fflush(stdout);
       return;
     }
@@ -2012,7 +2013,7 @@ int main()
   }
   fflush(stdout);
   {
-    FILE* f = fopen("/data/PCSX2/pid.txt", "w");
+    FILE* f = fopen((OrbisRoot() + "/pid.txt").c_str(), "w");
     if (f) { fprintf(f, "%d", (int)getpid()); fclose(f); }
     printf("[boot] pid=%d\n", (int)getpid());
     fflush(stdout);
@@ -2068,6 +2069,27 @@ int main()
   orbis_boot_log_release("after the jailbreak"); // vk-285-113: boot.log's first lines, when /data wasn't there yet
 #ifdef ORBIS_VULKAN
   orbis_ensure_data_layout(); // vk-285-115: the release's switch files on a console set up by hand
+  // Configurable data root: if the active root doesn't exist (first launch or missing drive),
+  // show a directory browser so the user can pick one before the boot continues.
+  {
+    struct stat st{};
+    if (stat(OrbisRoot().c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+    {
+      printf("[boot] root dir %s not found: opening directory picker\n", OrbisRoot().c_str());
+      fflush(stdout);
+      if (!orbis_pick_root_dir())
+      {
+        // User cancelled or picker failed: exit gracefully.
+        printf("[boot] root dir not chosen: closing\n");
+        orbis_exit_quietly(0);
+      }
+      // orbis_pick_root_dir() wrote /data/ps5sx2_root.txt but GetRoot() is already cached.
+      // We must restart to apply the new root — exit and let the system relaunch.
+      printf("[boot] new root saved, restarting to apply\n");
+      fflush(stdout);
+      orbis_restart_to_menu();
+    }
+  }
 #endif
   orbis_frontend_set_language(OrbisDir("lang")); // vk-285-110: lang/<code>.txt may only be readable now
   // Test build 1 (vk-285-55): what the console is, in boot.log and the settings log.
@@ -2154,11 +2176,11 @@ int main()
     }).detach();
   }
   ps5::debug::set_line(2, "setting up folders...");
-  EmuFolders::AppRoot = "/data/PCSX2";
-  EmuFolders::DataRoot = "/data/PCSX2";
+  EmuFolders::AppRoot = OrbisRoot();
+  EmuFolders::DataRoot = OrbisRoot();
   // vk-285-33: sub-folders when they exist, else the top folder as before (OrbisPaths.h).
   EmuFolders::Bios = OrbisDir("bios");
-  EmuFolders::Settings = "/data/PCSX2";
+  EmuFolders::Settings = OrbisRoot();
   EmuFolders::Logs = OrbisDir("logs");
   EmuFolders::MemoryCards = OrbisDir("memcards");
   EmuFolders::Snapshots = OrbisDir("snapshots");
@@ -2167,9 +2189,9 @@ int main()
   EmuFolders::Patches = OrbisDir("patches");
   EmuFolders::Cache = OrbisDir("cache");
   EmuFolders::Covers = OrbisDir("covers");
-  EmuFolders::GameSettings = "/data/PCSX2";
-  EmuFolders::Textures = "/data/PCSX2/textures"; // vk-285-12: packs in textures/<serial>/replacements (HW renderer only)
-  EmuFolders::InputProfiles = "/data/PCSX2";
+  EmuFolders::GameSettings = OrbisRoot();
+  EmuFolders::Textures = OrbisRoot() + "/textures"; // vk-285-12: packs in textures/<serial>/replacements (HW renderer only)
+  EmuFolders::InputProfiles = OrbisRoot();
   // Orbis: GL renderer loads shaders from <Resources>/shaders/opengl/*.glsl.
   EmuFolders::Resources = OrbisDir("resources"); // vk-285-33: GameIndex.yaml, shaders/
   printf("[boot] folders: bios %s | memcards %s | savestates %s | patches %s | resources %s | cache %s | logs %s | flags %s\n",
@@ -2222,7 +2244,7 @@ int main()
 #endif
   orbis_boot_log_release("after the shelf"); // vk-285-113
   if (!frontend_ran)
-    s_game_path = orbis_select_game(OrbisDir("games").c_str(), "/data/PCSX2", ORBIS_BUILD_TAG); // vk-285-33: games/ too
+    s_game_path = orbis_select_game(OrbisDir("games").c_str(), OrbisRoot().c_str(), ORBIS_BUILD_TAG); // vk-285-33: games/ too
   if (s_game_path.empty())
   {
     // vk-285-109: no game to start (none found, or none picked). This fell back to games/Ratchet & Clank.iso,
@@ -2240,7 +2262,7 @@ int main()
     const size_t dot = stem.rfind('.');
     if (dot != std::string::npos && dot > 0)
       stem.erase(dot);
-    s_game_ini_path = "/data/PCSX2/settings/" + stem + ".ini";
+    s_game_ini_path = OrbisRoot() + "/settings/" + stem + ".ini";
   }
 #ifdef ORBIS_VULKAN
   orbis_web_now_playing(s_game_path); // vk-285-50: the page marks it and applies its changes live
@@ -2254,7 +2276,7 @@ int main()
     const std::string from = dir == OrbisDir("games") ? std::string() : " (from " + dir + ")";
     orbis_eventf("game start: %s%s | its settings: %s | all games (gs.ini): %s", // vk-285-51
       s_game_path.substr(s_game_path.rfind('/') + 1).c_str(), from.c_str(), orbis_ini_summary(s_game_ini_path).c_str(),
-      orbis_ini_summary("/data/PCSX2/gs.ini").c_str());
+      orbis_ini_summary((OrbisRoot() + "/gs.ini").c_str()).c_str());
   }
 #ifdef ORBIS_VULKAN
   if (g_orbis_test_build > 0)
@@ -2404,8 +2426,8 @@ int main()
     printf("[boot] BIOS dir scan:\n");
     fflush(stdout);
     {
-      DIR* d = opendir("/data/PCSX2");
-      printf("[boot]   opendir(/data/PCSX2)=%p errno=%d\n", (void*)d, errno);
+      DIR* d = opendir(OrbisRoot().c_str());
+      printf("[boot]   opendir(%s)=%p errno=%d\n", OrbisRoot().c_str(), (void*)d, errno);
       if (d)
       {
         int n = 0;
@@ -2426,7 +2448,7 @@ int main()
       fflush(stdout);
     }
     FileSystem::FindResultsArray results;
-    if (FileSystem::FindFiles("/data/PCSX2", "*", FILESYSTEM_FIND_FILES, &results))
+    if (FileSystem::FindFiles(OrbisRoot().c_str(), "*", FILESYSTEM_FIND_FILES, &results))
     {
       for (const auto& fd : results)
         printf("[boot]   found: %s (%lld bytes)\n", fd.FileName.c_str(), (long long)fd.Size);

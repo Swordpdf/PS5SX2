@@ -18,6 +18,7 @@
 #include "fe_vk.h"
 #include "fe_web.h"
 #include "third_party/qrcodegen/qrcodegen.h" // vk-285-113: orbis_web_qr
+#include "OrbisPaths.h" // OrbisRoot(), OrbisSetRoot() for orbis_pick_root_dir
 
 #include <algorithm>
 #include <atomic>
@@ -1007,6 +1008,7 @@ bool orbis_web_start(const OrbisFrontendPaths& paths, const char* build_tag)
 	cfg.memcards_dir = paths.memcards_dir; // vk-285-113
 	cfg.report_header = paths.report_header;
 	cfg.test_build = paths.test_build;
+	cfg.root_config_path = "/data/ps5sx2_root.txt"; // configurable data root
 	fe::g_utc_to_local = &SettingsLogLocalTime;
 	cfg.assets = {
 		{"/", "text/html; charset=utf-8", fe_web_page, static_cast<size_t>(fe_web_page_end - fe_web_page)},
@@ -1405,4 +1407,486 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	std::printf("[frontend] picked %s (%s)\n", g.file.c_str(), g.serial.c_str());
 	std::fflush(stdout);
 	return g.path;
+}
+
+// ---- Configurable data root: directory browser (orbis_pick_root_dir) ----
+//
+// Called from main-boot.cpp when the active OrbisRoot() directory does not exist.
+// Opens a Vulkan display, renders a simple list UI and lets the user navigate the
+// filesystem with the D-pad, enter folders with Cross and confirm with Triangle.
+// Writes the chosen path via OrbisSetRoot() and returns true. Returns false when
+// the user cancels (Circle at the top level) or the display cannot be opened.
+
+namespace
+{
+// ---- helpers ---------------------------------------------------------------
+
+struct RootCandidate
+{
+	std::string path;
+	int games = 0;   // disc images in <path>/games/ (or in path itself)
+	bool has_bios = false;
+};
+
+static bool DirExists(const std::string& p)
+{
+	struct stat st = {};
+	return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// Count .iso/.chd/.cso/.zso files directly inside `dir` (-1 = can't open).
+static int CountDirImages(const std::string& dir)
+{
+	DIR* d = opendir(dir.c_str());
+	if (!d)
+		return -1;
+	int n = 0;
+	while (const dirent* e = readdir(d))
+		if (IsDiscImageName(e->d_name))
+			n++;
+	closedir(d);
+	return n;
+}
+
+static RootCandidate MakeCandidate(const std::string& path)
+{
+	RootCandidate c;
+	c.path = path;
+	// games in <path>/games/ or, for the old flat layout, directly in <path>
+	const int in_games = CountDirImages(path + "/games");
+	c.games = (in_games >= 0) ? in_games : std::max(0, CountDirImages(path));
+	c.has_bios = DirExists(path + "/bios");
+	return c;
+}
+
+// Enumerate top-level candidate roots: internal /data, each /mnt/usb0-7, /mnt/ext0/1.
+static std::vector<std::string> TopLevelRoots()
+{
+	std::vector<std::string> roots;
+	// Internal storage
+	if (DirExists("/data"))
+		roots.push_back("/data");
+	// USB drives (usb0-7)
+	for (int i = 0; i < 8; i++)
+	{
+		char p[16];
+		std::snprintf(p, sizeof(p), "/mnt/usb%d", i);
+		if (DirExists(p))
+			roots.push_back(p);
+	}
+	// External M.2 / USB HDD (ext0, ext1)
+	for (int i = 0; i <= 1; i++)
+	{
+		char p[16];
+		std::snprintf(p, sizeof(p), "/mnt/ext%d", i);
+		if (DirExists(p))
+			roots.push_back(p);
+	}
+	return roots;
+}
+
+// List the subdirectories of `dir` (no hidden entries).
+static std::vector<std::string> ListSubdirs(const std::string& dir)
+{
+	std::vector<std::string> out;
+	DIR* d = opendir(dir.c_str());
+	if (!d)
+		return out;
+	while (const dirent* e = readdir(d))
+	{
+		if (e->d_name[0] == '.')
+			continue;
+		const std::string full = dir + "/" + e->d_name;
+		if (DirExists(full))
+			out.push_back(full);
+	}
+	closedir(d);
+	std::sort(out.begin(), out.end());
+	return out;
+}
+
+// ---- rendering helpers -----------------------------------------------------
+
+static constexpr uint32_t kColorWhite  = 0xFFFFFFFF;
+static constexpr uint32_t kColorDim    = 0xFFB0A8CC;
+static constexpr uint32_t kColorAccent = 0xFFFFAA66;
+static constexpr uint32_t kColorBg     = 0xFF1A1630;
+static constexpr uint32_t kColorSel    = 0x33FFFFFF;
+static constexpr uint32_t kColorGreen  = 0xFF88EEB0;
+static constexpr uint32_t kColorWarn   = 0xFF66AAFF;
+
+// Screen is always 3840x2160; UI is laid out in logical pixels at 1/2 scale (1920x1080 grid).
+static constexpr float kScale  = 2.0f;
+static constexpr float kW      = 1920.0f;
+static constexpr float kH      = 1080.0f;
+static constexpr float kMargin = 60.0f;
+static constexpr float kRowH   = 64.0f;
+static constexpr float kPxBig  = 36.0f;
+static constexpr float kPxMid  = 26.0f;
+static constexpr float kPxSm   = 20.0f;
+
+static void AddBg(std::vector<UiVertex>& ui)
+{
+	Fonts::AddRoundedRect(ui, 0, 0, kW * kScale, kH * kScale, 0, kColorBg);
+}
+
+// `sel` row is highlighted; `rows_start` = y of first row, `sel_idx` is 0-based within visible.
+static void AddSelHighlight(std::vector<UiVertex>& ui, float rows_start, int sel_idx)
+{
+	const float y = (rows_start + sel_idx * kRowH - 4) * kScale;
+	Fonts::AddRoundedRect(ui, kMargin * kScale, y,
+	                      (kW - kMargin * 2) * kScale, (kRowH - 4) * kScale,
+	                      12.0f * kScale, kColorSel);
+}
+
+struct TextRow
+{
+	std::string label;
+	std::string sub;  // secondary info (games count, bios status)
+	bool is_back = false;
+};
+
+static std::vector<TextRow> BuildRows(const std::vector<std::string>& entries,
+                                      const std::string& current_dir,
+                                      bool can_go_up)
+{
+	std::vector<TextRow> rows;
+	if (can_go_up)
+	{
+		TextRow r;
+		r.label = "..  (go up)";
+		r.is_back = true;
+		rows.push_back(r);
+	}
+	for (const std::string& p : entries)
+	{
+		TextRow r;
+		// Show just the last path component
+		const size_t sl = p.rfind('/');
+		r.label = (sl != std::string::npos) ? p.substr(sl + 1) : p;
+		// Quick stats
+		const RootCandidate c = MakeCandidate(p);
+		if (c.games > 0 || c.has_bios)
+		{
+			r.sub = "";
+			if (c.games > 0)
+				r.sub += std::to_string(c.games) + " game(s)";
+			if (c.has_bios)
+				r.sub += (r.sub.empty() ? "" : "  ·  ") + std::string("BIOS found");
+		}
+		rows.push_back(r);
+	}
+	return rows;
+}
+
+// ---- main browser loop -----------------------------------------------------
+
+// Maximum visible rows on screen at once.
+static constexpr int kMaxVisible = 12;
+
+// Renders one frame of the directory browser. Returns false if the display fails.
+static void RenderBrowserFrame(Renderer& renderer, const Fonts& fonts, Display& display,
+                               const std::string& current_dir,
+                               const std::vector<TextRow>& rows, int sel,
+                               int scroll, int slot_idx,
+                               const std::string& warning)
+{
+	FrameDesc f;
+	f.fade = 1.0f;
+	std::vector<UiVertex>& ui = f.ui;
+
+	AddBg(ui);
+
+	// Title
+	const std::string title = Tr(Str::PickRootTitle);
+	fonts.AddText(ui, title.c_str(),
+	              kMargin * kScale,
+	              (kMargin + kPxBig) * kScale,
+	              kPxBig * kScale, kColorAccent, 0.35f);
+
+	// Current path
+	char cur_buf[520];
+	std::snprintf(cur_buf, sizeof(cur_buf), Tr(Str::PickRootCurrent), current_dir.c_str());
+	fonts.AddText(ui, cur_buf,
+	              kMargin * kScale,
+	              (kMargin + kPxBig + kPxSm + 8) * kScale,
+	              kPxSm * kScale, kColorDim);
+
+	// Warning (e.g. previous root not found)
+	if (!warning.empty())
+	{
+		fonts.AddText(ui, warning.c_str(),
+		              kMargin * kScale,
+		              (kMargin + kPxBig + kPxSm * 2 + 20) * kScale,
+		              kPxSm * kScale, kColorWarn);
+	}
+
+	const float rows_start = kMargin + kPxBig + kPxSm * 2 + 56;
+
+	// Selection highlight
+	const int vis_sel = sel - scroll;
+	AddSelHighlight(ui, rows_start, vis_sel);
+
+	// Rows
+	const int visible = std::min(static_cast<int>(rows.size()), kMaxVisible);
+	for (int i = 0; i < visible; i++)
+	{
+		const TextRow& row = rows[static_cast<size_t>(scroll + i)];
+		const float base_y = (rows_start + i * kRowH + kPxMid) * kScale;
+		const uint32_t col = (scroll + i == sel) ? kColorWhite : kColorDim;
+
+		fonts.AddText(ui, row.label.c_str(),
+		              (kMargin + 16) * kScale, base_y,
+		              kPxMid * kScale, col);
+
+		if (!row.sub.empty())
+		{
+			fonts.AddText(ui, row.sub.c_str(),
+			              (kMargin + 16 + 420) * kScale, base_y,
+			              kPxSm * kScale, kColorGreen);
+		}
+	}
+
+	// Hint bar at the bottom
+	const float hint_y = (kH - kMargin) * kScale;
+	fonts.AddText(ui, Tr(Str::PickRootHint),
+	              kMargin * kScale, hint_y,
+	              kPxSm * kScale, kColorDim);
+
+	// Acquire swapchain image and render
+	uint32_t img_idx = 0;
+	if (vkAcquireNextImageKHR(display.device, display.swapchain, UINT64_MAX,
+	                          display.acquired[slot_idx], VK_NULL_HANDLE, &img_idx) != VK_SUCCESS)
+		return;
+
+	renderer.Render(f, img_idx, display.acquired[slot_idx], display.rendered[slot_idx]);
+
+	VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+	pi.waitSemaphoreCount = 1;
+	pi.pWaitSemaphores    = &display.rendered[slot_idx];
+	pi.swapchainCount     = 1;
+	pi.pSwapchains        = &display.swapchain;
+	pi.pImageIndices      = &img_idx;
+	vkQueuePresentKHR(display.queue, &pi);
+}
+
+} // namespace (anonymous)
+
+// Public entry point called from main-boot.cpp (declared extern bool orbis_pick_root_dir()).
+bool orbis_pick_root_dir()
+{
+	std::printf("[rootpick] opening directory browser\n");
+	std::fflush(stdout);
+
+	// --- Init display & renderer ------------------------------------------------
+	Display* display = new Display();
+	if (!display->Init())
+	{
+		std::printf("[rootpick] display init failed\n");
+		display->Destroy();
+		delete display;
+		return false;
+	}
+
+	Fonts* fonts = new Fonts();
+	Renderer renderer;
+	if (!fonts->Init(fe_font_text, static_cast<size_t>(fe_font_text_end - fe_font_text),
+	                 fe_font_icons, static_cast<size_t>(fe_font_icons_end - fe_font_icons)) ||
+	    !renderer.Init(&display->vk, display->pd, display->device, display->qf, display->queue,
+	                   display->extent.width, display->extent.height,
+	                   VK_FORMAT_B8G8R8A8_UNORM, display->images,
+	                   VK_IMAGE_LAYOUT_PRESENT_SRC_KHR))
+	{
+		std::printf("[rootpick] renderer init failed: %s\n", renderer.error().c_str());
+		renderer.Shutdown();
+		display->Destroy();
+		delete display;
+		delete fonts;
+		return false;
+	}
+
+	// Upload font atlas
+	Texture* atlas = renderer.CreateTexture(
+	    static_cast<uint32_t>(fonts->AtlasWidth()),
+	    static_cast<uint32_t>(fonts->AtlasHeight()),
+	    VK_FORMAT_R8_UNORM, fonts->AtlasPixels().data());
+	if (atlas)
+		renderer.SetAtlas(atlas);
+
+	// --- Controller input -------------------------------------------------------
+	int32_t user = -1;
+	(void)sceUserServiceInitialize(nullptr);
+	(void)sceUserServiceGetInitialUser(&user);
+	(void)scePadInit();
+	const int pad = user >= 0 ? scePadOpen(user, 0, 0, nullptr) : -1;
+
+	// --- Build warning string ---------------------------------------------------
+	const std::string& prev_root = OrbisRoot();
+	std::string warning;
+	{
+		struct stat st = {};
+		if (stat(prev_root.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+		{
+			char buf[520];
+			std::snprintf(buf, sizeof(buf), Tr(Str::PickRootNotFound), prev_root.c_str());
+			warning = buf;
+		}
+	}
+
+	// --- Navigation state -------------------------------------------------------
+	// Navigation stack: each level holds the directory being browsed.
+	std::vector<std::string> dir_stack;        // stack of directories entered
+	std::string current_dir = "/";             // the directory displayed now
+	std::vector<std::string> entries;          // subdirs of current_dir
+	std::vector<TextRow> rows;
+	int sel    = 0;
+	int scroll = 0;
+
+	auto refresh = [&]() {
+		if (dir_stack.empty())
+		{
+			// Top level: enumerate candidate mount points
+			entries = TopLevelRoots();
+			current_dir = "/";
+		}
+		else
+		{
+			entries = ListSubdirs(current_dir);
+			if (entries.empty() && dir_stack.empty())
+				entries = TopLevelRoots();
+		}
+		rows = BuildRows(entries, current_dir, !dir_stack.empty());
+		if (sel >= static_cast<int>(rows.size()))
+			sel = std::max(0, static_cast<int>(rows.size()) - 1);
+		scroll = 0;
+	};
+	refresh();
+
+	// Pad state for edge-detection
+	struct PadSnapshot { uint32_t buttons = 0; };
+	PadSnapshot prev_pad{};
+	bool confirmed = false;
+	bool cancelled = false;
+	std::string chosen_path;
+
+	// --- Main loop --------------------------------------------------------------
+	int slot_idx = 0;
+	while (!confirmed && !cancelled)
+	{
+		// Input
+		if (pad >= 0)
+		{
+			ScePadData pd{};
+			scePadReadState(pad, &pd);
+			const uint32_t pressed = pd.buttons & ~prev_pad.buttons;
+			prev_pad.buttons = pd.buttons;
+
+			const int total = static_cast<int>(rows.size());
+
+			if (pressed & SCE_PAD_BUTTON_UP)
+			{
+				if (sel > 0) sel--;
+				else sel = std::max(0, total - 1);
+			}
+			if (pressed & SCE_PAD_BUTTON_DOWN)
+			{
+				if (sel < total - 1) sel++;
+				else sel = 0;
+			}
+			// Adjust scroll window
+			if (sel < scroll)
+				scroll = sel;
+			else if (sel >= scroll + kMaxVisible)
+				scroll = sel - kMaxVisible + 1;
+
+			if (pressed & SCE_PAD_BUTTON_CROSS)
+			{
+				// Enter directory (or go up)
+				if (!rows.empty())
+				{
+					if (rows[static_cast<size_t>(sel)].is_back)
+					{
+						// Go up
+						if (!dir_stack.empty())
+						{
+							current_dir = dir_stack.back();
+							dir_stack.pop_back();
+							sel = 0;
+							refresh();
+						}
+					}
+					else
+					{
+						// Determine which entry this is
+						const int entry_idx = sel - (dir_stack.empty() ? 0 : 1);
+						if (entry_idx >= 0 && entry_idx < static_cast<int>(entries.size()))
+						{
+							dir_stack.push_back(current_dir);
+							current_dir = entries[static_cast<size_t>(entry_idx)];
+							sel = 0;
+							refresh();
+						}
+					}
+				}
+			}
+			if (pressed & SCE_PAD_BUTTON_TRIANGLE)
+			{
+				// Confirm current_dir as the new root
+				if (current_dir != "/")
+				{
+					chosen_path = current_dir;
+					confirmed = true;
+				}
+			}
+			if (pressed & SCE_PAD_BUTTON_CIRCLE)
+			{
+				if (!dir_stack.empty())
+				{
+					// Go up instead of cancelling
+					current_dir = dir_stack.back();
+					dir_stack.pop_back();
+					sel = 0;
+					refresh();
+				}
+				else
+				{
+					cancelled = true;
+				}
+			}
+		}
+
+		// Render
+		RenderBrowserFrame(renderer, *fonts, *display, current_dir, rows, sel, scroll, slot_idx, warning);
+		slot_idx ^= 1;
+	}
+
+	// --- Teardown ---------------------------------------------------------------
+	renderer.WaitIdle();
+	if (atlas)
+		renderer.DestroyTexture(atlas);
+	renderer.Shutdown();
+	display->Destroy();
+	delete display;
+	delete fonts;
+
+	if (pad >= 0)
+		scePadClose(pad);
+
+	if (!confirmed || chosen_path.empty())
+	{
+		std::printf("[rootpick] cancelled\n");
+		std::fflush(stdout);
+		return false;
+	}
+
+	std::printf("[rootpick] chosen: %s\n", chosen_path.c_str());
+	std::fflush(stdout);
+
+	if (!OrbisSetRoot(chosen_path))
+	{
+		std::printf("[rootpick] OrbisSetRoot failed (can't write /data/ps5sx2_root.txt)\n");
+		std::fflush(stdout);
+		return false;
+	}
+	return true;
 }

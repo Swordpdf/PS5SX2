@@ -1,4 +1,9 @@
-// PS5 port (vk-285-33): where things live in /data/PCSX2.
+// PS5 port (vk-285-33): where things live in the PCSX2 data folder.
+//
+// The data folder defaults to /data/PCSX2 and can be changed by the user to any directory the
+// PS5 can read (an external HDD, USB drive, etc.). The active root is read once at startup from
+// /data/ps5sx2_root.txt; without that file the default is used. OrbisRoot() returns whichever
+// is active. OrbisSetRoot() writes a new choice for the next launch.
 //
 //   games/       disc images (the game selector also still looks in the top folder)
 //   bios/        the BIOS and its .mec/.nvm
@@ -23,9 +28,18 @@
 
 #include <string>
 
-// "/data/PCSX2/<sub>" when that folder exists, else "/data/PCSX2".
+// The active PCSX2 data root (/data/PCSX2 by default, or the path from /data/ps5sx2_root.txt).
+// Read once at startup; the result is stable for the lifetime of the process.
+const std::string& OrbisRoot();
+
+// Saves `dir` as the new data root in /data/ps5sx2_root.txt for the next launch.
+// Validates the path (must start with '/', no '..', max 480 chars). Returns true on success.
+// Does NOT update the in-process OrbisRoot() — a restart is required to apply the change.
+bool OrbisSetRoot(const std::string& dir);
+
+// "<OrbisRoot()>/<sub>" when that folder exists, else OrbisRoot().
 std::string OrbisDir(const char* sub);
-// A switch file: "/data/PCSX2/flags/<name>" when it's there, else "/data/PCSX2/<name>" (the old place).
+// A switch file: "<root>/flags/<name>" when it's there, else "<root>/<name>" (the old place).
 std::string OrbisFlagPath(const char* name);
 // Whether that switch is on (the file exists in either place). vk-285-105: from a snapshot once
 // OrbisFlagsRefresh has run (main-boot's ticker, once a second), before that from the files.

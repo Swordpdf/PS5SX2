@@ -17,7 +17,37 @@
 
 namespace
 {
-constexpr const char* kRoot = "/data/PCSX2";
+// The root config file lives outside the PCSX2 data dir so it can be read before we know
+// where the data dir is. Only present when the user has picked a non-default location.
+constexpr const char* kRootConfigFile = "/data/ps5sx2_root.txt";
+constexpr const char* kDefaultRoot    = "/data/PCSX2";
+
+// Reads and validates the user-configured root path from kRootConfigFile.
+// Returns kDefaultRoot when the file is absent, empty, or holds an invalid path.
+// Called once (static-local init); subsequent calls return the cached result.
+const std::string& GetRoot()
+{
+	static const std::string s_root = [] {
+		FILE* f = fopen(kRootConfigFile, "r");
+		if (!f)
+			return std::string{kDefaultRoot};
+		char buf[512] = {};
+		const bool read_ok = fgets(buf, sizeof(buf), f) != nullptr;
+		fclose(f);
+		if (!read_ok)
+			return std::string{kDefaultRoot};
+		std::string r = buf;
+		// trim trailing whitespace and newlines
+		while (!r.empty() && (r.back() == '\n' || r.back() == '\r' ||
+		                       r.back() == ' '  || r.back() == '\t'))
+			r.pop_back();
+		// basic sanity: must start with '/', must not contain '..'
+		if (r.empty() || r.front() != '/' || r.find("..") != std::string::npos)
+			return std::string{kDefaultRoot};
+		return r;
+	}();
+	return s_root;
+}
 
 bool IsDir(const std::string& path)
 {
@@ -26,10 +56,16 @@ bool IsDir(const std::string& path)
 }
 } // namespace
 
+const std::string& OrbisRoot()
+{
+	return GetRoot();
+}
+
 std::string OrbisDir(const char* sub)
 {
-	std::string dir = std::string(kRoot) + "/" + sub;
-	return IsDir(dir) ? dir : std::string(kRoot);
+	const std::string& root = GetRoot();
+	std::string dir = root + "/" + sub;
+	return IsDir(dir) ? dir : root;
 }
 
 // vk-285-46: stat(), not access(). Before the HEN jailbreak the app's sandbox answers access() on a
@@ -47,10 +83,11 @@ bool Exists(const std::string& path)
 
 std::string OrbisFlagPath(const char* name)
 {
-	std::string in_flags = std::string(kRoot) + "/flags/" + name;
+	const std::string& root = GetRoot();
+	std::string in_flags = root + "/flags/" + name;
 	if (Exists(in_flags))
 		return in_flags;
-	return std::string(kRoot) + "/" + name;
+	return root + "/" + name;
 }
 
 // vk-285-105: the flags folder and the top folder's names, and the small files the GS thread polls (gs.ini,
@@ -110,8 +147,9 @@ bool Has(const std::vector<std::string>& names, const char* name)
 
 void OrbisFlagsRefresh()
 {
-	std::vector<std::string> flags = ListNames((std::string(kRoot) + "/flags").c_str());
-	std::vector<std::string> root = ListNames(kRoot);
+	const std::string& root = GetRoot();
+	std::vector<std::string> flags = ListNames((root + "/flags").c_str());
+	std::vector<std::string> snap_root = ListNames(root.c_str());
 	std::vector<std::string> paths;
 	{
 		std::lock_guard<std::mutex> lock(s_snap_mutex);
@@ -124,7 +162,7 @@ void OrbisFlagsRefresh()
 		ok[i] = ReadSmall(paths[i], data[i]);
 	std::lock_guard<std::mutex> lock(s_snap_mutex);
 	s_snap_flags.swap(flags);
-	s_snap_root.swap(root);
+	s_snap_root.swap(snap_root);
 	for (size_t i = 0; i < paths.size(); i++)
 	{
 		for (OrbisCachedFile& c : s_cached_files)
@@ -178,7 +216,7 @@ bool OrbisCachedRead(const char* path, std::string& out)
 // The Vulkan driver's live flags (ps5vk_device.c, weak there): answered for files in the flags folder.
 extern "C" bool ps5vk_live_flag_hook(const char* path, bool* on)
 {
-	static const std::string prefix = std::string(kRoot) + "/flags/";
+	const std::string prefix = GetRoot() + "/flags/";
 	if (std::strncmp(path, prefix.c_str(), prefix.size()) != 0)
 		return false;
 	const char* name = path + prefix.size();
@@ -190,10 +228,25 @@ extern "C" bool ps5vk_live_flag_hook(const char* path, bool* on)
 }
 
 extern "C" {
+// Initialised to the default; main() updates it after OrbisRoot() is available.
 char g_orbis_pf_log[160] = "/data/PCSX2/pf.log";
 }
 
 std::string OrbisLogPath(const char* name)
 {
 	return OrbisDir("logs") + "/" + name;
+}
+
+// Saves `dir` as the new PCSX2 data root in kRootConfigFile.
+// Returns true on success. Does NOT reload GetRoot() (takes effect on the next app launch).
+bool OrbisSetRoot(const std::string& dir)
+{
+	if (dir.empty() || dir.front() != '/' || dir.find("..") != std::string::npos || dir.size() > 480)
+		return false;
+	FILE* f = fopen(kRootConfigFile, "w");
+	if (!f)
+		return false;
+	fprintf(f, "%s\n", dir.c_str());
+	fclose(f);
+	return true;
 }

@@ -100,3 +100,10 @@ void orbis_frontend_set_language(const std::string& lang_dir);
 // result is empty. One image opens the shelf too (vk-285-69, for its QR code); the caller's nomenu
 // flag skips the shelf.
 std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* build_tag, bool* ran);
+
+// Configurable data root: opens a Vulkan directory browser that lets the user pick the PCSX2 data
+// folder (the root where games/, bios/, patches/ etc. live). Called from main-boot.cpp when the
+// active OrbisRoot() directory does not exist. Writes the chosen path via OrbisSetRoot() and
+// returns true. Returns false when the user cancels or the display cannot be initialised. The app
+// must restart after this returns true for the new root to take effect.
+bool orbis_pick_root_dir();
