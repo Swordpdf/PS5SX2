@@ -249,6 +249,28 @@ footer a { color: var(--dim); }
     <div id="settings"></div>
     <div class="file" id="file"></div>
 
+    <!-- PS5SX2: configurable PCSX2 data folder -->
+    <div class="sec" id="sec-rootdir">
+      <h2>PS5SX2</h2>
+      <div class="card">
+        <div class="row">
+          <div class="label">
+            <div class="name">PCSX2 data folder</div>
+            <div class="hint" id="rootdir-hint">Where games, BIOS, patches, saves and settings are stored. Changes take effect after PS5SX2 is closed and reopened.</div>
+          </div>
+          <div class="val" id="rootdir-val" style="font-size:13px;word-break:break-all"></div>
+        </div>
+        <div style="padding:0 14px 14px">
+          <div id="rootdir-list" style="margin-top:6px"></div>
+          <div id="rootdir-restart-note" style="display:none;margin:10px 0 8px;color:rgb(var(--glow));filter:brightness(1.5);font-size:14px">
+            ⚠ PS5SX2 must be closed and reopened for the new folder to take effect.
+            Games, BIOS and saves will be read from the new location on the next launch.
+          </div>
+          <button class="btn primary" id="rootdir-save" style="display:none;margin-top:10px" disabled>Save — close PS5SX2 to apply</button>
+        </div>
+      </div>
+    </div>
+
     <div class="sec report" id="report">
       <h2>Report a problem</h2>
       <div class="card"><div class="row">
@@ -846,6 +868,7 @@ async function refreshState() {
     const changed = JSON.stringify(s.playing) !== JSON.stringify(state.playing);
     state = s;
     $("build").textContent = s.build;
+    applyRootPendingBanner(s);
     if (s.playing) { $("now").classList.add("show"); $("nowtitle").textContent = s.playing.title; $("nowcover").src = cover(s.playing.id); }
     else $("now").classList.remove("show");
     if (changed && games.length) {
@@ -910,6 +933,86 @@ $("discord").addEventListener("click", async () => {
   toast(ok ? "Copied sword.pdf" : "Discord: sword.pdf");
 });
 
+// ---- PS5SX2: configurable PCSX2 data folder ------------------------------------
+let rootdirData = null;      // last /api/rootdir response
+let rootdirSelected = null;  // path chosen in the UI (null = no change)
+
+async function loadRootDir() {
+  try {
+    const r = await api("/api/rootdir");
+    rootdirData = r;
+    renderRootDir();
+  } catch (e) { /* server may not support it on older builds */ }
+}
+
+function renderRootDir() {
+  if (!rootdirData) return;
+  const list  = $("rootdir-list");
+  const val   = $("rootdir-val");
+  const note  = $("rootdir-restart-note");
+  const btn   = $("rootdir-save");
+  if (!list) return;
+
+  val.textContent = rootdirData.current;
+
+  // Build candidate rows
+  let html = "";
+  for (const c of rootdirData.candidates) {
+    const isSelected = c.path === (rootdirSelected || rootdirData.current);
+    const badge = c.has_bios
+      ? "<span style='color:#5cf2a0;margin-left:8px;font-size:12px'>BIOS ✓</span>"
+      : "";
+    const gamesBadge = c.games > 0
+      ? "<span style='color:var(--dim);margin-left:8px;font-size:12px'>" + c.games + " game" + (c.games !== 1 ? "s" : "") + "</span>"
+      : "";
+    const missingBadge = !c.exists
+      ? "<span style='color:#ff8866;margin-left:8px;font-size:12px'>not found</span>"
+      : "";
+    html += "<div class='row' style='cursor:pointer;padding:10px 14px;gap:8px;align-items:center' data-rpath='" + c.path.replace(/'/g,"&#39;") + "' onclick='selectRootDir(this)'>" +
+      "<div style='width:20px;height:20px;border-radius:50%;flex-shrink:0;border:2px solid rgba(255,255,255," + (isSelected ? "0.9" : "0.25") + ");background:" + (isSelected ? "rgb(var(--glow))" : "transparent") + "'></div>" +
+      "<div style='flex:1;word-break:break-all;font-size:14px'>" + c.path + badge + gamesBadge + missingBadge + "</div>" +
+      "</div>";
+  }
+  list.innerHTML = html;
+
+  // Show/hide restart note and button
+  const changed = rootdirSelected && rootdirSelected !== rootdirData.current;
+  if (note) note.style.display = changed ? "" : "none";
+  if (btn)  { btn.style.display = changed ? "" : "none"; btn.disabled = !changed; }
+}
+
+function selectRootDir(el) {
+  const path = el.dataset.rpath;
+  if (!path || !rootdirData) return;
+  rootdirSelected = path === rootdirData.current ? null : path;
+  renderRootDir();
+}
+
+$("rootdir-save") && $("rootdir-save").addEventListener("click", async () => {
+  if (!rootdirSelected) return;
+  const btn = $("rootdir-save");
+  btn.disabled = true;
+  try {
+    await api("/api/rootdir", { method: "POST", body: JSON.stringify({ path: rootdirSelected }), headers: { "Content-Type": "application/json" } });
+    toast("Saved. Close PS5SX2 now and reopen it to apply the new folder.");
+    if (btn) { btn.textContent = "Saved — close PS5SX2 to apply ✓"; btn.disabled = true; }
+    if ($("rootdir-restart-note")) $("rootdir-restart-note").style.display = "";
+    rootdirData.current = rootdirSelected;
+    rootdirSelected = null;
+  } catch (e) {
+    toast("Could not save: " + e.message);
+    btn.disabled = false;
+  }
+});
+
+// Show a persistent banner when the console reports a pending restart
+function applyRootPendingBanner(s) {
+  const note = $("rootdir-restart-note");
+  if (note && s.root_pending_restart) note.style.display = "";
+  const val = $("rootdir-val");
+  if (val && s.root_dir) val.textContent = s.root_dir;
+}
+
 (async function start() {
   if (!token) { showGate(); return; }
   try {
@@ -925,6 +1028,7 @@ $("discord").addEventListener("click", async () => {
   let i = state.playing ? games.findIndex((g) => g.id === state.playing.id) : 0;
   if (i < 0) i = 0;
   requestAnimationFrame(() => { scrollToGame(i, false); if (games[i]) select(games[i].id); else select("@global"); });
+  loadRootDir();
   setInterval(refreshState, 5000);
 })();
 </script>

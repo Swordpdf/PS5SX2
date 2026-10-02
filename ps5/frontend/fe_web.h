@@ -58,6 +58,10 @@ struct WebConfig
 	std::string memcards_dir;           // vk-285-113: memcards/, the cards PCSX2 uses ("" for none: no cards page)
 	std::string report_header;          // the report's first lines: build, sources, console
 	int test_build = 0;                 // names the report file "PS5SX2-test<N>-..."
+	// Configurable data root: the config file that holds the user's chosen root path. When non-empty
+	// the settings page shows a "PS5SX2" section where the user can change it. The change takes
+	// effect on the next app launch.
+	std::string root_config_path;       // "/data/ps5sx2_root.txt"
 };
 
 // vk-285-51: appends "<date time>  <line>" to the settings log (logs/settings.log), which keeps
@@ -135,6 +139,9 @@ private:
 	void ApiNote(const Request& req, Response& res);   // test build 1: a tester's note, into settings.log
 	void ApiMemcards(Response& res);                   // vk-285-113: the cards in memcards/
 	void ApiMemcardCreate(const Request& req, Response& res); // vk-285-113: "create <8|16|32|64> <name>"
+	// Configurable data root: GET returns the active root and candidates; POST saves a new one.
+	void ApiRootDir(Response& res);
+	void ApiSetRootDir(const Request& req, Response& res);
 	void Log(const Request& req, const std::string& what);
 
 	WebConfig m_cfg;
@@ -156,6 +163,7 @@ private:
 	std::vector<GameInfo> m_games;
 	double m_games_time = -1e9;
 	std::map<std::string, std::pair<uint64_t, std::string>> m_serials; // path -> (size, serial): USB drives are slow
+	bool m_root_pending_restart = false; // true after ApiSetRootDir saved a new root this session
 };
 
 // The IPv4 address other devices reach this machine on: the one the default route uses, else the

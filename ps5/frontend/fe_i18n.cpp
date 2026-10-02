@@ -48,6 +48,10 @@ const char* const kKeys[kCount] = {
 	"notify.no_bios",
 	"notify.gs_failed",
 	"sheet.controls",
+	"rootpick.title",
+	"rootpick.current",
+	"rootpick.not_found",
+	"rootpick.hint",
 };
 
 const char* const kEnglish[kCount] = {
@@ -81,6 +85,10 @@ const char* const kEnglish[kCount] = {
 	"PS5SX2: no PS2 BIOS found. Copy your BIOS file (4 MB, e.g. SCPH-70012.bin) to %s and start the game again.",
 	"PS5SX2: the game's graphics didn't start. Start it again; if it happens again, reinstall PS5SX2 with its installer.",
 	"Controls",
+	"Choose the PCSX2 data folder",
+	"Current: %s",
+	"Folder not found: %s",
+	"\xE2\x87\xA3 Enter  \xE2\x86\xA3 Navigate  \xE2\x87\xA1 Confirm  \xE2\x87\xA2 Cancel",
 };
 
 const char* const kSpanish[kCount] = {
@@ -114,6 +122,10 @@ const char* const kSpanish[kCount] = {
 	"PS5SX2: no se ha encontrado ninguna BIOS de PS2. Copia tu archivo de BIOS (4 MB, p. ej. SCPH-70012.bin) en %s y vuelve a iniciar el juego.",
 	"PS5SX2: los gráficos del juego no se han iniciado. Vuelve a iniciarlo; si vuelve a pasar, reinstala PS5SX2 con su instalador.",
 	"Controles",
+	"Elegir la carpeta de datos de PCSX2",
+	"Actual: %s",
+	"Carpeta no encontrada: %s",
+	"\xE2\x87\xA3 Entrar  \xE2\x86\xA3 Navegar  \xE2\x87\xA1 Confirmar  \xE2\x87\xA2 Cancelar",
 };
 
 const char* const kSpanishLatAm[kCount] = {
@@ -147,6 +159,10 @@ const char* const kSpanishLatAm[kCount] = {
 	"PS5SX2: no se encontró ninguna BIOS de PS2. Copia tu archivo de BIOS (4 MB, p. ej. SCPH-70012.bin) en %s y vuelve a iniciar el juego.",
 	"PS5SX2: los gráficos del juego no se iniciaron. Vuelve a iniciarlo; si vuelve a pasar, reinstala PS5SX2 con su instalador.",
 	"Controles",
+	"Elegir la carpeta de datos de PCSX2",
+	"Actual: %s",
+	"Carpeta no encontrada: %s",
+	"\xE2\x87\xA3 Entrar  \xE2\x86\xA3 Navegar  \xE2\x87\xA1 Confirmar  \xE2\x87\xA2 Cancelar",
 };
 
 const char* const kFrench[kCount] = {
@@ -180,6 +196,10 @@ const char* const kFrench[kCount] = {
 	"PS5SX2 : aucun BIOS PS2 trouvé. Copie ton fichier BIOS (4 Mo, par ex. SCPH-70012.bin) dans %s, puis relance le jeu.",
 	"PS5SX2 : les graphismes du jeu n'ont pas démarré. Relance-le ; si ça recommence, réinstalle PS5SX2 avec son installateur.",
 	"Commandes",
+	"Choisir le dossier de données PCSX2",
+	"Actuel\u00a0: %s",
+	"Dossier introuvable\u00a0: %s",
+	"\xE2\x87\xA3 Entrer  \xE2\x86\xA3 Naviguer  \xE2\x87\xA1 Confirmer  \xE2\x87\xA2 Annuler",
 };
 
 const char* const kGerman[kCount] = {
@@ -213,6 +233,10 @@ const char* const kGerman[kCount] = {
 	"PS5SX2: Kein PS2-BIOS gefunden. Kopiere deine BIOS-Datei (4 MB, z. B. SCPH-70012.bin) nach %s und starte das Spiel erneut.",
 	"PS5SX2: Die Grafik des Spiels ist nicht gestartet. Starte es erneut; passiert es wieder, installiere PS5SX2 mit seinem Installer neu.",
 	"Steuerung",
+	"PCSX2-Datenordner w\u00e4hlen",
+	"Aktuell: %s",
+	"Ordner nicht gefunden: %s",
+	"\xE2\x87\xA3 \u00d6ffnen  \xE2\x86\xA3 Navigieren  \xE2\x87\xA1 Best\u00e4tigen  \xE2\x87\xA2 Abbrechen",
 };
 
 const char* const kItalian[kCount] = {
@@ -246,6 +270,10 @@ const char* const kItalian[kCount] = {
 	"PS5SX2: nessun BIOS PS2 trovato. Copia il tuo file BIOS (4 MB, ad es. SCPH-70012.bin) in %s e riavvia il gioco.",
 	"PS5SX2: la grafica del gioco non si è avviata. Riavvialo; se succede di nuovo, reinstalla PS5SX2 con il suo programma di installazione.",
 	"Comandi",
+	"Scegli la cartella dati di PCSX2",
+	"Corrente: %s",
+	"Cartella non trovata: %s",
+	"\xE2\x87\xA3 Apri  \xE2\x86\xA3 Naviga  \xE2\x87\xA1 Conferma  \xE2\x87\xA2 Annulla",
 };
 
 const char* const kDutch[kCount] = {
@@ -279,6 +307,10 @@ const char* const kDutch[kCount] = {
 	"PS5SX2: geen PS2-BIOS gevonden. Kopieer je BIOS-bestand (4 MB, bijv. SCPH-70012.bin) naar %s en start de game opnieuw.",
 	"PS5SX2: de graphics van de game zijn niet gestart. Start de game opnieuw; gebeurt het weer, installeer PS5SX2 dan opnieuw met het installatieprogramma.",
 	"Besturing",
+	"Kies de PCSX2-gegevensmap",
+	"Huidig: %s",
+	"Map niet gevonden: %s",
+	"\xE2\x87\xA3 Openen  \xE2\x86\xA3 Navigeren  \xE2\x87\xA1 Bevestigen  \xE2\x87\xA2 Annuleren",
 };
 
 const char* const kPortuguese[kCount] = {
@@ -312,6 +344,10 @@ const char* const kPortuguese[kCount] = {
 	"PS5SX2: nenhuma BIOS da PS2 encontrada. Copia o teu ficheiro de BIOS (4 MB, por ex. SCPH-70012.bin) para %s e volta a iniciar o jogo.",
 	"PS5SX2: os gráficos do jogo não arrancaram. Volta a iniciá-lo; se acontecer de novo, reinstala o PS5SX2 com o instalador.",
 	"Controlos",
+	"Escolher a pasta de dados do PCSX2",
+	"Atual: %s",
+	"Pasta não encontrada: %s",
+	"\xE2\x87\xA3 Entrar  \xE2\x86\xA3 Navegar  \xE2\x87\xA1 Confirmar  \xE2\x87\xA2 Cancelar",
 };
 
 const char* const kPortugueseBrazil[kCount] = {
@@ -345,6 +381,10 @@ const char* const kPortugueseBrazil[kCount] = {
 	"PS5SX2: nenhuma BIOS de PS2 encontrada. Copie seu arquivo de BIOS (4 MB, ex.: SCPH-70012.bin) para %s e inicie o jogo de novo.",
 	"PS5SX2: os gráficos do jogo não iniciaram. Inicie de novo; se acontecer outra vez, reinstale o PS5SX2 com o instalador.",
 	"Controles",
+	"Escolher a pasta de dados do PCSX2",
+	"Atual: %s",
+	"Pasta não encontrada: %s",
+	"\xE2\x87\xA3 Entrar  \xE2\x86\xA3 Navegar  \xE2\x87\xA1 Confirmar  \xE2\x87\xA2 Cancelar",
 };
 
 // The region names fe_games.cpp takes from a file name's first group (kRegions there), in its order.
