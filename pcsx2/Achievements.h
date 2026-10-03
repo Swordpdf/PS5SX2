@@ -6,6 +6,9 @@
 #include "common/Pcsx2Types.h"
 
 #include "Config.h"
+#ifdef PS5SX2_ACHIEVEMENTS
+#include "ps5/frontend/fe_game_achievements.h"
+#endif
 
 #include <functional>
 #include <mutex>
@@ -150,6 +153,12 @@ namespace Achievements
 
 	/// Renders the leaderboard list.
 	void DrawLeaderboardsWindow();
+
+#ifdef PS5SX2_ACHIEVEMENTS
+	// Copied runtime data for the in-game web interface (AI-assisted).
+	fe::GameAchievementsState GetPS5GameAchievements();
+	std::vector<u8> GetPS5AchievementBadge(u32 id);
+#endif
 
 #ifdef ENABLE_RAINTEGRATION
 	/// Prevents the internal implementation from being used. Instead, RAIntegration will be

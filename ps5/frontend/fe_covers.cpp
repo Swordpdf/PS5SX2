@@ -384,8 +384,15 @@ std::vector<CoverFile> CoverFinder::Search(const GameInfo& g, bool first_only)
 	return out;
 }
 
-bool CoverService::Decode(const std::vector<uint8_t>& bytes, int max_h, CoverImage& out)
+bool CoverService::Decode(const std::vector<uint8_t>& bytes, int max_h, CoverImage& out, int max_dimension)
 {
+	if (max_dimension > 0)
+	{
+		int w, h, channels;
+		if (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &channels) ||
+			w > max_dimension || h > max_dimension)
+			return false;
+	}
 	int w = 0, h = 0, n = 0;
 	unsigned char* px = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n, 4);
 	if (!px || w < 16 || h < 16)

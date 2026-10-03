@@ -28,3 +28,5 @@ flags=(-std=c++20 -O1 -g -fsanitize=undefined -ffunction-sections -fdata-section
 "$work/account" "$work/account-data"
 "$work/notifications"
 echo "PASS: native transport, controller account panel, credential persistence and notification adapter"
+
+bash "$here/test_browser.sh"

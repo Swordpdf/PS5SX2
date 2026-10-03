@@ -19,6 +19,7 @@
 #include "fe_web.h"
 #ifdef PS5SX2_ACHIEVEMENTS
 #include "ps5/coreorbis/orbis-shims/ProsperoAchievements.h"
+#include "pcsx2/Achievements.h"
 #endif
 #include "third_party/qrcodegen/qrcodegen.h" // vk-285-113: orbis_web_qr
 
@@ -1010,6 +1011,10 @@ bool orbis_web_start(const OrbisFrontendPaths& paths, const char* build_tag)
 	cfg.memcards_dir = paths.memcards_dir; // vk-285-113
 	cfg.report_header = paths.report_header;
 	cfg.test_build = paths.test_build;
+#ifdef PS5SX2_ACHIEVEMENTS
+	cfg.achievements = Achievements::GetPS5GameAchievements;
+	cfg.achievement_badge = Achievements::GetPS5AchievementBadge;
+#endif
 	fe::g_utc_to_local = &SettingsLogLocalTime;
 	cfg.assets = {
 		{"/", "text/html; charset=utf-8", fe_web_page, static_cast<size_t>(fe_web_page_end - fe_web_page)},
@@ -1238,6 +1243,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	AppConfig acfg;
 #ifdef PS5SX2_ACHIEVEMENTS
 	acfg.achievements = OrbisAchievementsAccountService();
+	acfg.game_achievements = OrbisAchievementsBrowserService();
 #endif
 	acfg.build_tag = build_tag ? build_tag : "";
 	acfg.test_build = paths.test_build;   // test build 1: the TESTING watermark

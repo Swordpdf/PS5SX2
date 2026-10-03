@@ -4,8 +4,10 @@ Implementation notes (AI-assisted).
 
 The PS5 Vulkan build now connects the existing PCSX2/rcheevos runtime to a
 native HTTPS downloader, persistent account storage and PS5 notifications.
-This is an initial softcore implementation. A PS5 build and real service
-interaction have not yet been verified on hardware.
+This is an initial softcore implementation. Build 6 login was verified in the
+console logs, and the user confirmed a connection in-game and an achievement
+unlock. The user also confirmed the build 7 shelf browser works on the console.
+Build 8 adds the in-game web browser; its console validation is pending.
 
 ## Account screen
 
@@ -34,6 +36,72 @@ closes or the user signs out. It is never persisted to account storage.
 The shelf remains available even when the game directory is empty. Account
 entry stays local to the console; no credentials are submitted through the
 HTTP LAN settings server or external browser.
+
+## Game achievement browser
+
+On the shelf, select a game and press **Square**. Use **L2/R2** to cycle through
+**Settings**, **Controls** and **Achievements**. The achievement tab is specific
+to **This game**; the **All games** scope asks you to select a game instead.
+
+The list shows the main set's published achievement badges, titles, descriptions, points and
+**Locked / Unlocked** status. Unlocked achievements appear first, with an
+unlocked count and earned/total points at the top. Use **Up/Down** to scroll,
+**Triangle** to refresh after loading completes, and **Circle** to return.
+Sign in from the shelf's account screen before requesting a game's list.
+
+`ProsperoAchievementBrowser.cpp` runs a separate read-only rcheevos client on a
+worker. `fe::ReadAchievementExecutable()` reads SYSTEM.CNF and the BOOT2
+executable through the shelf's ISO/CHD/CSO/ZSO sector readers, including nested
+ISO9660 directories. The hash uses the executable filename without its version
+suffix and up to 64 MiB of executable bytes, matching the core's PS2 hash rules.
+It does not mount a disc in the VM or use the game title/serial as its RA ID.
+Unsupported multi-extent executables and malformed images produce an error.
+
+The browser authenticates with the saved token in spectator mode and never
+runs achievement frame evaluation or starts a play session. Spectator loading
+does not populate unlocks, so the browser explicitly fetches both softcore and
+hardcore unlock IDs with the rcheevos user-unlocks API. If that query fails, it
+shows an error instead of presenting every achievement as locked. It does not
+change the runtime account, write credentials or submit unlocks. Bonus subsets
+are omitted because they can require separate game IDs and unlock queries.
+
+Metadata is published before badge downloads finish. Badge bytes are cached in
+`/data/PCSX2/achievement-badges/`, separately for locked and unlocked images.
+Downloads are limited to 256 KiB per badge and 16 MiB per list; image dimensions
+are checked before decoding. The shelf decodes/uploads at most one badge per
+frame and retains textures near the selected row. Missing images show an RA
+placeholder. The UI shader supports RGBA images alongside the existing font
+atlas without changing the emulator's GS renderer.
+
+Closing the sheet, leaving the tab or launching a game cancels further badge
+downloads. A request already in progress finishes or times out before the
+worker exits; game launch waits for it, and startup joins the worker before VM
+initialization. Networking and disc hashing stay off the rendering thread.
+(AI-assisted)
+
+## In-game achievement browser
+
+While a game is running, hold **L2 + D-pad Down** for two seconds to open the
+existing web interface. Select the running game and open **Achievements**.
+The tab shows badges, descriptions, points, unlock status and total progress.
+Use **All / Unlocked / Locked** to filter and **Previous / Next** to browse
+pages of 12 achievements. Metadata refreshes every five seconds; **Refresh**
+requests an immediate update. This tab requires a running game; use the shelf
+browser before launching a game.
+
+The web server copies the active rcheevos client data under the achievement
+lock. It does not evaluate frames, log in or submit achievement requests.
+Only the main achievement set is shown, and either softcore or hardcore
+unlocks count as unlocked. Both endpoints require the existing web access
+token, and responses contain no RetroAchievements account credentials.
+
+Badge downloads use the runtime cache and asynchronous downloader, with at
+most two pending web badge requests to leave room for gameplay requests.
+Missing badges show a placeholder and retry automatically. Image requests
+accept an achievement ID rather than a file path or remote URL. The PS5
+functions are compile-time guarded so desktop builds remain unaffected.
+This path needs proper testing on the console, particularly during unlocks
+and changes between games. (AI-assisted)
 
 ## Storage and runtime
 
@@ -104,9 +172,9 @@ Console validation of build 6 confirmed CA loading returned `0`, the login
 POST returned HTTP `200` in 598 ms, and the user reported the account name
 appearing on the shelf without an error. Together with the shelf state only
 being saved after successful login and credential persistence, this confirms
-the password-login path on this console. Reconnection after restart, game
-identification and achievement unlock submission remain to be tested on
-hardware. (AI-assisted)
+the password-login path on this console. The user subsequently confirmed an
+in-game connection and an achievement unlock. Reconnection after restart and
+confirmation of the unlock on the website remain to be checked. (AI-assisted)
 
 Frame evaluation, memory reads, PS2 ELF hashing, request signing and award
 submission remain in PCSX2/rcheevos. Notification availability is separated from
@@ -169,3 +237,24 @@ the integration is released.
 
 References: [rc_client integration](https://github.com/RetroAchievements/rcheevos/wiki/rc_client-integration)
 and the [SDK HTTP2 sample](https://github.com/ps5-payload-dev/sdk/blob/master/samples/http2_get/main.c).
+
+### Browser validation
+
+`test_browser.sh` uses the real vendored rcheevos client/API builders and a fake
+HTTPS downloader with a synthetic ISO. It checks executable hashing from a
+nested directory, softcore/hardcore unlock merging, badge caching, missing
+credentials, failed unlock requests, transport initialization failure, malformed
+discs and cancellation. It asserts no start-session or award requests occur.
+Our C++ is checked with UndefinedBehaviorSanitizer; the vendored C parser's
+intentional null-pointer offset calculation excludes null/alignment/object-size diagnostics.
+The host frontend preview includes a local achievement fixture with no real
+account or service calls. The user confirmed shelf browsing on build 7.
+Compressed-disc hashes and connection-loss behavior still need hardware
+validation. (AI-assisted)
+
+Run `bash ps5/frontend/host/test-achievement-web.sh` for the in-game web tests.
+They check endpoint authentication, copied unlock updates, JSON escaping,
+private-field omission, badge ID validation and PNG responses. The JavaScript
+checks exercise filtering, pagination, image request scheduling and refresh
+using the production page functions. These local checks do not replace
+build 8 console validation. (AI-assisted)

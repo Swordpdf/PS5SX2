@@ -8,6 +8,7 @@
 
 #include "fe_covers.h"
 #include "fe_achievements.h"
+#include "fe_game_achievements.h"
 #include "fe_games.h"
 #include "fe_options.h"
 #include "fe_renderer.h"
@@ -41,6 +42,7 @@ struct AppConfig
 	OptionsPaths options;
 	std::function<void(GameInfo&)> refresh_game;
 	AchievementAccountService achievements;
+	GameAchievementsService game_achievements;
 };
 
 class App
@@ -139,5 +141,19 @@ private:
 	bool m_done = false;
 	Texture* m_atlas = nullptr;
 	AchievementAccountPanel m_account;
+	GameAchievementsState m_game_achievements;
+	struct Badge
+	{
+		Texture* texture = nullptr;
+		VkDescriptorSet set = VK_NULL_HANDLE;
+		bool attempted = false;
+	};
+	std::vector<Badge> m_achievement_badges;
+	std::vector<UiImageRange> m_achievement_images;
+	int m_achievement_row = 0;
+	void PollGameAchievements();
+	void ClearAchievementBadges();
+	void LoadGameAchievements();
+	void BuildGameAchievements(std::vector<UiVertex>& ui, float x, float y, float width, float height, float k);
 };
 } // namespace fe

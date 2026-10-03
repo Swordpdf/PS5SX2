@@ -1002,7 +1002,22 @@ bool Renderer::Render(const FrameDesc& f, uint32_t out_index, VkSemaphore wait, 
 			m_vk->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ui);
 			m_vk->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 1, 1, &m_atlas_set, 0, nullptr);
 			m_vk->vkCmdBindVertexBuffers(cmd, 0, 1, &s.ui.buffer, &zero);
-			m_vk->vkCmdDraw(cmd, static_cast<uint32_t>(f.ui.size()), 1, 0, 0);
+			// Preserve UI ordering when a badge temporarily replaces the font atlas. (AI-assisted)
+			uint32_t first = 0;
+			for (const auto& image : f.ui_images)
+			{
+				if (image.first < first || image.first + image.count > f.ui.size() || !image.set)
+					continue;
+				m_vk->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 1, 1, &m_atlas_set, 0, nullptr);
+				if (image.first > first)
+					m_vk->vkCmdDraw(cmd, image.first - first, 1, first, 0);
+				m_vk->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 1, 1, &image.set, 0, nullptr);
+				m_vk->vkCmdDraw(cmd, image.count, 1, image.first, 0);
+				first = image.first + image.count;
+			}
+			m_vk->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_layout, 1, 1, &m_atlas_set, 0, nullptr);
+			if (first < f.ui.size())
+				m_vk->vkCmdDraw(cmd, static_cast<uint32_t>(f.ui.size()) - first, 1, first, 0);
 		}
 		m_vk->vkCmdEndRenderPass(cmd);
 	}

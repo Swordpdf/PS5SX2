@@ -399,6 +399,7 @@ int main(int argc, char** argv)
 	App app;
 	AppConfig acfg;
 	AchievementAccountState preview_account;
+	GameAchievementsState preview_game;
 	preview_account.available = true;
 	if (achievements_preview)
 	{
@@ -410,6 +411,23 @@ int main(int argc, char** argv)
 				return true;
 			},
 			[&] { preview_account = {}; }};
+		acfg.game_achievements = {[&] { return preview_game; }, [&](const std::string& path) {
+            preview_game.path = path;
+            preview_game.title = "Achievement browser preview";
+            ++preview_game.revision;
+            preview_game.entries.clear();
+            auto image = std::make_shared<std::vector<uint8_t>>();
+            std::ifstream badge(data + "/badge.png", std::ios::binary);
+            image->assign(std::istreambuf_iterator<char>(badge), std::istreambuf_iterator<char>());
+            for (int i = 0; i < 24; ++i) {
+                GameAchievement entry; entry.id = i+1; entry.points = 5 + i*5;
+                entry.unlocked = i < 7;
+                entry.title = "Achievement " + std::to_string(i+1);
+                entry.description = "Explore the game and complete this objective to earn the achievement.";
+                entry.image = image;
+                preview_game.entries.push_back(std::move(entry));
+            }
+            return true; }, [] {}};
 	}
 	acfg.build_tag = "vk-285-114 (host)";
 	acfg.options = op;

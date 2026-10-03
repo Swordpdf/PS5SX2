@@ -40,9 +40,10 @@ recorded in [Preparing the PS5 build dependencies](docs/build-dependencies.md)
 
 ## Build
 
-The initial softcore RetroAchievements integration, its account screen and
+The initial softcore RetroAchievements integration, its account screen, game achievement browser and
 local checks are described in [RetroAchievements integration](docs/retroachievements.md)
-(AI-assisted). Console validation is still required.
+(AI-assisted). The shelf browser was confirmed on the console; the new in-game
+web tab still requires console validation.
 
 ```sh
 export PS5SX2_DEPS=/path/to/deps

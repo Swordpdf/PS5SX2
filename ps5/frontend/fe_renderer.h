@@ -55,6 +55,13 @@ struct BgParams
 	float misc[4];
 };
 
+// Texture changes within the UI vertex stream (AI-assisted).
+struct UiImageRange
+{
+	uint32_t first = 0, count = 0;
+	VkDescriptorSet set = VK_NULL_HANDLE;
+};
+
 struct FrameDesc
 {
 	Mat4 view_proj;
@@ -67,6 +74,7 @@ struct FrameDesc
 	std::vector<BoxDraw> boxes;
 	HaloDraw halo;
 	std::vector<UiVertex> ui;
+	std::vector<UiImageRange> ui_images;
 	float fade = 1.0f;
 };
 

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "ps5/frontend/fe_achievements.h"
+#include "ps5/frontend/fe_game_achievements.h"
 
 class SettingsInterface;
 
@@ -14,3 +15,6 @@ void OrbisAchievementsConfigure(SettingsInterface& settings);
 void OrbisAchievementsLoginRequired();
 void OrbisAchievementsLoginSuccess(const char* username);
 void OrbisAchievementsWaitForLogin();
+
+fe::GameAchievementsService OrbisAchievementsBrowserService(const std::string& cache_directory = "/data/PCSX2/achievement-badges");
+void OrbisAchievementsWaitForBrowser();

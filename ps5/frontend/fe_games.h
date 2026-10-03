@@ -36,6 +36,9 @@ std::vector<GameInfo> ScanGames(const std::vector<std::string>& dirs);
 // (a DVD's 2048-byte units or a CD's raw frames); one that needs a parent CHD reads as empty.
 std::string ReadSerial(const std::string& image_path);
 
+// Read the BOOT2 executable for the RA hash. Supports the shelf image formats. (AI-assisted)
+bool ReadAchievementExecutable(const std::string& path, std::string& name, std::vector<uint8_t>& bytes);
+
 // vk-285-109: what a CHD is (header, codecs, first track, data offset, or why libchdr can't open it), for
 // the log when ReadSerial found no serial in it; empty for other images.
 std::string DescribeImage(const std::string& image_path);

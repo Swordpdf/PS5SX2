@@ -537,6 +537,118 @@ std::string ReadSerial(const std::string& image_path)
 	return serial;
 }
 
+// Read ISO9660 files without touching the emulator's global CDVD state. (AI-assisted)
+bool ReadAchievementExecutable(const std::string& path, std::string& name, std::vector<uint8_t>& bytes)
+{
+	name.clear();
+	bytes.clear();
+	auto read = [&](SectorReader& disc) {
+		uint8_t pvd[2048];
+		if (!disc.Read(16, pvd, sizeof(pvd)) || pvd[0] != 1 || std::memcmp(pvd + 1, "CD001", 5) != 0)
+			return false;
+		const uint32_t root_lba = Le32(pvd + 158), root_size = Le32(pvd + 166);
+		auto find = [&](uint32_t directory, uint32_t length, const std::string& wanted,
+						uint32_t& lba, uint32_t& size, bool& is_dir) {
+			if (!length || length > 1024 * 1024)
+				return false;
+			std::vector<uint8_t> data(length);
+			if (!disc.Read(directory, data.data(), data.size()))
+				return false;
+			for (size_t off = 0; off < data.size();)
+			{
+				const unsigned n = data[off];
+				if (!n)
+				{
+					off = (off / 2048 + 1) * 2048;
+					continue;
+				}
+				if (n < 34 || off + n > data.size() || data[off + 32] > n - 33)
+					return false;
+				std::string entry(reinterpret_cast<const char*>(data.data() + off + 33), data[off + 32]);
+				const auto version = entry.find(';');
+				if (version != std::string::npos)
+					entry.resize(version);
+				if (Lower(entry) == Lower(wanted))
+				{
+					// Multi-extent executables require a different reader; don't hash partial data.
+					if (data[off + 25] & 0x80)
+						return false;
+					lba = Le32(data.data() + off + 2);
+					size = Le32(data.data() + off + 10);
+					is_dir = (data[off + 25] & 2) != 0;
+					return true;
+				}
+				off += n;
+			}
+			return false;
+		};
+		uint32_t lba = 0, size = 0;
+		bool directory = false;
+		if (!find(root_lba, root_size, "SYSTEM.CNF", lba, size, directory) || directory || !size || size > 4096)
+			return false;
+		std::string cnf(size, '\0');
+		if (!disc.Read(lba, cnf.data(), size))
+			return false;
+		const auto boot = cnf.find("BOOT2");
+		const auto colon = cnf.find(':', boot);
+		if (boot == std::string::npos || colon == std::string::npos)
+			return false;
+		size_t start = colon + 1;
+		while (start < cnf.size() && (cnf[start] == '\\' || cnf[start] == '/'))
+			++start;
+		const auto end = cnf.find_first_of(";\r\n", start);
+		std::string executable = Trim(cnf.substr(start, end - start));
+		std::replace(executable.begin(), executable.end(), '\\', '/');
+		if (executable.empty())
+			return false;
+		uint32_t dir_lba = root_lba, dir_size = root_size;
+		size_t part = 0;
+		for (;;)
+		{
+			const auto slash = executable.find('/', part);
+			const auto component = executable.substr(part, slash - part);
+			if (component.empty() || component == "." || component == ".." ||
+				!find(dir_lba, dir_size, component, lba, size, directory))
+				return false;
+			if (slash == std::string::npos)
+			{
+				if (directory || !size)
+					return false;
+				bytes.resize(std::min<uint32_t>(size, 64 * 1024 * 1024));
+				if (!disc.Read(lba, bytes.data(), bytes.size()))
+				{
+					bytes.clear();
+					return false;
+				}
+				name = component;
+				return true;
+			}
+			if (!directory)
+				return false;
+			dir_lba = lba;
+			dir_size = size;
+			part = slash + 1;
+		}
+	};
+	if (HasExtension(path.c_str(), ".chd"))
+	{
+		ChdSectors disc;
+		return disc.Open(path) && read(disc);
+	}
+	if (HasExtension(path.c_str(), ".cso") || HasExtension(path.c_str(), ".zso"))
+	{
+		CsoSectors disc;
+		return disc.Open(path) && read(disc);
+	}
+	const int fd = open(path.c_str(), O_RDONLY);
+	if (fd < 0)
+		return false;
+	IsoSectors disc(fd);
+	const bool ok = read(disc);
+	close(fd);
+	return ok;
+}
+
 void MakeTitle(const std::string& stem, std::string& title, std::string& region, std::string& extra)
 {
 	std::string base = stem;

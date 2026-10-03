@@ -2229,6 +2229,7 @@ int main()
   orbis_boot_log_release("after the shelf"); // vk-285-113
 #ifdef PS5SX2_ACHIEVEMENTS
   OrbisAchievementsWaitForLogin();
+  OrbisAchievementsWaitForBrowser();
 #endif
   if (!frontend_ran)
     s_game_path = orbis_select_game(OrbisDir("games").c_str(), "/data/PCSX2", ORBIS_BUILD_TAG); // vk-285-33: games/ too

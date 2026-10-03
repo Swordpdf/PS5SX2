@@ -358,6 +358,8 @@ void OptionsSheet::BuildRows()
 		m_rows.push_back(r);
 		return m_rows.back();
 	};
+	if (m_tab == kTabAchievements)
+		return; // Read-only browser is rendered by App (AI-assisted).
 	const bool settings = m_tab == kTabSettings;
 	if (settings && (m_has_preset || !m_global))
 		add(Kind::Recommended, m_global ? "Recommended for all games" : "Recommended settings");

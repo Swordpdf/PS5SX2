@@ -193,6 +193,8 @@ const char* Reason(int status)
 	switch (status)
 	{
 		case 200: return "OK";
+		case 202:
+			return "Accepted";
 		case 400: return "Bad Request";
 		case 401: return "Unauthorized";
 		case 404: return "Not Found";
@@ -676,6 +678,10 @@ void WebServer::Route(const Request& req, Response& res)
 	}
 	if (req.path == "/api/state" && req.method == "GET")
 		ApiState(res);
+	else if (req.path == "/api/achievements" && req.method == "GET")
+		ApiAchievements(res);
+	else if (req.path == "/api/achievement-badge" && req.method == "GET")
+		ApiAchievementBadge(req, res);
 	else if (req.path == "/api/games" && req.method == "GET")
 		ApiGames(res);
 	else if (req.path == "/api/cover" && req.method == "GET")
@@ -788,6 +794,69 @@ void WebServer::ApiGames(Response& res)
 		       ",\"playing\":" + (g.file == playing ? "true" : "false") + "}";
 	}
 	res.body = out + "]";
+}
+
+// In-game achievements share the settings page's access-token gate (AI-assisted).
+void WebServer::ApiAchievements(Response& res)
+{
+	std::string playing;
+	{
+		std::lock_guard lock(m_mutex);
+		playing = m_now_playing;
+	}
+	GameAchievementsState snapshot;
+	if (playing.empty())
+		snapshot.message = "Start a game to view its live achievements. Use the shelf tab before playing.";
+	else if (!m_cfg.achievements)
+		snapshot.message = "Achievement browser is unavailable.";
+	else
+		snapshot = m_cfg.achievements();
+	std::string out = "{\"game_id\":" + std::to_string(snapshot.game_id) + ",\"title\":" + Json(snapshot.title) +
+		              ",\"playing\":" + Json(playing) + ",\"busy\":" + (snapshot.busy ? "true" : "false") +
+		              ",\"message\":" + Json(snapshot.message) + ",\"entries\":[";
+	for (size_t i = 0; i < snapshot.entries.size(); ++i)
+	{
+		const auto& entry = snapshot.entries[i];
+		if (i)
+			out += ',';
+		out += "{\"id\":" + std::to_string(entry.id) + ",\"points\":" + std::to_string(entry.points) +
+			   ",\"unlocked\":" + (entry.unlocked ? "true" : "false") + ",\"title\":" + Json(entry.title) +
+			   ",\"description\":" + Json(entry.description) + "}";
+	}
+	res.body = out + "]}";
+}
+void WebServer::ApiAchievementBadge(const Request& req, Response& res)
+{
+	const std::string id_text = QueryValue(req.query, "id");
+	char* end = nullptr;
+	const unsigned long long id = std::strtoull(id_text.c_str(), &end, 10);
+	if (id_text.empty() || id_text.find_first_not_of("0123456789") != std::string::npos || !end || *end || !id || id > UINT32_MAX)
+	{
+		res.status = 400;
+		res.body = Error("invalid achievement ID");
+		return;
+	}
+	std::string playing;
+	{
+		std::lock_guard lock(m_mutex);
+		playing = m_now_playing;
+	}
+	if (playing.empty() || !m_cfg.achievement_badge)
+	{
+		res.status = 404;
+		res.body = Error("no active achievement image");
+		return;
+	}
+	const auto bytes = m_cfg.achievement_badge(static_cast<uint32_t>(id));
+	if (bytes.size() < 8 || bytes.size() > 256 * 1024 || std::memcmp(bytes.data(), "\x89PNG\r\n\x1a\n", 8) != 0)
+	{
+		res.status = 202;
+		res.body = Error("image is loading or unavailable");
+		return;
+	}
+	res.type = "image/png";
+	res.body.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+	res.cache = "private, max-age=60";
 }
 
 void WebServer::ApiCover(const Request& req, Response& res)

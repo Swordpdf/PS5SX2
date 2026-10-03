@@ -130,7 +130,7 @@ public:
 	static void PaintPlaceholder(const Fonts& fonts, const GameInfo& g, CoverImage& out);
 
 	// Decodes an image file's bytes to RGBA8, at most `max_h` rows tall; false if it isn't one.
-	static bool Decode(const std::vector<uint8_t>& bytes, int max_h, CoverImage& out);
+	static bool Decode(const std::vector<uint8_t>& bytes, int max_h, CoverImage& out, int max_dimension = 0);
 
 	// The games whose cover is none of: the user's own file (CoverFinder's manual, beside or drive), a
 	// cached download, a 404 in the last two weeks. For fetching them before the HEN jailbreak

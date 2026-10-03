@@ -37,7 +37,7 @@ struct OptionDef
 
 // vk-285-116: the sheet's tabs (L2 and R2), as the page's: the settings (with the memory cards and the patches) and the
 // controls (the controller's buttons, sticks, rumble, save state buttons, the keyboard and mouse).
-constexpr int kTabSettings = 0, kTabControls = 1, kTabCount = 2;
+constexpr int kTabSettings = 0, kTabControls = 1, kTabAchievements = 2, kTabCount = 3;
 
 struct OptionGroup
 {

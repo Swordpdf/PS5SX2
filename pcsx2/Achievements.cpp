@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Achievements.h"
+#ifdef PS5SX2_ACHIEVEMENTS
+#include <chrono>
+#include <unordered_map>
+#endif
 #include "BuildVersion.h"
 #include "CDVD/CDVD.h"
 #include "Elfheader.h"
@@ -2429,6 +2433,114 @@ void Achievements::DrawPauseMenuOverlays()
 		}
 	}
 }
+
+#ifdef PS5SX2_ACHIEVEMENTS
+// Web requests copy state while locked, without retaining any runtime pointers. (AI-assisted)
+fe::GameAchievementsState Achievements::GetPS5GameAchievements()
+{
+	auto lock = GetLock();
+	fe::GameAchievementsState result;
+	if (!s_client)
+	{
+		result.message = "Sign in to RetroAchievements and start a game.";
+		return result;
+	}
+	if (!rc_client_get_user_info(s_client))
+	{
+		result.message = "Connecting to RetroAchievements...";
+		result.busy = true;
+		return result;
+	}
+	if (!HasActiveGame())
+	{
+		result.busy = s_load_game_request != nullptr;
+		result.message = result.busy ? "Loading achievements..." : "No achievement data available for this game.";
+		return result;
+	}
+	result.game_id = s_game_id;
+	result.title = GetGameTitle();
+	auto* list = rc_client_create_achievement_list(s_client, RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE,
+		RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+	auto* subsets = rc_client_create_subset_list(s_client);
+	if (list && subsets && subsets->num_subsets)
+	{
+		const uint32_t main_subset = subsets->subsets[0]->id;
+		for (uint32_t bucket = 0; bucket < list->num_buckets; ++bucket)
+		{
+			if (list->buckets[bucket].subset_id && list->buckets[bucket].subset_id != main_subset)
+				continue;
+			for (uint32_t i = 0; i < list->buckets[bucket].num_achievements; ++i)
+			{
+				const auto* achievement = list->buckets[bucket].achievements[i];
+				fe::GameAchievement entry;
+				entry.id = achievement->id;
+				entry.points = achievement->points;
+				entry.unlocked = achievement->unlocked != RC_CLIENT_ACHIEVEMENT_UNLOCKED_NONE;
+				entry.title = achievement->title ? achievement->title : "";
+				entry.description = achievement->description ? achievement->description : "";
+				result.entries.push_back(std::move(entry));
+			}
+		}
+		std::stable_sort(result.entries.begin(), result.entries.end(), [](const auto& a, const auto& b) {
+			return a.unlocked && !b.unlocked;
+		});
+	}
+	if (list)
+		rc_client_destroy_achievement_list(list);
+	if (subsets)
+		rc_client_destroy_subset_list(subsets);
+	if (result.entries.empty())
+		result.message = "This game has no published achievements.";
+	return result;
+}
+
+std::vector<u8> Achievements::GetPS5AchievementBadge(u32 id)
+{
+	auto lock = GetLock();
+	if (!s_client || !HasActiveGame() || !s_http_downloader)
+		return {};
+	const auto* achievement = rc_client_get_achievement_info(s_client, id);
+	if (!achievement || !achievement->badge_name[0])
+		return {};
+	static std::unordered_map<std::string, std::chrono::steady_clock::time_point> requested;
+	const bool unlocked = achievement->unlocked != RC_CLIENT_ACHIEVEMENT_UNLOCKED_NONE;
+	const std::string path = Path::Combine(s_image_directory,
+		TinyString::from_format("achievement_{}{}.png", achievement->badge_name, unlocked ? "" : "_lock"));
+	if (FileSystem::FileExists(path.c_str()))
+	{
+		requested.erase(path);
+		// Bound the read while holding the client lock. Network work is always asynchronous.
+		auto file = FileSystem::OpenManagedCFile(path.c_str(), "rb");
+		if (!file || std::fseek(file.get(), 0, SEEK_END) != 0)
+			return {};
+		const long size = std::ftell(file.get());
+		if (size <= 0 || size > 256 * 1024 || std::fseek(file.get(), 0, SEEK_SET) != 0)
+			return {};
+		std::vector<u8> bytes(size);
+		if (std::fread(bytes.data(), 1, bytes.size(), file.get()) != bytes.size())
+			return {};
+		return bytes;
+	}
+	// Avoid duplicate image requests each time the page refreshes during a slow download.
+	const auto now = std::chrono::steady_clock::now();
+	const auto previous = requested.find(path);
+	if (previous != requested.end() && now - previous->second < std::chrono::seconds(30))
+		return {};
+	// Keep at most two web image requests queued, leaving room for gameplay API calls.
+	for (auto it = requested.begin(); it != requested.end();)
+	{
+		if (now - it->second >= std::chrono::seconds(30) || FileSystem::FileExists(it->first.c_str()))
+			it = requested.erase(it);
+		else
+			++it;
+	}
+	if (requested.size() >= 2)
+		return {};
+	requested[path] = now;
+	GetAchievementBadgePath(achievement, unlocked ? RC_CLIENT_ACHIEVEMENT_STATE_UNLOCKED : RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE);
+	return {};
+}
+#endif
 
 bool Achievements::PrepareAchievementsWindow()
 {

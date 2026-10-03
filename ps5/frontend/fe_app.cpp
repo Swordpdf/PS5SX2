@@ -119,6 +119,9 @@ void App::SetWebUrl(const std::string& url, const std::string& shown)
 
 void App::Shutdown()
 {
+	if (m_cfg.game_achievements.cancel)
+		m_cfg.game_achievements.cancel();
+	ClearAchievementBadges();
 	m_account.Close();
 	for (Slot& s : m_slots)
 	{
@@ -200,6 +203,7 @@ void App::Update(double dt, const Input& in)
 {
 	m_time += dt;
 	m_account.Poll(m_cfg.achievements);
+	PollGameAchievements();
 	const float fdt = static_cast<float>(std::min(dt, 0.1));
 
 	// vk-285-114: the options sheet slides in and out; while it is open it has the buttons.
@@ -213,7 +217,9 @@ void App::Update(double dt, const Input& in)
 
 	if (m_launching)
 	{
-		if (m_time - m_launch_time > 0.6)
+		if (m_game_achievements.busy)
+			m_launch_time = m_time;
+		if (m_time - m_launch_time > 0.6 && !m_game_achievements.busy)
 			m_done = true;
 	}
 	else if (m_account.open)
@@ -265,6 +271,8 @@ void App::Update(double dt, const Input& in)
 				Sound(Step(5) ? Sfx::JumpRight : Sfx::Edge, 0.25f);
 			if (((in.cross && !m_prev.cross) || (in.options && !m_prev.options)) && !m_games.empty())
 			{
+				if (m_cfg.game_achievements.cancel)
+					m_cfg.game_achievements.cancel();
 				m_launching = true;
 				m_launch_time = m_time;
 				Sound(Sfx::Launch, 0.0f);
@@ -336,6 +344,8 @@ void App::Pose(float d, float t, Mat4& model, float& brightness) const
 
 void App::Build(FrameDesc& f, const std::string& clock)
 {
+	m_achievement_images.clear();
+	f.ui_images.clear();
 	const float W = static_cast<float>(m_renderer->width()), H = static_cast<float>(m_renderer->height());
 	const float k = H / 2160.0f;
 	const float t = static_cast<float>(m_time);
@@ -558,6 +568,7 @@ void App::Build(FrameDesc& f, const std::string& clock)
 	{
 		Fonts::AddRoundedRect(ui, 0, 0, W, H, 0.0f, Rgba(0.01f, 0.01f, 0.03f, 0.42f * sheet_e));
 		BuildSheet(ui, W, H, k, accent);
+		f.ui_images = m_achievement_images;
 	}
 
 	// Button hints.
@@ -591,14 +602,14 @@ void App::Build(FrameDesc& f, const std::string& clock)
 		// vk-285-114: the options sheet's buttons.
 		hint(icon::DpadUpDown, nullptr, Tr(Str::HintMove));
 		hint(icon::DpadLeftRight, nullptr, Tr(Str::HintChange));
-		hint(icon::Triangle, nullptr, Tr(Str::HintReset));
+		hint(icon::Triangle, nullptr, m_sheet.tab() == kTabAchievements ? "Refresh" : Tr(Str::HintReset));
 		hint(icon::Circle, nullptr, Tr(Str::HintBack));
 		if (n > 0)
 		{
 			const std::string scope = std::string(Tr(Str::SheetThisGame)) + " / " + Tr(Str::SheetAllGames);
 			hint("#L1", "#R1", scope.c_str());
 		}
-		const std::string tabs = std::string(Tr(Str::HintSettings)) + " / " + Tr(Str::SheetControls); // vk-285-116
+		const std::string tabs = std::string(Tr(Str::HintSettings)) + " / " + Tr(Str::SheetControls) + " / Achievements"; // vk-285-116
 		hint("#L2", "#R2", tabs.c_str());
 	}
 	else
@@ -813,6 +824,8 @@ void App::OpenSheet(bool global)
 {
 	const GameInfo* g = (!global && !m_games.empty()) ? &m_games[static_cast<size_t>(m_selected)] : nullptr;
 	m_sheet_global = g == nullptr;
+	if (m_sheet_global && m_cfg.game_achievements.cancel)
+		m_cfg.game_achievements.cancel();
 	m_sheet.Open(m_cfg.options, g);
 	m_sheet_saved_at_open = 0;
 	if (!m_sheet_open)
@@ -828,6 +841,8 @@ void App::OpenSheet(bool global)
 	m_sheet_scroll_target = 0;
 	m_sheet_status.clear();
 	m_sheet_held_v = m_sheet_held_h = 0;
+	if (m_sheet.tab() == kTabAchievements)
+		LoadGameAchievements();
 	std::printf("[options] sheet for %s (%s)\n", m_sheet.title().c_str(), m_sheet.file_label().c_str());
 	std::fflush(stdout);
 }
@@ -836,13 +851,18 @@ void App::OpenSheet(bool global)
 void App::SheetTab(int tab)
 {
 	m_sheet.SetTab(tab);
+	if (tab != kTabAchievements && m_cfg.game_achievements.cancel)
+		m_cfg.game_achievements.cancel();
+	if (tab == kTabAchievements)
+		LoadGameAchievements();
 	m_sheet_row = 0;
 	const auto& rows = m_sheet.rows();
 	while (m_sheet_row < static_cast<int>(rows.size()) && !m_sheet.Selectable(rows[static_cast<size_t>(m_sheet_row)]))
 		m_sheet_row++;
 	m_sheet_scroll = m_sheet_scroll_target = 0;
 	m_sheet_held_v = m_sheet_held_h = 0;
-	std::printf("[options] %s tab\n", tab == kTabControls ? "controls" : "settings");
+	std::printf("[options] %s tab\n", tab == kTabAchievements ? "achievements" : tab == kTabControls ? "controls" :
+																									   "settings");
 	std::fflush(stdout);
 }
 
@@ -862,6 +882,8 @@ void App::CloseSheet()
 	if (!m_sheet_open)
 		return;
 	m_sheet_open = false;
+	if (m_cfg.game_achievements.cancel)
+		m_cfg.game_achievements.cancel();
 	if (m_sheet.saved() > 0)
 		RefreshBadges();
 	std::printf("[options] sheet closed (%d change(s) saved)\n", m_sheet.saved());
@@ -889,7 +911,7 @@ void App::UpdateSheet(double dt, const Input& in)
 	auto pressed = [&](bool now, bool before) { return now && !before; };
 	const double now = m_time;
 	const auto& rows = m_sheet.rows();
-	if (rows.empty())
+	if (rows.empty() && m_sheet.tab() != kTabAchievements)
 	{
 		CloseSheet();
 		return;
@@ -920,7 +942,8 @@ void App::UpdateSheet(double dt, const Input& in)
 	// vk-285-116: L2 the settings, R2 the controls.
 	if (pressed(in.l2, m_prev.l2) || pressed(in.r2, m_prev.r2))
 	{
-		const int tab = pressed(in.r2, m_prev.r2) ? kTabControls : kTabSettings;
+		const int direction = pressed(in.r2, m_prev.r2) ? 1 : -1;
+		const int tab = (m_sheet.tab() + direction + kTabCount) % kTabCount;
 		if (tab != m_sheet.tab())
 		{
 			SheetTab(tab);
@@ -928,6 +951,22 @@ void App::UpdateSheet(double dt, const Input& in)
 		}
 		else
 			Sound(Sfx::Edge, 0.3f);
+		return;
+	}
+
+	if (m_sheet.tab() == kTabAchievements)
+	{
+		const int direction = in.up ? -1 : in.down ? 1 :
+			                                         0;
+		const bool fresh = (in.up && !m_prev.up) || (in.down && !m_prev.down);
+		if (direction && (fresh || m_time >= m_sheet_next_repeat))
+		{
+			m_achievement_row = std::clamp(m_achievement_row + direction, 0,
+				std::max(0, static_cast<int>(m_game_achievements.entries.size()) - 1));
+			m_sheet_next_repeat = m_time + (fresh ? 0.32 : 0.10);
+		}
+		if (pressed(in.triangle, m_prev.triangle) && !m_game_achievements.busy)
+			LoadGameAchievements();
 		return;
 	}
 
@@ -994,6 +1033,155 @@ void App::UpdateSheet(double dt, const Input& in)
 	}
 }
 
+// Achievement data and textures are owned by the shelf, never by the VM. (AI-assisted)
+void App::ClearAchievementBadges()
+{
+	for (auto& badge : m_achievement_badges)
+	{
+		m_renderer->FreeTextureSet(badge.set);
+		m_renderer->DestroyTexture(badge.texture);
+	}
+	m_achievement_badges.clear();
+}
+void App::LoadGameAchievements()
+{
+	if (m_sheet_global || m_games.empty())
+		return;
+	if (m_cfg.game_achievements.load)
+		m_cfg.game_achievements.load(m_games[static_cast<size_t>(m_selected)].path);
+	m_achievement_row = 0;
+}
+void App::PollGameAchievements()
+{
+	if (!m_cfg.game_achievements.state)
+		return;
+	auto state = m_cfg.game_achievements.state();
+	if (state.revision != m_game_achievements.revision)
+	{
+		bool changed = state.path != m_game_achievements.path || state.entries.size() != m_game_achievements.entries.size();
+		if (!changed)
+			for (size_t i = 0; i < state.entries.size(); ++i)
+				if (state.entries[i].id != m_game_achievements.entries[i].id ||
+					state.entries[i].unlocked != m_game_achievements.entries[i].unlocked)
+				{
+					changed = true;
+					break;
+				}
+		if (changed)
+		{
+			ClearAchievementBadges();
+			m_achievement_row = 0;
+		}
+		m_game_achievements = std::move(state);
+	}
+	m_achievement_badges.resize(m_game_achievements.entries.size());
+	// At most one decode/upload per frame, keeping the controller responsive.
+	for (size_t i = 0; i < m_achievement_badges.size(); ++i)
+	{
+		auto& badge = m_achievement_badges[i];
+		const auto& entry = m_game_achievements.entries[i];
+		if (std::abs(static_cast<int>(i) - m_achievement_row) > 20)
+		{
+			if (badge.texture)
+			{
+				m_renderer->FreeTextureSet(badge.set);
+				m_renderer->DestroyTexture(badge.texture);
+				badge = {};
+			}
+			continue;
+		}
+		if (!entry.image || badge.attempted)
+			continue;
+		badge.attempted = true;
+		CoverImage decoded;
+		if (CoverService::Decode(*entry.image, 64, decoded, 512))
+		{
+			badge.texture = m_renderer->CreateTexture(decoded.width, decoded.height, VK_FORMAT_R8G8B8A8_UNORM, decoded.rgba.data());
+			if (badge.texture)
+				badge.set = m_renderer->AllocTextureSet(badge.texture, badge.texture, badge.texture);
+		}
+		break;
+	}
+}
+void App::BuildGameAchievements(std::vector<UiVertex>& ui, float x, float y, float width, float height, float k)
+{
+	const uint32_t white = Rgba(1, 1, 1), muted = Rgba(0.7f, 0.7f, 0.8f), green = Rgba(0.45f, 1, 0.65f);
+	std::string message;
+	if (m_sheet_global || m_games.empty())
+		message = "Select This game to view its achievements.";
+	else if (!m_cfg.game_achievements.state)
+		message = "Achievement browser is unavailable.";
+	else if (m_game_achievements.path != m_games[static_cast<size_t>(m_selected)].path)
+		message = "Finishing the previous request. Press Triangle to load this game.";
+	else if (m_game_achievements.entries.empty())
+		message = m_game_achievements.message;
+	if (!message.empty())
+	{
+		float baseline = y + 80 * k;
+		for (const auto& line : Wrap(*m_fonts, message, 36 * k, width, 4))
+		{
+			m_fonts->AddText(ui, line.c_str(), x, baseline, 36 * k, muted);
+			baseline += 48 * k;
+		}
+		return;
+	}
+	unsigned unlocked = 0, points = 0, earned = 0;
+	for (const auto& entry : m_game_achievements.entries)
+	{
+		points += entry.points;
+		if (entry.unlocked)
+		{
+			++unlocked;
+			earned += entry.points;
+		}
+	}
+	const std::string summary = std::to_string(unlocked) + " / " + std::to_string(m_game_achievements.entries.size()) +
+		                        " unlocked   |   " + std::to_string(earned) + " / " + std::to_string(points) + " points";
+	m_fonts->AddText(ui, Fit(*m_fonts, m_game_achievements.title, 34 * k, width).c_str(), x, y + 38 * k, 34 * k, white);
+	m_fonts->AddText(ui, summary.c_str(), x, y + 85 * k, 29 * k, green);
+	constexpr float row_height = 142;
+	const int visible = std::max(1, static_cast<int>((height / k - 190) / row_height));
+	const int count = static_cast<int>(m_game_achievements.entries.size());
+	const int first = std::clamp(m_achievement_row - visible / 2, 0, std::max(0, count - visible));
+	for (int i = first; i < std::min(count, first + visible); ++i)
+	{
+		const auto& entry = m_game_achievements.entries[static_cast<size_t>(i)];
+		const float top = y + (115 + (i - first) * row_height) * k;
+		Fonts::AddRoundedRect(ui, x - 12 * k, top, width + 24 * k, 130 * k, 18 * k,
+			i == m_achievement_row ? Rgba(1, 1, 1, 0.12f) : Rgba(1, 1, 1, 0.035f));
+		const auto& badge = m_achievement_badges[static_cast<size_t>(i)];
+		if (badge.set)
+		{
+			const uint32_t first_vertex = static_cast<uint32_t>(ui.size());
+			const float bx = x + 10 * k, by = top + 17 * k, size = 96 * k;
+			const UiVertex a{bx, by, 0, 0, white, 0, 0, 0, 2}, b{bx + size, by, 1, 0, white, 0, 0, 0, 2};
+			const UiVertex c{bx + size, by + size, 1, 1, white, 0, 0, 0, 2}, d{bx, by + size, 0, 1, white, 0, 0, 0, 2};
+			ui.insert(ui.end(), {a, b, c, a, c, d});
+			m_achievement_images.push_back({first_vertex, 6, badge.set});
+		}
+		else
+		{
+			Fonts::AddRoundedRect(ui, x + 10 * k, top + 17 * k, 96 * k, 96 * k, 12 * k, Rgba(1, 1, 1, 0.1f));
+			m_fonts->AddText(ui, "RA", x + 58 * k, top + 80 * k, 28 * k, muted, 0.2f, Fonts::Center);
+		}
+		const float tx = x + 125 * k, room = width - 135 * k;
+		const std::string status = (entry.unlocked ? "Unlocked" : "Locked") + std::string("  |  ") +
+			                       std::to_string(entry.points) + " points";
+		const float status_width = m_fonts->Measure(status.c_str(), 25 * k);
+		m_fonts->AddText(ui, Fit(*m_fonts, entry.title, 31 * k, room - status_width - 25 * k).c_str(), tx, top + 40 * k, 31 * k, white);
+		m_fonts->AddText(ui, status.c_str(), x + width, top + 40 * k, 25 * k, entry.unlocked ? green : muted, 0.2f, Fonts::Right);
+		float baseline = top + 78 * k;
+		for (const auto& line : Wrap(*m_fonts, entry.description, 26 * k, room, 2))
+		{
+			m_fonts->AddText(ui, line.c_str(), tx, baseline, 26 * k, muted);
+			baseline += 32 * k;
+		}
+	}
+	const std::string footer = std::to_string(count ? m_achievement_row + 1 : 0) + " / " + std::to_string(count) +
+		                       "   |   " + (m_game_achievements.busy ? "Loading images..." : "Triangle: refresh");
+	m_fonts->AddText(ui, footer.c_str(), x, y + height - 10 * k, 26 * k, muted);
+}
+
 void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint32_t accent)
 {
 	const float e = Smoothstep(0.0f, 1.0f, m_sheet_anim);
@@ -1026,6 +1214,7 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 	{
 		const float py = y + 184 * k, ph = 60 * k; // 56 px between the title's descenders and the pills
 		const bool controls = m_sheet.tab() == kTabControls;
+		const bool achievements = m_sheet.tab() == kTabAchievements;
 		const char* const this_label = Tr(Str::SheetThisGame);
 		const char* const all_label = Tr(Str::SheetAllGames);
 		const char* const settings_label = Tr(Str::HintSettings);
@@ -1035,7 +1224,8 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 			const float ppx = 30 * k * f, tpx = 34 * k * f, kpx = 24 * k * f;
 			pills_w = m_fonts->Measure(this_label, ppx) + m_fonts->Measure(all_label, ppx) + 2 * 50 * k * f + 14 * k * f;
 			tabs_w = m_fonts->Measure("L2", kpx) + m_fonts->Measure("R2", kpx) + 2 * 20 * k * f + 2 * 22 * k * f + 40 * k * f +
-			         m_fonts->Measure(settings_label, tpx) + m_fonts->Measure(controls_label, tpx);
+				     m_fonts->Measure(settings_label, tpx) + m_fonts->Measure(controls_label, tpx) +
+				     m_fonts->Measure("Achievements", tpx) + 28 * k * f;
 		};
 		widths();
 		while (f > 0.76f && pills_w + tabs_w + 40 * k > inner)
@@ -1074,13 +1264,22 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		};
 		key_pill("L2");
 		tx += 22 * k * f;
-		tab(settings_label, !controls);
+		tab(settings_label, !controls && !achievements);
 		tx += 40 * k * f;
 		tab(controls_label, controls);
+		tx += 28 * k * f;
+		tab("Achievements", achievements);
 		tx += 22 * k * f;
 		key_pill("R2");
 	}
 	Fonts::AddRoundedRect(ui, cx, y + 280 * k, inner, 2 * k, 0, Rgba(1, 1, 1, 0.12f));
+
+	if (m_sheet.tab() == kTabAchievements)
+	{
+		BuildGameAchievements(ui, cx, y + 310 * k, inner, sh - 370 * k, k);
+		FadeRange(ui, begin, ui.size(), e);
+		return;
+	}
 
 	// The rows: a list that scrolls to keep the focused row in view.
 	const auto& rows = m_sheet.rows();
