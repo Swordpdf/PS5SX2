@@ -43,11 +43,13 @@ std::optional<float> WindowInfo::QueryRefreshRateForWindow(const WindowInfo& wi)
   return std::nullopt;
 }
 
+#ifndef PS5SX2_ACHIEVEMENTS
 std::unique_ptr<HTTPDownloader> HTTPDownloader::Create(std::string user_agent)
 {
   (void)user_agent;
   return nullptr;
 }
+#endif
 
 // HostSys.cpp (excluded: needs cpuinfo lib) replacements.
 const CPUInfo& GetCPUInfo()

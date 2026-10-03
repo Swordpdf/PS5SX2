@@ -119,6 +119,7 @@ void App::SetWebUrl(const std::string& url, const std::string& shown)
 
 void App::Shutdown()
 {
+	m_account.Close();
 	for (Slot& s : m_slots)
 	{
 		m_renderer->FreeTextureSet(s.set);
@@ -198,6 +199,7 @@ void App::PollCovers()
 void App::Update(double dt, const Input& in)
 {
 	m_time += dt;
+	m_account.Poll(m_cfg.achievements);
 	const float fdt = static_cast<float>(std::min(dt, 0.1));
 
 	// vk-285-114: the options sheet slides in and out; while it is open it has the buttons.
@@ -213,6 +215,11 @@ void App::Update(double dt, const Input& in)
 	{
 		if (m_time - m_launch_time > 0.6)
 			m_done = true;
+	}
+	else if (m_account.open)
+	{
+		UpdateAccount(in);
+		m_prev = in;
 	}
 	else if (m_sheet_open)
 	{
@@ -267,6 +274,11 @@ void App::Update(double dt, const Input& in)
 			{
 				OpenSheet(m_games.empty());
 				Sound(Sfx::Move, 0.3f);
+			}
+			else if (in.triangle && !m_prev.triangle && m_cfg.achievements.state && m_sheet_anim < 0.05f)
+			{
+				m_account.Open();
+				m_held = 0;
 			}
 		}
 		m_prev = in;
@@ -450,6 +462,12 @@ void App::Build(FrameDesc& f, const std::string& clock)
 	}
 	if (!clock.empty())
 		m_fonts->AddText(ui, clock.c_str(), W - margin, 150.0f * k, 58.0f * k, white, 0.2f, Fonts::Right);
+	if (m_cfg.achievements.state)
+	{
+		std::string label = "RetroAchievements - ";
+		label += m_account.account.saved ? m_account.account.username : "Sign in";
+		m_fonts->AddText(ui, label.c_str(), margin, 290.0f * k, 34.0f * k, dim);
+	}
 
 	// The settings page's QR tile, bottom right (vk-285-50). The code is dark on a light tile, as
 	// cameras expect; neighbouring dark modules are merged into runs and grown by a pixel so the
@@ -594,6 +612,8 @@ void App::Build(FrameDesc& f, const std::string& clock)
 			hint("#L1", "#R1", Tr(Str::HintJump));
 		}
 		hint(icon::Square, nullptr, Tr(Str::HintSettings)); // vk-285-114
+		if (m_cfg.achievements.state)
+			hint(icon::Triangle, nullptr, "RetroAchievements");
 	}
 
 	std::string status = m_covers ? m_covers->Status() : std::string();
@@ -634,6 +654,66 @@ void App::Build(FrameDesc& f, const std::string& clock)
 			m_fonts->AddText(ui, m_cfg.test_note.c_str(), W * 0.5f, note_base, note_px, Rgba(1, 1, 1, 0.75f), 0.5f, Fonts::Center);
 		}
 	}
+	if (m_account.open)
+		BuildAccount(ui, W, H, k);
+}
+
+void App::UpdateAccount(const Input& in)
+{
+	auto pressed = [](bool now, bool before) { return now && !before; };
+	m_account.Move(pressed(in.right, m_prev.right) - pressed(in.left, m_prev.left),
+		pressed(in.down, m_prev.down) - pressed(in.up, m_prev.up));
+	if (pressed(in.circle, m_prev.circle))
+		m_account.Back();
+	else if (pressed(in.triangle, m_prev.triangle))
+		m_account.Erase();
+	else if (pressed(in.square, m_prev.square))
+		m_account.TogglePasswordVisibility();
+	else if (pressed(in.cross, m_prev.cross))
+		m_account.Accept(m_cfg.achievements);
+}
+
+void App::BuildAccount(std::vector<UiVertex>& ui, float W, float H, float k)
+{
+	Fonts::AddRoundedRect(ui, 0, 0, W, H, 0, Rgba(0, 0, 0, 0.85f));
+	const float left = W * 0.5f - 740 * k;
+	const uint32_t white = Rgba(1, 1, 1), dim = Rgba(0.75f, 0.75f, 0.85f);
+	m_fonts->AddText(ui, "RetroAchievements", left, 380 * k, 64 * k, white);
+	const char* state = m_account.account.busy          ? "Signing in..." :
+		                m_account.account.authenticated ? "Signed in" :
+		                m_account.account.saved         ? "Account saved - reconnects when a game starts" :
+		                                                  "Sign in";
+	m_fonts->AddText(ui, state, left, 455 * k, 36 * k, dim);
+	auto field_text = [](const std::string& value) {
+		return value.size() > 48 ? "..." + value.substr(value.size() - 48) : value;
+	};
+	const std::string labels[] = {"Username: " + field_text(m_account.username),
+		"Password: " + field_text(m_account.show_password ? m_account.password : std::string(m_account.password.size(), '*')),
+		"Sign in", "Sign out"};
+	for (int i = 0; i < 4; i++)
+	{
+		const float y = (520 + 100 * i) * k;
+		Fonts::AddRoundedRect(ui, left, y, 1480 * k, 82 * k, 12 * k,
+			Rgba(0.35f, 0.25f, 0.6f, i == m_account.row ? 0.95f : 0.35f));
+		const std::string label = labels[i].size() > 64 ? labels[i].substr(0, 61) + "..." : labels[i];
+		m_fonts->AddText(ui, label.c_str(), left + 28 * k, y + 56 * k, 38 * k, white);
+	}
+	if (!m_account.account.message.empty())
+		m_fonts->AddText(ui, m_account.account.message.c_str(), left, 970 * k, 28 * k, dim);
+	if (m_account.editing)
+	{
+		for (int i = 0; i < AchievementAccountPanel::KeyCount; i++)
+		{
+			const float x = left + (i % AchievementAccountPanel::Columns) * 123 * k;
+			const float y = (1020 + (i / AchievementAccountPanel::Columns) * 82) * k;
+			Fonts::AddRoundedRect(ui, x, y, 115 * k, 74 * k, 10 * k,
+				Rgba(0.4f, 0.3f, 0.65f, i == m_account.key ? 1.0f : 0.3f));
+			const char text[] = {AchievementAccountPanel::Keys[i], '\0'};
+			m_fonts->AddText(ui, text[0] == ' ' ? "SP" : text, x + 57 * k, y + 52 * k, 42 * k, white, 0, Fonts::Center);
+		}
+	}
+	m_fonts->AddText(ui, m_account.editing ? "D-pad: choose key   X: type   Triangle: erase   Circle: done" : "D-pad: choose field   X: select   Circle: back", left, 1770 * k, 34 * k, dim);
+	m_fonts->AddText(ui, m_account.show_password ? "Square: hide password" : "Square: show password", left, 1840 * k, 34 * k, dim);
 }
 
 // ---- vk-285-114: the options sheet ---------------------------------------------------------------------------------
@@ -643,90 +723,90 @@ void App::Build(FrameDesc& f, const std::string& clock)
 
 namespace
 {
-// `text` in lines of at most `width` pixels at `px`, at most `max_lines` (the last one ends in an ellipsis when cut).
-std::vector<std::string> Wrap(const Fonts& fonts, const std::string& text, float px, float width, int max_lines)
-{
-	std::vector<std::string> lines;
-	std::string line, word;
-	auto flush_word = [&]() {
-		if (word.empty())
-			return;
-		const std::string tryline = line.empty() ? word : line + " " + word;
-		if (!line.empty() && fonts.Measure(tryline.c_str(), px) > width)
-		{
-			lines.push_back(line);
-			line = word;
-		}
-		else
-			line = tryline;
-		word.clear();
-	};
-	for (char c : text)
+	// `text` in lines of at most `width` pixels at `px`, at most `max_lines` (the last one ends in an ellipsis when cut).
+	std::vector<std::string> Wrap(const Fonts& fonts, const std::string& text, float px, float width, int max_lines)
 	{
-		if (c == ' ' || c == '\n')
-		{
-			flush_word();
-			if (c == '\n' && !line.empty())
+		std::vector<std::string> lines;
+		std::string line, word;
+		auto flush_word = [&]() {
+			if (word.empty())
+				return;
+			const std::string tryline = line.empty() ? word : line + " " + word;
+			if (!line.empty() && fonts.Measure(tryline.c_str(), px) > width)
 			{
 				lines.push_back(line);
-				line.clear();
+				line = word;
 			}
-		}
-		else
-			word += c;
-	}
-	flush_word();
-	if (!line.empty())
-		lines.push_back(line);
-	if (static_cast<int>(lines.size()) > max_lines)
-	{
-		lines.resize(static_cast<size_t>(max_lines));
-		std::string& last = lines.back();
-		while (!last.empty() && fonts.Measure((last + "\xE2\x80\xA6").c_str(), px) > width)
+			else
+				line = tryline;
+			word.clear();
+		};
+		for (char c : text)
 		{
-			// Whole UTF-8 characters only (the summaries have middle dots).
-			while (last.size() > 1 && (static_cast<unsigned char>(last.back()) & 0xC0) == 0x80)
-				last.pop_back();
-			last.pop_back();
+			if (c == ' ' || c == '\n')
+			{
+				flush_word();
+				if (c == '\n' && !line.empty())
+				{
+					lines.push_back(line);
+					line.clear();
+				}
+			}
+			else
+				word += c;
 		}
-		last += "\xE2\x80\xA6";
+		flush_word();
+		if (!line.empty())
+			lines.push_back(line);
+		if (static_cast<int>(lines.size()) > max_lines)
+		{
+			lines.resize(static_cast<size_t>(max_lines));
+			std::string& last = lines.back();
+			while (!last.empty() && fonts.Measure((last + "\xE2\x80\xA6").c_str(), px) > width)
+			{
+				// Whole UTF-8 characters only (the summaries have middle dots).
+				while (last.size() > 1 && (static_cast<unsigned char>(last.back()) & 0xC0) == 0x80)
+					last.pop_back();
+				last.pop_back();
+			}
+			last += "\xE2\x80\xA6";
+		}
+		return lines;
 	}
-	return lines;
-}
 
-// The shortest string with `text`'s start that fits `width` (an ellipsis marks the cut).
-std::string Fit(const Fonts& fonts, std::string text, float px, float width)
-{
-	if (fonts.Measure(text.c_str(), px) <= width)
-		return text;
-	while (!text.empty() && fonts.Measure((text + "\xE2\x80\xA6").c_str(), px) > width)
+	// The shortest string with `text`'s start that fits `width` (an ellipsis marks the cut).
+	std::string Fit(const Fonts& fonts, std::string text, float px, float width)
 	{
-		text.pop_back();
-		while (!text.empty() && (static_cast<unsigned char>(text.back()) & 0xC0) == 0x80) // a whole UTF-8 character
+		if (fonts.Measure(text.c_str(), px) <= width)
+			return text;
+		while (!text.empty() && fonts.Measure((text + "\xE2\x80\xA6").c_str(), px) > width)
+		{
 			text.pop_back();
-		if (!text.empty() && (static_cast<unsigned char>(text.back()) & 0xC0) == 0xC0)
-			text.pop_back();
+			while (!text.empty() && (static_cast<unsigned char>(text.back()) & 0xC0) == 0x80) // a whole UTF-8 character
+				text.pop_back();
+			if (!text.empty() && (static_cast<unsigned char>(text.back()) & 0xC0) == 0xC0)
+				text.pop_back();
+		}
+		return text + "\xE2\x80\xA6";
 	}
-	return text + "\xE2\x80\xA6";
-}
 
-// vk-285-116: "<symbol>  Cross" (fe_options.cpp Sym: a PromptFont glyph, two spaces, the name) into its two parts.
-bool SplitSymbol(const std::string& s, std::string& glyph, std::string& name)
-{
-	if (s.size() < 6 || static_cast<unsigned char>(s[0]) != 0xE2 || s.compare(3, 2, "  ") != 0)
-		return false;
-	glyph = s.substr(0, 3);
-	name = s.substr(5);
-	return true;
-}
-// The symbol's size against the text's, and how far its baseline drops (of the text's size) to sit centred on the text.
-constexpr float kSymbolScale = 1.35f, kSymbolDrop = 0.12f;
+	// vk-285-116: "<symbol>  Cross" (fe_options.cpp Sym: a PromptFont glyph, two spaces, the name) into its two parts.
+	bool SplitSymbol(const std::string& s, std::string& glyph, std::string& name)
+	{
+		if (s.size() < 6 || static_cast<unsigned char>(s[0]) != 0xE2 || s.compare(3, 2, "  ") != 0)
+			return false;
+		glyph = s.substr(0, 3);
+		name = s.substr(5);
+		return true;
+	}
+	// The symbol's size against the text's, and how far its baseline drops (of the text's size) to sit centred on the text.
+	constexpr float kSymbolScale = 1.35f, kSymbolDrop = 0.12f;
 
-// The sheet's measures, in 2160-line pixels (scaled by k when drawn).
-constexpr float kSheetW = 1260.0f, kSheetTop = 206.0f, kSheetBottomGap = 222.0f;
-constexpr float kSheetListTop = 308.0f;  // from the sheet's top (vk-285-117: the top is one line shorter)
-constexpr float kSheetHelpH = 352.0f;    // the help box at the bottom
-constexpr float kRowH = 94.0f, kHeaderH = 76.0f;
+	// The sheet's measures, in 2160-line pixels (scaled by k when drawn).
+	constexpr float kSheetW = 1260.0f, kSheetTop = 206.0f, kSheetBottomGap = 222.0f;
+	constexpr float kSheetListTop = 308.0f; // from the sheet's top (vk-285-117: the top is one line shorter)
+	constexpr float kSheetHelpH = 352.0f; // the help box at the bottom
+	constexpr float kRowH = 94.0f, kHeaderH = 76.0f;
 } // namespace
 
 void App::OpenSheet(bool global)

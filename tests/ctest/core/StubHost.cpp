@@ -15,13 +15,26 @@
 #include <atomic>
 #include <string>
 #include "common/ProgressCallback.h"
+#ifdef PS5SX2_ACHIEVEMENTS
+#include "ps5/coreorbis/orbis-shims/ProsperoAchievements.h"
+#endif
 
 void Host::CommitBaseSettingChanges()
 {
+#ifdef PS5SX2_ACHIEVEMENTS
+	OrbisAchievementsCommit();
+#endif
 }
 
 void Host::LoadSettings(SettingsInterface& si, std::unique_lock<std::mutex>& lock)
 {
+#ifdef PS5SX2_ACHIEVEMENTS
+	// LoadCoreSettings already ran; enforce the initial port's supported modes.
+	EmuConfig.Achievements.HardcoreMode = false;
+	EmuConfig.Achievements.Overlays = false;
+	EmuConfig.Achievements.LBOverlays = false;
+	EmuConfig.Achievements.SoundEffects = false;
+#endif
 }
 
 void Host::CheckForSettingsChanges(const Pcsx2Config& old_config)
@@ -307,10 +320,16 @@ std::string Host::TranslatePluralToString(const char* context, const char* msg, 
 
 void Host::OnAchievementsLoginRequested(Achievements::LoginRequestReason reason)
 {
+#ifdef PS5SX2_ACHIEVEMENTS
+	OrbisAchievementsLoginRequired();
+#endif
 }
 
 void Host::OnAchievementsLoginSuccess(const char* username, u32 points, u32 sc_points, u32 unread_messages)
 {
+#ifdef PS5SX2_ACHIEVEMENTS
+	OrbisAchievementsLoginSuccess(username);
+#endif
 }
 
 void Host::OnAchievementsRefreshed()

@@ -68,7 +68,7 @@ CXXFLAGS := -Wall -g -O3 -DNDEBUG -std=c++20 -march=znver2 -msse4.1 -mavx2 -mno-
   -I$(RYML)/src \
   -I$(RYML)/ext/c4core.src \
   -I$(PCSX2)/3rdparty/vulkan/include -I$(SHADERC_INCLUDE) \
-  -DENABLE_VULKAN=1 -DORBIS_VULKAN=1
+  -DENABLE_VULKAN=1 -DORBIS_VULKAN=1 -DPS5SX2_ACHIEVEMENTS=1
 
 RYML_SRCS := $(RYML)/src/c4/yml/common.cpp \
   $(RYML)/src/c4/yml/emit_buf.cpp \
@@ -312,6 +312,7 @@ SHIM_SRCS := ./orbis-shims/ProsperoInput.cpp ./orbis-shims/ProsperoCDVD.cpp \
   ./orbis-shims/ps5_shaderc.cpp ./orbis-shims/orbis_vk.cpp ./orbis-shims/orbis_eeprof.cpp \
   ./orbis-shims/game_select.cpp ./orbis-shims/orbis_paths.cpp ./orbis-shims/orbis_memprobe.cpp \
   ./orbis-shims/ProsperoKbdMouse.cpp ./orbis-shims/ProsperoNotify.cpp \
+  ./orbis-shims/ProsperoHTTPDownloader.cpp ./orbis-shims/ProsperoAchievements.cpp \
   ./orbis-shims/orbis_gs_shaders.cpp
 
 SHIM_ASM := ./orbis-shims/ProsperoTLS.S

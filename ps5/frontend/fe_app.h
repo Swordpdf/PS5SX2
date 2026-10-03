@@ -7,6 +7,7 @@
 #pragma once
 
 #include "fe_covers.h"
+#include "fe_achievements.h"
 #include "fe_games.h"
 #include "fe_options.h"
 #include "fe_renderer.h"
@@ -39,6 +40,7 @@ struct AppConfig
 	// after its settings changed (fe_games.cpp ReadBadges; null: the badges stay as they were).
 	OptionsPaths options;
 	std::function<void(GameInfo&)> refresh_game;
+	AchievementAccountService achievements;
 };
 
 class App
@@ -89,6 +91,8 @@ private:
 	void BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint32_t accent);
 	void RefreshBadges();
 	void PollCovers();
+	void UpdateAccount(const Input& in);
+	void BuildAccount(std::vector<UiVertex>& ui, float W, float H, float k);
 	void Pose(float d, float t, Mat4& model, float& brightness) const;
 
 	Renderer* m_renderer = nullptr;
@@ -134,5 +138,6 @@ private:
 	double m_launch_time = 0;
 	bool m_done = false;
 	Texture* m_atlas = nullptr;
+	AchievementAccountPanel m_account;
 };
 } // namespace fe

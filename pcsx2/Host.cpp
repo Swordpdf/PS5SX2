@@ -157,7 +157,11 @@ void Host::ReportFormattedErrorAsync(const std::string_view title, const char* f
 
 std::string Host::GetHTTPUserAgent()
 {
+#ifdef PS5SX2_ACHIEVEMENTS
+	return "PS5SX2/1.0 (PS5)";
+#else
 	return fmt::format("PCSX2 {} ({})", BuildVersion::GitRev, GetOSVersionString());
+#endif
 }
 
 std::unique_lock<std::mutex> Host::GetSettingsLock()

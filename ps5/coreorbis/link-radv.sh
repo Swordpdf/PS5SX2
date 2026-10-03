@@ -78,7 +78,7 @@ mkdir -p "$OUT/build/obj" "$OUT/app/sce_sys" "$OUT/app/sce_module" "$OUT/app/ass
 sh "$NATIVE/tooling/prospero-clang18" \
   -std=c++20 -O2 -march=znver2 -msse4.1 -mavx2 -mno-vzeroupper -D_M_X86=1 -D__POSIX__=1 \
   -DOVERRIDE_HOST_PAGE_SIZE=0x4000 -DOVERRIDE_HOST_CACHE_LINE_SIZE=64 \
-  -DORBIS_VULKAN=1 -DORBIS_BUILD_TAG="\"$TAG\"" -DORBIS_TEST_BUILD="$TEST_BUILD" \
+  -DORBIS_VULKAN=1 -DPS5SX2_ACHIEVEMENTS=1 -DORBIS_BUILD_TAG="\"$TAG\"" -DORBIS_TEST_BUILD="$TEST_BUILD" \
   -DORBIS_DRIVER_REV="\"$DRIVER_REV\"" -DORBIS_PCSX2_REV="\"$PCSX2_REV\"" \
   -Wno-macro-redefined -Wno-unused-function -include common/Threading.h \
   -I"$here/include-orbis" -I"$PCSX2" -I"$PCSX2/pcsx2" \

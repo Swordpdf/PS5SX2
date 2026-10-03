@@ -34,6 +34,9 @@
 extern volatile unsigned long long g_orbis_map_addr;
 #include "vtlb.h"
 #include "Host.h"
+#ifdef PS5SX2_ACHIEVEMENTS
+#include "orbis-shims/ProsperoAchievements.h"
+#endif
 #include "common/Error.h"
 #include "common/HostSys.h"
 #include "common/CrashHandler.h"
@@ -2194,6 +2197,9 @@ int main()
   // screen of their own, before PCSX2 opens the display. Ratchet & Clank when there are none.
   // vk-285-40: after the driver's environment above, because the frontend runs on the same driver.
   extern std::string orbis_select_game(const char* games_dir, const char* top_dir, const char* build_tag);
+#ifdef PS5SX2_ACHIEVEMENTS
+  OrbisAchievementsInit(s_base_si, "/data/PCSX2");
+#endif
   ps5::debug::set_line(2, "game selector...");
 #ifdef ORBIS_VULKAN
   // vk-285-40: the frontend (../frontend/fe_ps5.cpp): the disc images as PS2 cases on a cover-flow
@@ -2221,6 +2227,9 @@ int main()
   orbis_hide_splash();
 #endif
   orbis_boot_log_release("after the shelf"); // vk-285-113
+#ifdef PS5SX2_ACHIEVEMENTS
+  OrbisAchievementsWaitForLogin();
+#endif
   if (!frontend_ran)
     s_game_path = orbis_select_game(OrbisDir("games").c_str(), "/data/PCSX2", ORBIS_BUILD_TAG); // vk-285-33: games/ too
   if (s_game_path.empty())
@@ -2281,7 +2290,9 @@ int main()
 
   {
     std::unique_lock<std::mutex> lock = Host::GetSettingsLock();
+#ifndef PS5SX2_ACHIEVEMENTS
     Host::Internal::SetBaseSettingsLayer(&s_base_si);
+#endif
     Host::Internal::SetGameSettingsLayer(&s_game_si, lock);
     Host::Internal::SetInputSettingsLayer(&s_input_si, lock);
   }
@@ -2339,6 +2350,9 @@ int main()
   }
   s_base_pre_gsini = s_base_si; // eerec-285
   orbis_apply_gs_ini(s_base_si);
+#ifdef PS5SX2_ACHIEVEMENTS
+  OrbisAchievementsConfigure(s_base_si);
+#endif
   orbis_usb_kbm_for_mode(s_base_si); // vk-285-113
   orbis_vu1_speed_from(s_base_si); // vk-285-75
   orbis_ps5opts_from(s_base_si); // vk-285-113
@@ -2365,9 +2379,10 @@ int main()
   VMBootParameters params;
   params.filename = s_game_path; // vk-285-30
 
-  // Orbis: no ImGui backend on the PS5 - disable the Achievements host
-  // (its ImGui usage faults without a context).
+  // The PS5 account service uses native notifications instead of ImGui overlays.
+#ifndef PS5SX2_ACHIEVEMENTS
   EmuConfig.Achievements.Enabled = false;
+#endif
   GSConfig.Renderer = (g_use_gl_renderer && !g_sw_renderer) ? ORBIS_GPU_RENDERER : GSRendererType::SW;
   GSConfig.SWExtraThreads = g_sw_renderer ? 4 : 2;
   // EE+IOP+VU recompilers (JIT memory + emitter >4GB fixes in).
@@ -2380,7 +2395,11 @@ int main()
   EmuConfig.Speedhacks.vu1Instant = !g_no_speedhacks;
   EmuConfig.Speedhacks.vuFlagHack = !g_no_speedhacks;
   EmuConfig.Speedhacks.vuThread = false;
+#ifdef PS5SX2_ACHIEVEMENTS
+  printf("[boot] achievements available (softcore, native notifications)\n");
+#else
   printf("[boot] achievements disabled (no ImGui backend)\n");
+#endif
   fflush(stdout);
   printf("[boot] initializing...\n");
   fflush(stdout);

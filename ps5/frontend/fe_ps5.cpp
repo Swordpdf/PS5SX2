@@ -17,6 +17,9 @@
 #include "fe_text.h"
 #include "fe_vk.h"
 #include "fe_web.h"
+#ifdef PS5SX2_ACHIEVEMENTS
+#include "ps5/coreorbis/orbis-shims/ProsperoAchievements.h"
+#endif
 #include "third_party/qrcodegen/qrcodegen.h" // vk-285-113: orbis_web_qr
 
 #include <algorithm>
@@ -1155,11 +1158,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	std::printf("[frontend] %zu disc image(s), %d on USB, scanned in %.0f ms\n", games.size(), on_usb, (Now() - t0) * 1000.0);
 	std::fflush(stdout);
 	WriteUsbList(paths.usb_list, games);
-	if (games.empty())
-	{
-		*ran = true;
-		return {};
-	}
+	// Keep the shelf available without games too, for settings and account sign-in.
 	const std::string last = ReadLastGame(paths.top_dir);
 	int preselect = 0;
 	for (size_t i = 0; i < games.size(); i++)
@@ -1237,6 +1236,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 
 	App app;
 	AppConfig acfg;
+#ifdef PS5SX2_ACHIEVEMENTS
+	acfg.achievements = OrbisAchievementsAccountService();
+#endif
 	acfg.build_tag = build_tag ? build_tag : "";
 	acfg.test_build = paths.test_build;   // test build 1: the TESTING watermark
 	acfg.build_label = paths.build_label;

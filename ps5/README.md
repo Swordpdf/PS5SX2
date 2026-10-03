@@ -34,7 +34,15 @@ Each path can also be set on its own: `RYML`, `PS5_PAYLOAD_SDK`, `GLSLANG`, `GLS
 
 The steps to recreate that folder from the stock SDK are still to be written down.
 
+Public dependency preparation and the remaining release-build blockers are
+recorded in [Preparing the PS5 build dependencies](docs/build-dependencies.md)
+(AI-assisted).
+
 ## Build
+
+The initial softcore RetroAchievements integration, its account screen and
+local checks are described in [RetroAchievements integration](docs/retroachievements.md)
+(AI-assisted). Console validation is still required.
 
 ```sh
 export PS5SX2_DEPS=/path/to/deps

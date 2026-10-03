@@ -302,6 +302,7 @@ int main(int argc, char** argv)
 	std::string data = "fe_host_data", out = "fe_host_shots", script, root;
 	uint32_t w = 1920, h = 1080;
 	int lang = 1; // English
+	bool achievements_preview = false;
 	std::vector<Step> steps;
 	{
 		const std::string self = argv[0];
@@ -322,6 +323,8 @@ int main(int argc, char** argv)
 			root = next();
 		else if (a == "--lang")
 			lang = std::atoi(next().c_str());
+		else if (a == "--achievements-preview")
+			achievements_preview = true;
 		else if (a == "--size")
 		{
 			const std::string s = next();
@@ -395,6 +398,19 @@ int main(int argc, char** argv)
 
 	App app;
 	AppConfig acfg;
+	AchievementAccountState preview_account;
+	preview_account.available = true;
+	if (achievements_preview)
+	{
+		// A local UI fixture. It never authenticates or stores the typed credentials.
+		acfg.achievements = {[&] { return preview_account; },
+			[&](const std::string& username, const std::string&) {
+				preview_account.username = username;
+				preview_account.saved = preview_account.authenticated = true;
+				return true;
+			},
+			[&] { preview_account = {}; }};
+	}
 	acfg.build_tag = "vk-285-114 (host)";
 	acfg.options = op;
 	acfg.refresh_game = [op](GameInfo& g) {

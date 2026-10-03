@@ -54,6 +54,16 @@
 
 namespace Achievements
 {
+	static bool CanShowNotifications()
+	{
+#ifdef PS5SX2_ACHIEVEMENTS
+		// Native notifications need no ImGui context or render backend.
+		return true;
+#else
+		return ImGuiManager::InitializeFullscreenUI();
+#endif
+	}
+
 	static constexpr u32 LEADERBOARD_NEARBY_ENTRIES_TO_FETCH = 10;
 	static constexpr u32 LEADERBOARD_ALL_FETCH_SIZE = 20;
 
@@ -538,9 +548,12 @@ bool Achievements::CreateClient(rc_client_t** client, std::unique_ptr<HTTPDownlo
 
 void Achievements::DestroyClient(rc_client_t** client, std::unique_ptr<HTTPDownloader>* http)
 {
-	(*http)->WaitForAllRequests();
+	// Client creation can fail before either resource exists. (AI-assisted)
+	if (*http)
+		(*http)->WaitForAllRequests();
 
-	rc_client_destroy(*client);
+	if (*client)
+		rc_client_destroy(*client);
 	*client = nullptr;
 
 	http->reset();
@@ -1161,7 +1174,7 @@ void Achievements::DisplayAchievementSummary()
 		}
 
 		MTGS::RunOnGSThread([title = std::move(title), summary = std::move(summary), icon = s_game_icon]() {
-			if (ImGuiManager::InitializeFullscreenUI())
+			if (CanShowNotifications())
 			{
 				ImGuiFullscreen::AddNotification(
 					"achievement_summary", ACHIEVEMENT_SUMMARY_NOTIFICATION_TIME, std::move(title), std::move(summary), std::move(icon));
@@ -1175,7 +1188,7 @@ void Achievements::DisplayHardcoreDeferredMessage()
 {
 	MTGS::RunOnGSThread([]() {
 		if (VMManager::HasValidVM() && EmuConfig.Achievements.HardcoreMode && !s_hardcore_mode &&
-			ImGuiManager::InitializeFullscreenUI())
+			CanShowNotifications())
 		{
 			Host::AddIconOSDMessage(
 				"hardcore_on_reset", ICON_PF_DUMBELL, TRANSLATE_STR("Achievements", "Hardcore mode will be enabled on system reset."),
@@ -1236,7 +1249,7 @@ void Achievements::HandleGameCompleteEvent(const rc_client_event_t* event)
 			TRANSLATE_PLURAL_STR("Achievements", "%n points", "Mastery popup", s_game_summary.points_unlocked));
 
 		MTGS::RunOnGSThread([title = std::move(title), message = std::move(message), icon = s_game_icon]() {
-			if (ImGuiManager::InitializeFullscreenUI())
+			if (CanShowNotifications())
 			{
 				ImGuiFullscreen::AddNotification(
 					"achievement_mastery", GAME_COMPLETE_NOTIFICATION_TIME, std::move(title), std::move(message), std::move(icon));
@@ -1263,7 +1276,7 @@ void Achievements::HandleSubsetCompleteEvent(const rc_client_event_t* event)
 		std::string badge_path = GetSubsetBadgePath(subset);
 
 		MTGS::RunOnGSThread([title = std::move(title), message = std::move(message), badge_path = std::move(badge_path)]() {
-			if (ImGuiManager::InitializeFullscreenUI())
+			if (CanShowNotifications())
 			{
 				ImGuiFullscreen::AddNotification(
 					"achievement_subset_mastery", GAME_COMPLETE_NOTIFICATION_TIME, std::move(title), std::move(message), std::move(badge_path));
@@ -1282,7 +1295,7 @@ void Achievements::HandleLeaderboardStartedEvent(const rc_client_event_t* event)
 		std::string message = TRANSLATE_STR("Achievements", "Leaderboard attempt started.");
 
 		MTGS::RunOnGSThread([title = std::move(title), message = std::move(message), icon = s_game_icon, id = event->leaderboard->id]() {
-			if (ImGuiManager::InitializeFullscreenUI())
+			if (CanShowNotifications())
 			{
 				ImGuiFullscreen::AddNotification(fmt::format("leaderboard_{}", id), LEADERBOARD_STARTED_NOTIFICATION_TIME, std::move(title),
 					std::move(message), std::move(icon));
@@ -1301,7 +1314,7 @@ void Achievements::HandleLeaderboardFailedEvent(const rc_client_event_t* event)
 		std::string message = TRANSLATE_STR("Achievements", "Leaderboard attempt failed.");
 
 		MTGS::RunOnGSThread([title = std::move(title), message = std::move(message), icon = s_game_icon, id = event->leaderboard->id]() {
-			if (ImGuiManager::InitializeFullscreenUI())
+			if (CanShowNotifications())
 			{
 				ImGuiFullscreen::AddNotification(fmt::format("leaderboard_{}", id), LEADERBOARD_FAILED_NOTIFICATION_TIME, std::move(title),
 					std::move(message), std::move(icon));
@@ -1330,7 +1343,7 @@ void Achievements::HandleLeaderboardSubmittedEvent(const rc_client_event_t* even
 				EmuConfig.Achievements.SpectatorMode ? std::string_view() : TRANSLATE_SV("Achievements", " (Submitting)"));
 
 		MTGS::RunOnGSThread([title = std::move(title), message = std::move(message), icon = s_game_icon, id = event->leaderboard->id]() {
-			if (ImGuiManager::InitializeFullscreenUI())
+			if (CanShowNotifications())
 			{
 				ImGuiFullscreen::AddNotification(fmt::format("leaderboard_{}", id), EmuConfig.Achievements.LeaderboardsDuration,
 					std::move(title), std::move(message), std::move(icon));
@@ -1361,7 +1374,7 @@ void Achievements::HandleLeaderboardScoreboardEvent(const rc_client_event_t* eve
 			event->leaderboard_scoreboard->new_rank, event->leaderboard_scoreboard->num_entries);
 
 		MTGS::RunOnGSThread([title = std::move(title), message = std::move(message), icon = s_game_icon, id = event->leaderboard->id]() {
-			if (ImGuiManager::InitializeFullscreenUI())
+			if (CanShowNotifications())
 			{
 				ImGuiFullscreen::AddNotification(fmt::format("leaderboard_{}", id), EmuConfig.Achievements.LeaderboardsDuration,
 					std::move(title), std::move(message), std::move(icon));
@@ -1488,7 +1501,7 @@ void Achievements::HandleServerDisconnectedEvent(const rc_client_event_t* event)
 	Console.Warning("Achievements: Server disconnected.");
 
 	MTGS::RunOnGSThread([]() {
-		if (ImGuiManager::InitializeFullscreenUI())
+		if (CanShowNotifications())
 		{
 			ImGuiFullscreen::AddNotification("achievements_disconnect", Host::OSD_ERROR_DURATION, TRANSLATE_STR("Achievements", "Achievements Disconnected"),
 				TRANSLATE_STR("Achievements", "An unlock request could not be completed. We will keep retrying to submit this request."), s_game_icon);
@@ -1501,7 +1514,7 @@ void Achievements::HandleServerReconnectedEvent(const rc_client_event_t* event)
 	Console.Warning("Achievements: Server reconnected.");
 
 	MTGS::RunOnGSThread([]() {
-		if (ImGuiManager::InitializeFullscreenUI())
+		if (CanShowNotifications())
 		{
 			ImGuiFullscreen::AddNotification("achievements_reconnect", Host::OSD_INFO_DURATION, TRANSLATE_STR("Achievements", "Achievements Reconnected"),
 				TRANSLATE_STR("Achievements", "All pending unlock requests have completed."), s_game_icon);
@@ -1606,7 +1619,7 @@ void Achievements::SetHardcoreMode(bool enabled, bool force_display_message)
 	if (VMManager::HasValidVM() && (HasActiveGame() || force_display_message))
 	{
 		MTGS::RunOnGSThread([enabled]() {
-			if (ImGuiManager::InitializeFullscreenUI())
+			if (CanShowNotifications())
 			{
 				Host::AddIconOSDMessage("hardcore_status", ICON_PF_DUMBELL,
 					enabled ? TRANSLATE_STR("Achievements", "Hardcore mode is now enabled.") :
@@ -1877,7 +1890,15 @@ void Achievements::ClientLoginWithPasswordCallback(int result, const char* error
 
 	SettingsInterface* secretsInterface = Host::Internal::GetSecretsSettingsLayer();
 	secretsInterface->SetStringValue("Achievements", "Token", user->token);
+#ifdef PS5SX2_ACHIEVEMENTS
+	if (!secretsInterface->Save(params->error))
+	{
+		params->result = false;
+		return;
+	}
+#else
 	secretsInterface->Save();
+#endif
 
 	ShowLoginSuccess(client);
 }
@@ -1922,7 +1943,7 @@ void Achievements::ShowLoginSuccess(const rc_client_t* client)
 			user->score_softcore, user->num_unread_messages);
 
 		MTGS::RunOnGSThread([title = std::move(title), summary = std::move(summary), badge_path = std::move(badge_path)]() {
-			if (ImGuiManager::InitializeFullscreenUI())
+			if (CanShowNotifications())
 			{
 				ImGuiFullscreen::AddNotification(
 					"achievements_login", LOGIN_NOTIFICATION_TIME, std::move(title), std::move(summary), std::move(badge_path));
