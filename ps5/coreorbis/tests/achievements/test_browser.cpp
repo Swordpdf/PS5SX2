@@ -1,6 +1,7 @@
 // Real rcheevos browser with synthetic discs and a fake HTTPS server (AI-assisted).
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ps5/coreorbis/orbis-shims/ProsperoAchievements.h"
+#include "ps5/frontend/fe_i18n.h"
 #include "ps5/frontend/fe_games.h"
 #include "common/HTTPDownloader.h"
 #include "common/MemorySettingsInterface.h"
@@ -133,6 +134,9 @@ std::unique_ptr<HTTPDownloader> HTTPDownloader::Create(std::string)
 int main(int argc, char** argv)
 {
 	assert(argc == 2);
+	// Translated UI labels must never change the credential section name (AI-assisted).
+	fe::SetLanguage(17, "");
+	assert(std::string(fe::Tr(fe::Str::Achievements)) == "Conquistas");
 	const std::string directory = argv[1], path = directory + "/synthetic.iso";
 	Disc(path);
 	std::string name;
@@ -144,6 +148,7 @@ int main(int argc, char** argv)
 	assert(service.load(path));
 	OrbisAchievementsWaitForBrowser();
 	assert(!service.state().busy && service.state().entries.empty());
+	assert(service.state().message == fe::Tr(fe::Str::AchievementShelfSignIn));
 	secrets.SetStringValue("Achievements", "Username", "fixture");
 	secrets.SetStringValue("Achievements", "Token", "fixture-token");
 	assert(service.load(path));

@@ -24,7 +24,7 @@ done
   -I"$root/3rdparty/fmt/include" -I"$root/3rdparty/fast_float/include" \
   -I"$root/3rdparty/libchdr/include" -I"$root/ps5/third_party/lz4" \
   "$here/test_browser.cpp" "$root/ps5/coreorbis/orbis-shims/ProsperoAchievementBrowser.cpp" \
-  "$root/ps5/frontend/fe_games.cpp" "$root/common/HTTPDownloader.cpp" \
+  "$root/ps5/frontend/fe_i18n.cpp" "$root/ps5/frontend/fe_games.cpp" "$root/common/HTTPDownloader.cpp" \
   "$root/common/MD5Digest.cpp" "$root/common/MemorySettingsInterface.cpp" \
   "$root/common/Timer.cpp" "$root/common/SmallString.cpp" "$root/common/StringUtil.cpp" \
   "$root/common/Error.cpp" "$root/3rdparty/fmt/src/format.cc" \

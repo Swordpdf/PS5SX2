@@ -1,6 +1,7 @@
 // Read-only shelf client. Never evaluates memory or submits unlocks (AI-assisted).
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ProsperoAchievements.h"
+#include "ps5/frontend/fe_i18n.h"
 #include "common/HTTPDownloader.h"
 #include "common/MD5Digest.h"
 #include "pcsx2/Host.h"
@@ -81,14 +82,14 @@ namespace
 			}
 			if (username.empty() || token.empty())
 			{
-				state.message = "Sign in to RetroAchievements from the game shelf.";
+				state.message = fe::Tr(fe::Str::AchievementShelfSignIn);
 				return;
 			}
 			std::string name;
 			std::vector<uint8_t> executable;
 			if (!fe::ReadAchievementExecutable(state.path, name, executable))
 			{
-				state.message = "Could not identify this disc's boot executable.";
+				state.message = fe::Tr(fe::Str::AchievementBootFailed);
 				return;
 			}
 			if (browser.cancel)
@@ -106,7 +107,7 @@ namespace
 			auto http = HTTPDownloader::Create(Host::GetHTTPUserAgent());
 			if (!http)
 			{
-				state.message = "Could not initialize the secure connection.";
+				state.message = fe::Tr(fe::Str::AchievementSecureFailed);
 				return;
 			}
 			http->SetTimeout(10);
@@ -121,7 +122,7 @@ namespace
 				deleter);
 			if (!client)
 			{
-				state.message = "Could not create the achievement browser.";
+				state.message = fe::Tr(fe::Str::AchievementCreateFailed);
 				return;
 			}
 			rc_client_set_userdata(client.get(), http.get());
@@ -133,7 +134,7 @@ namespace
 			std::fill(token.begin(), token.end(), '\0');
 			if (result != RC_OK)
 			{
-				state.message = "Could not connect. Check your connection or sign in again.";
+				state.message = fe::Tr(fe::Str::AchievementConnectFailed);
 				return;
 			}
 			if (browser.cancel)
@@ -143,13 +144,13 @@ namespace
 			http->WaitForAllRequests();
 			if (result != RC_OK)
 			{
-				state.message = "No achievement set found, or the service could not be reached.";
+				state.message = fe::Tr(fe::Str::AchievementSetFailed);
 				return;
 			}
 			if (browser.cancel)
 				return;
 			if (const auto* game = rc_client_get_game_info(client.get()))
-				state.title = game->title ? game->title : "Achievements";
+				state.title = game->title ? game->title : fe::Tr(fe::Str::Achievements);
 			auto list_deleter = [](rc_client_achievement_list_t* list) { rc_client_destroy_achievement_list(list); };
 			std::unique_ptr<rc_client_achievement_list_t, decltype(list_deleter)> list(
 				rc_client_create_achievement_list(client.get(), RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE,
@@ -157,7 +158,7 @@ namespace
 				list_deleter);
 			if (!list)
 			{
-				state.message = "Could not read the achievement list.";
+				state.message = fe::Tr(fe::Str::AchievementListFailed);
 				return;
 			}
 			// Spectator clients skip startsession and therefore don't receive unlocks.
@@ -166,7 +167,7 @@ namespace
 			const auto* user = rc_client_get_user_info(client.get());
 			if (!game || !user)
 			{
-				state.message = "Game or account data is unavailable.";
+				state.message = fe::Tr(fe::Str::AchievementAccountMissing);
 				return;
 			}
 			std::unordered_set<uint32_t> unlocked;
@@ -210,7 +211,7 @@ namespace
 			http->WaitForAllRequests();
 			if (!unlocks_ok)
 			{
-				state.message = "Could not retrieve unlocked achievements. Press Triangle to retry.";
+				state.message = fe::Tr(fe::Str::AchievementUnlockFailed);
 				return;
 			}
 			if (browser.cancel)
@@ -222,7 +223,7 @@ namespace
 				rc_client_create_subset_list(client.get()), subsets_deleter);
 			if (!subsets || !subsets->num_subsets)
 			{
-				state.message = "Could not read the main achievement set.";
+				state.message = fe::Tr(fe::Str::AchievementMainFailed);
 				return;
 			}
 			const uint32_t main_subset = subsets->subsets[0]->id;
@@ -253,7 +254,7 @@ namespace
 			std::printf("[achievements-browser] game %u: %zu achievements, %zu account unlock IDs\n",
 				game->id, state.entries.size(), unlocked.size());
 			std::fflush(stdout);
-			state.message = state.entries.empty() ? "This game has no published achievements." : "Loading badge images...";
+			state.message = state.entries.empty() ? fe::Tr(fe::Str::AchievementEmpty) : fe::Tr(fe::Str::AchievementImages);
 			Publish(state);
 			const std::string cache = browser.cache_directory;
 			mkdir(cache.c_str(), 0700);
@@ -300,7 +301,7 @@ namespace
 		work();
 		state.busy = false;
 		if (browser.cancel && state.entries.empty())
-			state.message = "Loading cancelled. Press Triangle to retry.";
+			state.message = fe::Tr(fe::Str::AchievementCancelled);
 		Publish(state);
 		return nullptr;
 	}
@@ -326,7 +327,7 @@ fe::GameAchievementsService OrbisAchievementsBrowserService(const std::string& c
 			fe::GameAchievementsState state;
 			state.path = path;
 			state.busy = true;
-			state.message = "Loading achievements...";
+			state.message = fe::Tr(fe::Str::AchievementLoading);
 			Publish(state);
 			pthread_attr_t attr;
 			pthread_attr_init(&attr);
@@ -336,7 +337,7 @@ fe::GameAchievementsService OrbisAchievementsBrowserService(const std::string& c
 			if (!b.started)
 			{
 				state.busy = false;
-				state.message = "Could not start the achievement browser.";
+				state.message = fe::Tr(fe::Str::AchievementStartFailed);
 				Publish(state);
 			}
 			return b.started;

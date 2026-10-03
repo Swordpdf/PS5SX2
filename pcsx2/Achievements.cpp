@@ -3,6 +3,7 @@
 
 #include "Achievements.h"
 #ifdef PS5SX2_ACHIEVEMENTS
+#include "ps5/frontend/fe_i18n.h"
 #include <chrono>
 #include <unordered_map>
 #endif
@@ -2442,19 +2443,19 @@ fe::GameAchievementsState Achievements::GetPS5GameAchievements()
 	fe::GameAchievementsState result;
 	if (!s_client)
 	{
-		result.message = "Sign in to RetroAchievements and start a game.";
+		result.message = fe::Tr(fe::Str::AchievementSignIn);
 		return result;
 	}
 	if (!rc_client_get_user_info(s_client))
 	{
-		result.message = "Connecting to RetroAchievements...";
+		result.message = fe::Tr(fe::Str::AchievementConnecting);
 		result.busy = true;
 		return result;
 	}
 	if (!HasActiveGame())
 	{
 		result.busy = s_load_game_request != nullptr;
-		result.message = result.busy ? "Loading achievements..." : "No achievement data available for this game.";
+		result.message = result.busy ? fe::Tr(fe::Str::AchievementLoading) : fe::Tr(fe::Str::AchievementNoData);
 		return result;
 	}
 	result.game_id = s_game_id;
@@ -2490,7 +2491,7 @@ fe::GameAchievementsState Achievements::GetPS5GameAchievements()
 	if (subsets)
 		rc_client_destroy_subset_list(subsets);
 	if (result.entries.empty())
-		result.message = "This game has no published achievements.";
+		result.message = fe::Tr(fe::Str::AchievementEmpty);
 	return result;
 }
 

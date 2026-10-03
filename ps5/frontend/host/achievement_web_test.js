@@ -24,6 +24,8 @@ class Element {
   set src(value) { this.url = value; imageQueue.push(this); }
 }
 const document = {
+  documentElement: {},
+  querySelector() { return this.getElementById("achievement-tab"); },
   getElementById(id) { if (!nodes.has(id)) nodes.set(id,new Element()); return nodes.get(id); },
   querySelectorAll(selector) { return selector === '[data-achievement-id]' ? renderedImages : filters; }
 };
@@ -33,12 +35,12 @@ const context = vm.createContext({ document, console, Date, setTimeout(fn) { tim
   api: async () => context.nextSnapshot, toast() {}, select(id) { context.selected = id; }
 });
 vm.runInContext(script.match(/^const \$ = .*$/m)[0] + '\n' + script.match(/^const esc = .*$/m)[0],context);
-vm.runInContext(script.slice(script.indexOf('async function refreshAchievements('), script.indexOf('function render() {')),context);
+vm.runInContext(script.slice(script.indexOf('const ACHIEVEMENT_ENGLISH = '), script.indexOf('function render() {')),context);
 const snapshot = { game_id: 1, playing: 'game.iso', title: '<script>unsafe title</script>', message: '', entries: [] };
 for (let i=1;i<=25;i++) snapshot.entries.push({ id:i,points:5,unlocked:i<=7,title:'Objective '+i,description:'Description <b>escaped</b>' });
 context.achievementData = snapshot;
 vm.runInContext('renderAchievements()',context);
-assert(nodes.get('settings').innerHTML.includes('7 / 25 unlocked'));
+assert(nodes.get('settings').innerHTML.includes('7 / 25 Unlocked'));
 assert(nodes.get('settings').innerHTML.includes('35 / 125 points'));
 assert(nodes.get('settings').innerHTML.includes('&lt;script&gt;'));
 assert(!nodes.get('settings').innerHTML.includes('<script>unsafe'));
@@ -66,7 +68,28 @@ nodes.get('achievement-playing').onclick(); assert.equal(context.selected,'game.
 context.data.id='game.iso'; context.nextSnapshot = {...snapshot, entries: snapshot.entries.map(e => ({...e,unlocked:true}))};
 (async () => {
   await vm.runInContext('refreshAchievements(true)',context);
-  assert(nodes.get('settings').innerHTML.includes('25 / 25 unlocked'));
+  assert(nodes.get('settings').innerHTML.includes('25 / 25 Unlocked'));
   assert.equal(context.achievementLoading,false);
+  context.achievementFilter = 'all';
+  context.state.language = 'pt-BR';
+  context.state.strings = {
+    'achievements.title': 'Conquistas', 'achievements.unlocked': 'Desbloqueadas',
+    'achievements.locked': 'Bloqueadas', 'achievements.all': 'Todas',
+    'achievements.status_unlocked': 'Desbloqueada', 'achievements.status_locked': 'Bloqueada',
+    'achievements.points': 'pontos', 'achievements.refresh': '<b>Atualizar</b>',
+    'achievements.previous': 'Anterior', 'achievements.next': 'Próxima'
+  };
+  vm.runInContext('applyAchievementLanguage(); renderAchievements()',context);
+  assert.equal(document.documentElement.lang,'pt-BR');
+  assert.equal(nodes.get('achievement-tab').textContent,'Conquistas');
+  assert(nodes.get('settings').innerHTML.includes('25 / 25 Desbloqueadas'));
+  assert(nodes.get('settings').innerHTML.includes('125 / 125 pontos'));
+  assert(nodes.get('settings').innerHTML.includes('Todas'));
+  assert(nodes.get('settings').innerHTML.includes('Desbloqueada · 5 pontos'));
+  assert(nodes.get('settings').innerHTML.includes('Anterior'));
+  assert(nodes.get('settings').innerHTML.includes('Próxima'));
+  assert(nodes.get('settings').innerHTML.includes('&lt;b&gt;Atualizar&lt;/b&gt;'));
+  assert(!nodes.get('settings').innerHTML.includes('<b>Atualizar</b>'));
+  assert.equal(vm.runInContext('achievementText("empty_filter")',context),'No achievements in this filter.');
   console.log('PASS: achievement UI escaping, totals, filters, pagination, image queue and live refresh');
 })().catch(error => { console.error(error); process.exitCode=1; });

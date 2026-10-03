@@ -1,6 +1,9 @@
 // In-game web API checks using a mutable runtime fixture (AI-assisted).
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../fe_web.h"
+#include "../fe_i18n.h"
+#include <fstream>
+#include <unordered_set>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -29,6 +32,26 @@ std::string Request(uint16_t port, const std::string& token, const std::string& 
 int main(int argc, char** argv)
 {
 	assert(argc == 2);
+	// Every supported language must have browser keys and preserve format contracts.
+	for (int language : {1, 2, 3, 20, 4, 5, 6, 7, 17, 0})
+	{
+		SetLanguage(language, "");
+		std::unordered_set<std::string> keys;
+		for (int i = static_cast<int>(Str::Achievements); i < static_cast<int>(Str::Count); ++i)
+		{
+			const auto id = static_cast<Str>(i);
+			assert(*Tr(id) && keys.insert(Key(id)).second);
+			assert(SameFormat(Tr(id), ""));
+		}
+	}
+	SetLanguage(0, "");
+	assert(std::string(LanguageCode()) == "en" && std::string(Tr(Str::Achievements)) == "Achievements");
+	std::ofstream overrides(std::string(argv[1]) + "/pt-BR.txt");
+	overrides << "achievements.refresh = Atualizar personalizado\n";
+	overrides.close();
+	SetLanguage(17, argv[1]);
+	assert(std::string(Tr(Str::Achievements)) == "Conquistas");
+	assert(std::string(Tr(Str::AchievementRefresh)) == "Atualizar personalizado");
 	std::atomic<bool> unlocked{false};
 	std::atomic<int> snapshot_calls{0}, image_calls{0};
 	WebConfig cfg;
@@ -61,8 +84,12 @@ int main(int argc, char** argv)
 	assert(Request(server.Port(), "wrong", "/api/achievements").find("401") != std::string::npos);
 	assert(snapshot_calls == 0);
 	auto response = Request(server.Port(), token, "/api/achievements");
-	assert(response.find("200 OK") != std::string::npos && response.find("Start a game") != std::string::npos);
+	assert(response.find("200 OK") != std::string::npos && response.find("Inicie um jogo") != std::string::npos);
 	assert(snapshot_calls == 0);
+	response = Request(server.Port(), token, "/api/state");
+	assert(response.find("\"language\":\"pt-BR\"") != std::string::npos);
+	assert(response.find("\"achievements.title\":\"Conquistas\"") != std::string::npos);
+	assert(response.find("Atualizar personalizado") != std::string::npos);
 	server.SetNowPlaying("/fixture/game.iso");
 	response = Request(server.Port(), token, "/api/achievements");
 	assert(response.find("\"unlocked\":false") != std::string::npos);

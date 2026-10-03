@@ -7,7 +7,10 @@ native HTTPS downloader, persistent account storage and PS5 notifications.
 This is an initial softcore implementation. Build 6 login was verified in the
 console logs, and the user confirmed a connection in-game and an achievement
 unlock. The user also confirmed the build 7 shelf browser works on the console.
-Build 8 adds the in-game web browser; its console validation is pending.
+The user confirmed the build 8 in-game web browser also works on the console.
+Build 9 shares localized browser text between the shelf and web interface;
+its console validation was confirmed by the user. Build 10 fixes a localized
+credential-section lookup that prevented shelf browsing in non-English languages.
 
 ## Account screen
 
@@ -102,6 +105,32 @@ accept an achievement ID rather than a file path or remote URL. The PS5
 functions are compile-time guarded so desktop builds remain unaffected.
 This path needs proper testing on the console, particularly during unlocks
 and changes between games. (AI-assisted)
+
+## Browser localization
+
+The shelf and in-game web achievement browsers use the existing `fe::Tr()`
+catalog, selected by the PS5 system language. Labels, filters, points,
+pagination, loading states and browser errors have translations for English,
+French, Spanish (Spain and Latin America), German, Italian, Dutch and Portuguese
+(Portugal and Brazil). Other system languages fall back to English.
+Achievement titles and descriptions remain the text supplied by RetroAchievements.
+
+The authenticated `/api/state` response supplies `language` and `strings`
+from the console catalog. The web page uses these translations and escapes
+labels inserted into HTML, including file overrides. It retains English
+fallbacks for missing web keys. The existing settings and controls web pages
+still use their original English text.
+
+Configuration section names, such as `Achievements`, are internal identifiers
+and must never be translated. The shelf browser regression test runs in
+Portuguese (Brazil) with credentials stored under that fixed section name.
+
+Overrides use the existing `/data/PCSX2/lang/<code>.txt` mechanism. For example,
+add `achievements.refresh = Atualizar` to `pt-BR.txt` and restart the app.
+Keys are listed in `fe_i18n.cpp` and start with `achievements.`. Metadata and
+badge image requests keep their existing behavior. Local tests check each
+supported language, unknown-language fallback, override propagation through
+the API and escaping in the production web functions. (AI-assisted)
 
 ## Storage and runtime
 
@@ -257,4 +286,4 @@ They check endpoint authentication, copied unlock updates, JSON escaping,
 private-field omission, badge ID validation and PNG responses. The JavaScript
 checks exercise filtering, pagination, image request scheduling and refresh
 using the production page functions. These local checks do not replace
-build 8 console validation. (AI-assisted)
+build 9 localization checks on the console. (AI-assisted)

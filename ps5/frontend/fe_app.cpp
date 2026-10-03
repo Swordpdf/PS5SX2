@@ -602,14 +602,14 @@ void App::Build(FrameDesc& f, const std::string& clock)
 		// vk-285-114: the options sheet's buttons.
 		hint(icon::DpadUpDown, nullptr, Tr(Str::HintMove));
 		hint(icon::DpadLeftRight, nullptr, Tr(Str::HintChange));
-		hint(icon::Triangle, nullptr, m_sheet.tab() == kTabAchievements ? "Refresh" : Tr(Str::HintReset));
+		hint(icon::Triangle, nullptr, m_sheet.tab() == kTabAchievements ? Tr(Str::AchievementRefresh) : Tr(Str::HintReset));
 		hint(icon::Circle, nullptr, Tr(Str::HintBack));
 		if (n > 0)
 		{
 			const std::string scope = std::string(Tr(Str::SheetThisGame)) + " / " + Tr(Str::SheetAllGames);
 			hint("#L1", "#R1", scope.c_str());
 		}
-		const std::string tabs = std::string(Tr(Str::HintSettings)) + " / " + Tr(Str::SheetControls) + " / Achievements"; // vk-285-116
+		const std::string tabs = std::string(Tr(Str::HintSettings)) + " / " + Tr(Str::SheetControls) + " / " + Tr(Str::Achievements); // vk-285-116
 		hint("#L2", "#R2", tabs.c_str());
 	}
 	else
@@ -1108,11 +1108,11 @@ void App::BuildGameAchievements(std::vector<UiVertex>& ui, float x, float y, flo
 	const uint32_t white = Rgba(1, 1, 1), muted = Rgba(0.7f, 0.7f, 0.8f), green = Rgba(0.45f, 1, 0.65f);
 	std::string message;
 	if (m_sheet_global || m_games.empty())
-		message = "Select This game to view its achievements.";
+		message = Tr(Str::AchievementSelectGame);
 	else if (!m_cfg.game_achievements.state)
-		message = "Achievement browser is unavailable.";
+		message = Tr(Str::AchievementUnavailable);
 	else if (m_game_achievements.path != m_games[static_cast<size_t>(m_selected)].path)
-		message = "Finishing the previous request. Press Triangle to load this game.";
+		message = Tr(Str::AchievementPending);
 	else if (m_game_achievements.entries.empty())
 		message = m_game_achievements.message;
 	if (!message.empty())
@@ -1136,7 +1136,7 @@ void App::BuildGameAchievements(std::vector<UiVertex>& ui, float x, float y, flo
 		}
 	}
 	const std::string summary = std::to_string(unlocked) + " / " + std::to_string(m_game_achievements.entries.size()) +
-		                        " unlocked   |   " + std::to_string(earned) + " / " + std::to_string(points) + " points";
+		                        std::string(" ") + Tr(Str::AchievementUnlocked) + "   |   " + std::to_string(earned) + " / " + std::to_string(points) + " " + Tr(Str::AchievementPoints);
 	m_fonts->AddText(ui, Fit(*m_fonts, m_game_achievements.title, 34 * k, width).c_str(), x, y + 38 * k, 34 * k, white);
 	m_fonts->AddText(ui, summary.c_str(), x, y + 85 * k, 29 * k, green);
 	constexpr float row_height = 142;
@@ -1165,8 +1165,8 @@ void App::BuildGameAchievements(std::vector<UiVertex>& ui, float x, float y, flo
 			m_fonts->AddText(ui, "RA", x + 58 * k, top + 80 * k, 28 * k, muted, 0.2f, Fonts::Center);
 		}
 		const float tx = x + 125 * k, room = width - 135 * k;
-		const std::string status = (entry.unlocked ? "Unlocked" : "Locked") + std::string("  |  ") +
-			                       std::to_string(entry.points) + " points";
+		const std::string status = (entry.unlocked ? Tr(Str::AchievementStatusUnlocked) : Tr(Str::AchievementStatusLocked)) + std::string("  |  ") +
+			                       std::to_string(entry.points) + " " + Tr(Str::AchievementPoints);
 		const float status_width = m_fonts->Measure(status.c_str(), 25 * k);
 		m_fonts->AddText(ui, Fit(*m_fonts, entry.title, 31 * k, room - status_width - 25 * k).c_str(), tx, top + 40 * k, 31 * k, white);
 		m_fonts->AddText(ui, status.c_str(), x + width, top + 40 * k, 25 * k, entry.unlocked ? green : muted, 0.2f, Fonts::Right);
@@ -1178,7 +1178,7 @@ void App::BuildGameAchievements(std::vector<UiVertex>& ui, float x, float y, flo
 		}
 	}
 	const std::string footer = std::to_string(count ? m_achievement_row + 1 : 0) + " / " + std::to_string(count) +
-		                       "   |   " + (m_game_achievements.busy ? "Loading images..." : "Triangle: refresh");
+		                       "   |   " + (m_game_achievements.busy ? Tr(Str::AchievementImages) : Tr(Str::AchievementTriangleRefresh));
 	m_fonts->AddText(ui, footer.c_str(), x, y + height - 10 * k, 26 * k, muted);
 }
 
@@ -1225,7 +1225,7 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 			pills_w = m_fonts->Measure(this_label, ppx) + m_fonts->Measure(all_label, ppx) + 2 * 50 * k * f + 14 * k * f;
 			tabs_w = m_fonts->Measure("L2", kpx) + m_fonts->Measure("R2", kpx) + 2 * 20 * k * f + 2 * 22 * k * f + 40 * k * f +
 				     m_fonts->Measure(settings_label, tpx) + m_fonts->Measure(controls_label, tpx) +
-				     m_fonts->Measure("Achievements", tpx) + 28 * k * f;
+				     m_fonts->Measure(Tr(Str::Achievements), tpx) + 28 * k * f;
 		};
 		widths();
 		while (f > 0.76f && pills_w + tabs_w + 40 * k > inner)
@@ -1268,7 +1268,7 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		tx += 40 * k * f;
 		tab(controls_label, controls);
 		tx += 28 * k * f;
-		tab("Achievements", achievements);
+		tab(Tr(Str::Achievements), achievements);
 		tx += 22 * k * f;
 		key_pill("R2");
 	}

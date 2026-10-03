@@ -5,6 +5,7 @@
 
 #include "fe_web.h"
 #include "fe_settings.h"
+#include "fe_i18n.h"
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -752,6 +753,16 @@ const GameInfo* WebServer::FindGame(const std::string& id, std::vector<GameInfo>
 
 void WebServer::ApiState(Response& res)
 {
+	// Share the console catalog and its file overrides with the web browser (AI-assisted).
+	std::string strings = "{";
+	for (int i = static_cast<int>(Str::Achievements); i < static_cast<int>(Str::Count); ++i)
+	{
+		const auto id = static_cast<Str>(i);
+		if (strings.size() > 1)
+			strings += ',';
+		strings += Json(Key(id)) + ":" + Json(Tr(id));
+	}
+	strings += "}";
 	std::string playing;
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -767,7 +778,7 @@ void WebServer::ApiState(Response& res)
 			game = "{\"id\":" + Json(playing) + ",\"title\":" + Json(playing) + ",\"serial\":\"\"}";
 	}
 	res.body = "{\"app\":\"PS5SX2\",\"build\":" + Json(m_cfg.build_tag) + ",\"test\":" + std::to_string(m_cfg.test_build) +
-	           ",\"mode\":" + Json(playing.empty() ? "menu" : "game") + ",\"playing\":" + game + "}";
+		       ",\"language\":" + Json(LanguageCode()) + ",\"strings\":" + strings + ",\"mode\":" + Json(playing.empty() ? "menu" : "game") + ",\"playing\":" + game + "}";
 }
 
 void WebServer::ApiGames(Response& res)
@@ -806,9 +817,9 @@ void WebServer::ApiAchievements(Response& res)
 	}
 	GameAchievementsState snapshot;
 	if (playing.empty())
-		snapshot.message = "Start a game to view its live achievements. Use the shelf tab before playing.";
+		snapshot.message = Tr(Str::AchievementStartGame);
 	else if (!m_cfg.achievements)
-		snapshot.message = "Achievement browser is unavailable.";
+		snapshot.message = Tr(Str::AchievementUnavailable);
 	else
 		snapshot = m_cfg.achievements();
 	std::string out = "{\"game_id\":" + std::to_string(snapshot.game_id) + ",\"title\":" + Json(snapshot.title) +
