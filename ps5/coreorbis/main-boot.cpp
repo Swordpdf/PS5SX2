@@ -60,6 +60,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include <mutex>
 // vk-285-108 (GSRenderer.cpp): the helper threads' CPUs and the ticker's heartbeat for the GS thread's watchdog.
 void OrbisHelperThreadAdd(pthread_t thread);
+extern "C" const int orbis_ps5vk_war_shim __attribute__((weak)); // vk-285-119 (orbis-shims/orbis_ps5vk_war.c)
 extern std::atomic<unsigned long long> g_orbis_ticker_beat;
 extern std::atomic<int> g_orbis_ticker_step, g_orbis_ticker_cpu;
 extern pthread_t g_orbis_ticker_thread;
@@ -346,8 +347,12 @@ static std::string orbis_ini_summary(const std::string& path)
 // InputManager::SetPadVibrationIntensity, which went nowhere with no input source bound. Input/InputManager.cpp now
 // passes the values of PS2 ports 1 and 2 to orbis_pad_vibration; the pad thread sends the changes to the controllers
 // with scePadSetVibration. PS5SX2/Rumble=false (the settings page's Controller group) turns it off.
-static std::atomic<u32> g_orbis_rumble_state[2]; // (big << 8) | small, each 0..255
+static std::atomic<u32> g_orbis_rumble_state[8]; // (big << 8) | small, each 0..255; by PCSX2's pad index (vk-285-118: all 8)
 static std::atomic<int> g_orbis_rumble_on{1};
+// vk-285-118: PS5SX2/RumbleStrength (0.25..2, the Controller group's Strength): each motor's value times this, at most full.
+static std::atomic<int> g_orbis_rumble_pct{100};
+// vk-285-118: PS5SX2/FastSpeed, how fast fast forward runs: 0 as fast as it can, else that many times full speed (StubHost.cpp).
+std::atomic<int> g_orbis_fast_speed{0};
 // vk-285-116 (AI-assisted): the controller remapping (orbis-shims/OrbisPadMap.h: PS5SX2/Button*, SwapSticks, InvertLeft,
 // InvertRight, LeftStickDpad; vk-285-117: the save and load state combos, SaveButton1/2, LoadButton1/2, StateHold; the
 // Controls tab). orbis_ps5opts_from sets it at boot and at every live apply; the pad thread copies it when the version
@@ -357,7 +362,7 @@ static orbis_padmap::Config g_orbis_padmap;
 static std::atomic<unsigned> g_orbis_padmap_version{0};
 extern "C" void orbis_pad_vibration(unsigned pad_index, float large, float small)
 {
-  if (pad_index > 1)
+  if (pad_index > 7)
     return;
   const auto to_byte = [](float v) { return static_cast<u32>(std::min(std::max(v, 0.0f), 1.0f) * 255.0f + 0.5f); };
   g_orbis_rumble_state[pad_index].store((to_byte(large) << 8) | to_byte(small), std::memory_order_relaxed);
@@ -544,6 +549,13 @@ static void orbis_prof_start()
 // at game start, PS2 port 2 gets a DualShock 2 and the pad thread reads that user's controller too (a
 // tester: "No second controller recognized in Fifa Street 2"). -1: one user, port 2 stays empty.
 static int32_t g_orbis_second_user = -1;
+// vk-285-118 (AI-assisted): players 2..4, PS5SX2/Multitap (0 off, 1 a multitap in PS2 port 1, 2 in port 2; read at game
+// start). Off: player 2 on port 2, as vk-285-109. Port 1: players 1..4 on 1A..1D (PCSX2's pad indices 0, 2, 3, 4). Port 2:
+// player 1 on port 1, players 2..4 on 2A..2C (1, 5, 6). Each extra player is the next logged-in user, with their controller.
+static int g_orbis_multitap = 0;
+static int g_orbis_extra_count = 0;
+static int32_t g_orbis_extra_user[3] = {-1, -1, -1};
+static u32 g_orbis_extra_index[3] = {1, 0, 0};
 
 static int32_t orbis_find_second_user(int32_t first)
 {
@@ -556,6 +568,21 @@ static int32_t orbis_find_second_user(int32_t first)
     if (ids[i] != -1 && ids[i] != first)
       return ids[i];
   return -1;
+}
+
+// vk-285-118: the logged-in users other than the first, in the PS5's order (up to 3).
+static int orbis_find_other_users(int32_t first, int32_t out[3])
+{
+  int32_t ids[16];
+  for (int32_t &id : ids)
+    id = -1;
+  if (sceUserServiceGetLoginUserIdList(ids) != 0)
+    return 0;
+  int n = 0;
+  for (int i = 0; i < 4 && n < 3; i++)
+    if (ids[i] != -1 && ids[i] != first)
+      out[n++] = ids[i];
+  return n;
 }
 
 // vk-285-109: one controller's buttons, triggers and sticks into a PS2 port (port 0 was the only one).
@@ -647,7 +674,13 @@ static void orbis_rumble_send(int index, int32_t handle, OrbisRumbleOut &out)
   if (handle < 0)
     return;
   const bool on = g_orbis_rumble_on.load(std::memory_order_relaxed) != 0 && !g_orbis_menu_request.load(std::memory_order_relaxed);
-  const u32 want = on ? g_orbis_rumble_state[index].load(std::memory_order_relaxed) : 0u;
+  u32 want = on ? g_orbis_rumble_state[index].load(std::memory_order_relaxed) : 0u;
+  const u32 pct = static_cast<u32>(g_orbis_rumble_pct.load(std::memory_order_relaxed));
+  if (want != 0u && pct != 100u)
+  {
+    const u32 big = std::min<u32>(255u, ((want >> 8) * pct + 50u) / 100u), small = std::min<u32>(255u, ((want & 0xFFu) * pct + 50u) / 100u);
+    want = (big << 8) | small;
+  }
   if (want == out.sent)
     return;
   const uint8_t param[2] = {static_cast<uint8_t>(want >> 8), static_cast<uint8_t>(want & 0xFFu)};
@@ -712,17 +745,19 @@ static void *orbis_pad_thread(void *)
   port1.port = 0;
   port1.handle = handle;
   // vk-285-109: player 2's controller, when a second user was logged in at game start (main() gave PS2
-  // port 2 a DualShock 2 then).
-  OrbisPadPort port2;
-  port2.port = 1;
-  if (g_orbis_second_user != -1)
+  // port 2 a DualShock 2 then). vk-285-118: players 3 and 4 too with a multitap (g_orbis_extra_*).
+  OrbisPadPort extra[3];
+  for (int i = 0; i < g_orbis_extra_count; i++)
   {
-    port2.handle = scePadOpen(g_orbis_second_user, 0, 0, nullptr);
-    if (port2.handle < 0)
-      port2.handle = scePadGetHandle(g_orbis_second_user, 0, 0);
-    printf("[pad] player 2: user=%d handle=%d\n", g_orbis_second_user, port2.handle);
+    extra[i].port = g_orbis_extra_index[i];
+    extra[i].handle = scePadOpen(g_orbis_extra_user[i], 0, 0, nullptr);
+    if (extra[i].handle < 0)
+      extra[i].handle = scePadGetHandle(g_orbis_extra_user[i], 0, 0);
+    char who[16];
+    snprintf(who, sizeof(who), "player %d", i + 2);
+    printf("[pad] %s: user=%d handle=%d (PCSX2 pad %u)\n", who, g_orbis_extra_user[i], extra[i].handle, extra[i].port + 1);
     fflush(stdout);
-    orbis_pad_rumble_mode(port2.handle, "player 2"); // vk-285-117
+    orbis_pad_rumble_mode(extra[i].handle, who); // vk-285-117
   }
   unsigned reads = 0;
   for (;;)
@@ -773,7 +808,7 @@ static void *orbis_pad_thread(void *)
       bool state_fired = false;
       {
         const orbis_padmap::Config &cfg = orbis_padmap_current();
-        static orbis_padmap::ComboWatch s_save, s_load;
+        static orbis_padmap::ComboWatch s_save, s_load, s_fast;
         orbis_padmap::ComboState cs;
         cs.buttons = d.buttons;
         cs.l2 = d.l2;
@@ -787,6 +822,15 @@ static void *orbis_pad_thread(void *)
         uint32_t block = 0;
         const bool save = s_save.Update(cfg.save, cfg.hold_ms, cs, now_ms, block);
         const bool load = s_load.Update(cfg.load, cfg.hold_ms, cs, now_ms, block) && !save;
+        // vk-285-118: the fast forward combo (StubHost.cpp turns it on or off on the CPU thread).
+        const bool fast = s_fast.Update(cfg.fast, cfg.hold_ms, cs, now_ms, block) && !save && !load;
+        if (fast)
+        {
+          g_orbis_state_request.store(4, std::memory_order_release);
+          state_fired = true;
+          printf("[pad] fast forward on/off: %s\n", orbis_padmap::DescribeCombo(cfg.fast, cfg.hold_ms).c_str());
+          fflush(stdout);
+        }
         if (save || load)
         {
           g_orbis_state_request.store(save ? 1 : 2, std::memory_order_release);
@@ -882,36 +926,40 @@ static void *orbis_pad_thread(void *)
       orbis_pad_apply(port1, d);
     }
     {
-      static OrbisRumbleOut s_rumble1, s_rumble2;
+      static OrbisRumbleOut s_rumble1, s_rumble_extra[3];
       orbis_rumble_send(0, handle, s_rumble1);
-      orbis_rumble_send(1, port2.handle, s_rumble2);
+      for (int i = 0; i < g_orbis_extra_count; i++)
+        orbis_rumble_send(static_cast<int>(extra[i].port), extra[i].handle, s_rumble_extra[i]);
     }
     if (++reads == 250u || (rc != 0 && reads % 1000u == 0u))
       printf("[pad] read rc=%x buttons=%08x lx=%u ly=%u\n", rc, d.buttons, d.lx, d.ly);
-    if (port2.handle >= 0)
+    for (int i = 0; i < g_orbis_extra_count; i++)
     {
+      OrbisPadPort &px = extra[i];
+      if (px.handle < 0)
+        continue;
       OrbisPadData d2;
       memset(&d2, 0, sizeof(d2));
-      const int rc2 = p_read(port2.handle, &d2);
+      const int rc2 = p_read(px.handle, &d2);
       const bool on = rc2 == 0 && orbis_pad_connected(d2);
       if (on)
-        orbis_pad_apply(port2, d2);
+        orbis_pad_apply(px, d2);
       else
       {
-        // Released buttons, centred sticks: nothing held on port 2 while its controller is off.
+        // Released buttons, centred sticks: nothing held on this port while its controller is off.
         OrbisPadData idle;
         memset(&idle, 0, sizeof(idle));
         idle.lx = idle.ly = idle.rx = idle.ry = 128;
-        orbis_pad_apply(port2, idle);
+        orbis_pad_apply(px, idle);
       }
-      static int s_port2_on = -1;
-      if (s_port2_on != (on ? 1 : 0))
+      static int s_on[3] = {-1, -1, -1};
+      if (s_on[i] != (on ? 1 : 0))
       {
-        printf("[pad] player 2 controller %s (rc=%x)\n", on ? "connected" : "not connected", rc2);
-        s_port2_on = on ? 1 : 0;
+        printf("[pad] player %d controller %s (rc=%x)\n", i + 2, on ? "connected" : "not connected", rc2);
+        s_on[i] = on ? 1 : 0;
       }
       if (reads == 250u || (rc2 != 0 && reads % 1000u == 0u))
-        printf("[pad] player 2 read rc=%x buttons=%08x lx=%u ly=%u connected=%u\n", rc2, d2.buttons, d2.lx, d2.ly,
+        printf("[pad] player %d read rc=%x buttons=%08x lx=%u ly=%u connected=%u\n", i + 2, rc2, d2.buttons, d2.lx, d2.ly,
           static_cast<unsigned>(d2.rest[76 - 12]));
     }
     usleep(4000);
@@ -951,7 +999,7 @@ static std::string s_game_ini_path;
 const char* OrbisGameIniPath() { return s_game_ini_path.c_str(); }
 
 // Orbis: lines "Section/Key=value" (Section defaults to EmuCore/GS); '#' or ';' starts a comment.
-static void orbis_apply_ini_file(MemorySettingsInterface& si, const char* path, const char* tag)
+static void orbis_apply_ini_file(MemorySettingsInterface& si, const char* path, const char* tag, bool quiet = false)
 {
   FILE* f = fopen(path, "r");
   if (!f) return;
@@ -979,7 +1027,8 @@ static void orbis_apply_ini_file(MemorySettingsInterface& si, const char* path, 
     if ((sec == "Patches" || sec == "Cheats") && (key == "Enable" || key == "Disable"))
     {
       si.AddToStringList(sec.c_str(), key.c_str(), val.c_str());
-      printf("[boot] %s %s/%s += %s\n", tag, sec.c_str(), key.c_str(), val.c_str());
+      if (!quiet)
+        printf("[boot] %s %s/%s += %s\n", tag, sec.c_str(), key.c_str(), val.c_str());
       continue;
     }
     if (val == "true" || val == "false") si.SetBoolValue(sec.c_str(), key.c_str(), val == "true");
@@ -991,17 +1040,18 @@ static void orbis_apply_ini_file(MemorySettingsInterface& si, const char* path, 
              std::count(val.begin(), val.end(), '.') <= 1)
       si.SetFloatValue(sec.c_str(), key.c_str(), (float)atof(val.c_str()));
     else si.SetStringValue(sec.c_str(), key.c_str(), val.c_str());
-    printf("[boot] %s %s/%s=%s\n", tag, sec.c_str(), key.c_str(), val.c_str());
+    if (!quiet)
+      printf("[boot] %s %s/%s=%s\n", tag, sec.c_str(), key.c_str(), val.c_str());
   }
   fclose(f);
   fflush(stdout);
 }
 
-static void orbis_apply_gs_ini(MemorySettingsInterface& si)
+static void orbis_apply_gs_ini(MemorySettingsInterface& si, bool quiet = false)
 {
-  orbis_apply_ini_file(si, "/data/PCSX2/gs.ini", "gs.ini");
+  orbis_apply_ini_file(si, "/data/PCSX2/gs.ini", "gs.ini", quiet);
   if (!s_game_ini_path.empty()) // vk-285-32: then the game's own
-    orbis_apply_ini_file(si, s_game_ini_path.c_str(), "game ini");
+    orbis_apply_ini_file(si, s_game_ini_path.c_str(), "game ini", quiet);
 }
 
 // vk-285-64: pcsx2/Memory.cpp's choice of memory for the recompilers' code (the flag file jitdirect).
@@ -1217,6 +1267,22 @@ static void orbis_ps5opts_from(const SettingsInterface& si)
   const int old_overlay = g_orbis_overlay_mode.exchange(overlay, std::memory_order_relaxed);
   const int old_graph = g_orbis_fps_graph.exchange(graph ? 1 : 0, std::memory_order_relaxed);
   const int old_rumble = g_orbis_rumble_on.exchange(rumble ? 1 : 0, std::memory_order_relaxed);
+  int rumble_pct = 100;
+  {
+    std::string v;
+    if (si.GetStringValue("PS5SX2", "RumbleStrength", &v))
+    {
+      char *end = nullptr;
+      const double k = std::strtod(v.c_str(), &end);
+      if (end != v.c_str() && k >= 0.1 && k <= 3.0)
+        rumble_pct = static_cast<int>(k * 100.0 + 0.5);
+    }
+  }
+  const int old_rumble_pct = g_orbis_rumble_pct.exchange(rumble_pct, std::memory_order_relaxed);
+  {
+    const int fast = si.GetIntValue("PS5SX2", "FastSpeed", 0);
+    g_orbis_fast_speed.store(fast >= 2 && fast <= 8 ? fast : 0, std::memory_order_relaxed);
+  }
   std::string textures_dir; // vk-285-113: PS5SX2/TexturesDir, where a game's texture packs are besides USB drives
   si.GetStringValue("PS5SX2", "TexturesDir", &textures_dir);
   orbis_set_textures_dir(textures_dir);
@@ -1242,16 +1308,16 @@ static void orbis_ps5opts_from(const SettingsInterface& si)
     if (changed)
     {
       g_orbis_padmap_version.fetch_add(1, std::memory_order_release);
-      printf("[boot] controls: %s (PS5SX2/Button*, SwapSticks, InvertLeft, InvertRight, LeftStickDpad, SaveButton*, LoadButton*, StateHold)\n",
+      printf("[boot] controls: %s (PS5SX2/Button*, SwapSticks, InvertLeft, InvertRight, LeftStickDpad, DeadzoneLeft, DeadzoneRight, SaveButton*, LoadButton*, StateHold)\n",
         orbis_padmap::Describe(map).c_str());
       fflush(stdout);
     }
   }
-  if (old_overlay != overlay || old_graph != (graph ? 1 : 0) || old_rumble != (rumble ? 1 : 0))
+  if (old_overlay != overlay || old_graph != (graph ? 1 : 0) || old_rumble != (rumble ? 1 : 0) || old_rumble_pct != rumble_pct)
   {
-    printf("[boot] on-screen box %s, FPS graph %s, rumble %s (PS5SX2/Overlay, FpsGraph, Rumble)\n",
+    printf("[boot] on-screen box %s, FPS graph %s, rumble %s at %d%% (PS5SX2/Overlay, FpsGraph, Rumble, RumbleStrength)\n",
       overlay < 0 ? "as live.ini says" : overlay == 0 ? "off" : overlay == 1 ? "FPS" : "FPS and loads", graph ? "on" : "off",
-      rumble ? "on" : "off");
+      rumble ? "on" : "off", rumble_pct);
     fflush(stdout);
   }
 }
@@ -1296,6 +1362,39 @@ static bool orbis_mtvu_after_gamedb(bool from_settings)
     }
   }
   return from_settings;
+}
+
+void orbis_reload_gs_ini_cpu();
+// vk-285-118 (AI-assisted): GPU readbacks to Don't wait for the rest of the game, asked for by GSRenderer.cpp's
+// OrbisReadbackAutoSecond (older firmware's readback stall). Not when gs.ini or the game's file sets HWDownloadMode: that
+// choice stays. Put under gs.ini in the base layer, so a live reload keeps it and a later HWDownloadMode in those files
+// still wins.
+extern std::atomic<int> g_orbis_rb_auto_kind; // vk-285-119 (GSRenderer.cpp): 1 each wait 10 ms+, 2 many short waits
+void OrbisReadbackAutoCpu()
+{
+  const bool many = g_orbis_rb_auto_kind.load(std::memory_order_relaxed) == 2;
+  MemorySettingsInterface peek;
+  orbis_apply_gs_ini(peek, true);
+  if (peek.ContainsValue("EmuCore/GS", "HWDownloadMode"))
+  {
+    printf("[readbacks] not switched: HWDownloadMode=%d is set in gs.ini or the game's file\n",
+      peek.GetIntValue("EmuCore/GS", "HWDownloadMode", 0));
+    orbis_eventf(many ? "readbacks: they take 300 ms a second or more and the game is slow, but HWDownloadMode is set in "
+                        "gs.ini or the game's file: left as it is" :
+                        "readbacks: each one takes 10 ms or more and the game is slow, but HWDownloadMode is set in gs.ini or the "
+                        "game's file: left as it is");
+    fflush(stdout);
+    return;
+  }
+  s_base_pre_gsini.SetIntValue("EmuCore/GS", "HWDownloadMode", static_cast<int>(GSHardwareDownloadMode::Unsynchronized));
+  orbis_reload_gs_ini_cpu();
+  OrbisOSDLabel("READBACKS: DON'T WAIT (AUTO)");
+  orbis_eventf(many ? "readbacks: waiting for them took 300 ms a second or more and slowed the game, so GPU readbacks are on "
+                      "Don't wait (auto) for this game; set GPU readbacks to Accurate to keep them, or add the flag noautoreadback" :
+                      "readbacks: each one took 10 ms or more and slowed the game, so GPU readbacks are on Don't wait (auto) "
+                      "for this game; set GPU readbacks to Accurate to keep them, or add the flag noautoreadback");
+  printf("[readbacks] GPU readbacks set to Don't wait (HWDownloadMode 3) for this game\n");
+  fflush(stdout);
 }
 
 void orbis_reload_gs_ini_cpu()
@@ -1746,6 +1845,17 @@ static void orbis_ensure_data_layout()
     if (rc == 0)
       orbis_eventf("created /data/PCSX2/games/ for the disc images");
   }
+  // vk-285-121 (AI-assisted): settings/ as well. The shelf's sheet and the settings page write a game's own settings
+  // there and nothing made the folder: two testers' 1.7 logs had every save fail with errno 2 ("[web] writing
+  // /data/PCSX2/settings/... failed (errno 2)"). The writers make it too now (fe_settings.cpp, WriteFileAtomic).
+  const std::string settings = std::string(kRoot) + "/settings";
+  if (stat(settings.c_str(), &st) != 0)
+  {
+    const int rc = mkdir(settings.c_str(), 0777);
+    printf("[boot] data layout: created %s (rc=%d errno=%d)\n", settings.c_str(), rc, rc ? errno : 0);
+    if (rc == 0)
+      orbis_eventf("created /data/PCSX2/settings/ for the games' own settings");
+  }
   const std::string flags = std::string(kRoot) + "/flags";
   const bool have_dir = stat(flags.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
   int entries = 0;
@@ -2003,6 +2113,8 @@ int main()
   printf("[boot] sources: driver %s, pcsx2 %s\n", ORBIS_DRIVER_REV, ORBIS_PCSX2_REV);
 #endif
   printf("[boot] Vulkan driver: %s\n", OrbisDriverName()); // vk-285-115: link-vk.sh links ps5vk, link-radv.sh RADV
+  if (&orbis_ps5vk_war_shim != nullptr) // vk-285-119: link-vk.sh linked orbis-shims/orbis_ps5vk_war.c
+    printf("[boot] ps5vk write-after-read list: AVX2 lookup (orbis_ps5vk_war.c)\n");
   fflush(stdout);
   printf("[boot] main tid=%llu\n", (unsigned long long)pthread_self());
   {
@@ -2279,7 +2391,36 @@ int main()
   }
 #endif
 
-  g_orbis_sw_on_gl = g_sw_renderer && orbis_flag("swgl");
+  // vk-285-118 (AI-assisted): PS5SX2/Renderer per game (or for all games in gs.ini): Hardware or Software, read at game
+  // start (the renderer can't change while a game runs here). Software renders on the CPU and GSDeviceVK presents it, as
+  // swgl does; PCSX2's own EmuCore/GS/Renderer=13 in those files means the same. Unset: the flags decide, as before.
+  bool sw_by_setting = false;
+  {
+    MemorySettingsInterface peek;
+    orbis_apply_gs_ini(peek, true);
+    std::string r;
+    peek.GetStringValue("PS5SX2", "Renderer", &r);
+    const int pcsx2_renderer = peek.GetIntValue("EmuCore/GS", "Renderer", -1);
+    if (r == "Software" || r == "software" || r == "sw" || (r.empty() && pcsx2_renderer == static_cast<int>(GSRendererType::SW)))
+    {
+      g_sw_renderer = true;
+      sw_by_setting = true;
+    }
+    else if ((r == "Hardware" || r == "hardware" || r == "hw") && g_sw_renderer)
+    {
+      g_sw_renderer = false;
+#ifdef ORBIS_VULKAN
+      orbis_vk_environment(); // the hardware renderer's driver variables, which the sw_renderer flag left out
+#endif
+    }
+    if (!r.empty() || pcsx2_renderer >= 0)
+    {
+      printf("[boot] renderer: %s (PS5SX2/Renderer=%s, EmuCore/GS/Renderer=%d)\n", g_sw_renderer ? "software" : "hardware",
+        r.empty() ? "(unset)" : r.c_str(), pcsx2_renderer);
+      fflush(stdout);
+    }
+  }
+  g_orbis_sw_on_gl = g_sw_renderer && (orbis_flag("swgl") || sw_by_setting);
   // SW path: CPU GSDeviceOrbis + debug overlay presents, unless swgl (GSDeviceOGL presents the SW frames).
   if (g_sw_renderer && !g_orbis_sw_on_gl) g_use_gl_renderer = false;
   g_no_speedhacks = orbis_flag("nospeedhacks");
@@ -2344,10 +2485,46 @@ int main()
     (void)sceUserServiceInitialize(nullptr);
     (void)sceUserServiceGetInitialUser(&first);
     g_orbis_second_user = orbis_find_second_user(first);
-    if (g_orbis_second_user != -1)
+    // vk-285-118 (AI-assisted): PS5SX2/Multitap from gs.ini and the game's file (a copy: the base keeps them out, as the
+    // live reload expects), or PCSX2's own Pad/MultitapPort1 or MultitapPort2 there. Pad types and the multitap go into
+    // the base, so they stay through live reloads; a change takes a restart of the game.
+    {
+      MemorySettingsInterface peek = s_base_si;
+      orbis_apply_gs_ini(peek, true);
+      int mt = peek.GetIntValue("PS5SX2", "Multitap", 0);
+      if (mt < 0 || mt > 2)
+        mt = 0;
+      if (mt == 0 && peek.GetBoolValue("Pad", "MultitapPort1", false))
+        mt = 1;
+      if (mt == 0 && peek.GetBoolValue("Pad", "MultitapPort2", false))
+        mt = 2;
+      g_orbis_multitap = mt;
+    }
+    int32_t others[3] = {-1, -1, -1};
+    const int n_others = orbis_find_other_users(first, others);
+    static const u32 slots[3][3] = {{1, 0, 0}, {2, 3, 4}, {1, 5, 6}};
+    g_orbis_extra_count = g_orbis_multitap == 0 ? std::min(n_others, 1) : n_others;
+    for (int i = 0; i < 3; i++)
+    {
+      g_orbis_extra_user[i] = i < g_orbis_extra_count ? others[i] : -1;
+      g_orbis_extra_index[i] = slots[g_orbis_multitap][i];
+    }
+    if (g_orbis_multitap != 0)
+    {
+      s_base_si.SetBoolValue("Pad", g_orbis_multitap == 1 ? "MultitapPort1" : "MultitapPort2", true);
+      // the multitap's other slots answer as DualShock 2s with no controller behind them yet, so games count 4 ports
+      for (int i = 0; i < 3; i++)
+        s_base_si.SetStringValue(("Pad" + std::to_string(slots[g_orbis_multitap][i] + 1)).c_str(), "Type", "DualShock2");
+    }
+    else if (g_orbis_extra_count > 0)
       s_base_si.SetStringValue("Pad2", "Type", "DualShock2");
-    printf("[boot] users: first %d, second %d: PS2 port 2 %s\n", first, g_orbis_second_user,
-      g_orbis_second_user != -1 ? "gets a DualShock 2 for the second user's controller" : "stays empty");
+    std::string who;
+    for (int i = 0; i < g_orbis_extra_count; i++)
+      who += " player " + std::to_string(i + 2) + "=user " + std::to_string(g_orbis_extra_user[i]) + " on pad " +
+             std::to_string(g_orbis_extra_index[i] + 1);
+    printf("[boot] users: first %d, %d more; multitap %s (PS5SX2/Multitap);%s\n", first, n_others,
+      g_orbis_multitap == 0 ? "off" : g_orbis_multitap == 1 ? "in port 1" : "in port 2",
+      who.empty() ? " PS2 port 2 stays empty" : who.c_str());
   }
   s_base_pre_gsini = s_base_si; // eerec-285
   orbis_apply_gs_ini(s_base_si);

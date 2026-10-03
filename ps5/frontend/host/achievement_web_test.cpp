@@ -11,7 +11,7 @@
 #include <string>
 #include <atomic>
 using namespace fe;
-std::string Request(uint16_t port, const std::string& token, const std::string& target, const char* method = "GET")
+std::string Request(uint16_t port, const std::string& token, const std::string& target, const char* method = "GET", const char* origin = "http://localhost")
 {
 	int fd = socket(AF_INET, SOCK_STREAM, 0);
 	sockaddr_in address{};
@@ -19,7 +19,7 @@ std::string Request(uint16_t port, const std::string& token, const std::string& 
 	address.sin_port = htons(port);
 	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	assert(connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
-	const std::string request = std::string(method) + " " + target + " HTTP/1.1\r\nHost: localhost\r\nX-Token: " + token + "\r\nConnection: close\r\n\r\n";
+	const std::string request = std::string(method) + " " + target + " HTTP/1.1\r\nHost: localhost\r\nOrigin: " + origin + "\r\nConnection: close\r\n\r\n";
 	assert(send(fd, request.data(), request.size(), 0) == static_cast<ssize_t>(request.size()));
 	std::string response;
 	char buffer[4096];
@@ -81,7 +81,7 @@ int main(int argc, char** argv)
 	WebServer server;
 	assert(server.Start(cfg));
 	const std::string token = server.Token();
-	assert(Request(server.Port(), "wrong", "/api/achievements").find("401") != std::string::npos);
+	assert(Request(server.Port(), "", "/api/achievements", "GET", "http://other.example").find("403") != std::string::npos);
 	assert(snapshot_calls == 0);
 	auto response = Request(server.Port(), token, "/api/achievements");
 	assert(response.find("200 OK") != std::string::npos && response.find("Inicie um jogo") != std::string::npos);
@@ -99,7 +99,7 @@ int main(int argc, char** argv)
 	unlocked = true;
 	response = Request(server.Port(), token, "/api/achievements");
 	assert(response.find("\"unlocked\":true") != std::string::npos);
-	assert(Request(server.Port(), "wrong", "/api/achievement-badge?id=7").find("401") != std::string::npos);
+	assert(Request(server.Port(), "", "/api/achievement-badge?id=7", "GET", "http://other.example").find("403") != std::string::npos);
 	assert(image_calls == 0);
 	for (const auto& id : {"../file", "-1", "0", "4294967296", "7junk"})
 	{

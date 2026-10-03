@@ -754,8 +754,24 @@ std::vector<std::string> orbis_usb_game_dirs(const char* when)
 			entries++;
 			isos += IsDiscImageName(e->d_name) ? 1 : 0;
 			const std::string lower = LowerAscii(e->d_name);
-			if (lower == "dvd" || lower == "cd" || lower == "ps5sx2")
+			if (lower == "dvd" || lower == "cd" || lower == "ps5sx2" || lower == "games")
 				subs.push_back(e->d_name);
+			// vk-285-118 (AI-assisted): a drive laid out like /data/PCSX2 (testers: "games in the games/ folder on the external
+			// drive are NOT detected", while PCSX2/textures there works): PCSX2/games/, and PS5SX2/games/, also DVD/ and CD/ in them.
+			if (lower == "pcsx2" || lower == "ps5sx2")
+			{
+				const std::string parent = std::string(root) + "/" + e->d_name;
+				if (DIR* pd = opendir(parent.c_str()))
+				{
+					while (const dirent* pe = readdir(pd))
+					{
+						const std::string l2 = LowerAscii(pe->d_name);
+						if (l2 == "games" || l2 == "dvd" || l2 == "cd")
+							subs.push_back(std::string(e->d_name) + "/" + pe->d_name);
+					}
+					closedir(pd);
+				}
+			}
 		}
 		closedir(d);
 		if (entries == 0)
@@ -1000,7 +1016,6 @@ bool orbis_web_start(const OrbisFrontendPaths& paths, const char* build_tag)
 	cfg.patches_dir = paths.patches_dir;
 	cfg.covers_dir = paths.covers_dir;
 	cfg.cache_dir = paths.cache_dir;
-	cfg.token_path = paths.top_dir + "/webui_token.txt";
 	cfg.build_tag = build_tag ? build_tag : "";
 	cfg.port = 8844;
 	cfg.presets.assign(reinterpret_cast<const char*>(fe_presets), static_cast<size_t>(fe_presets_end - fe_presets));

@@ -309,6 +309,7 @@ int main(int argc, char** argv)
 		const size_t slash = self.find_last_of('/');
 		root = (slash == std::string::npos ? std::string(".") : self.substr(0, slash)) + "/..";
 	}
+	std::string web;
 	for (int i = 1; i < argc; i++)
 	{
 		const std::string a = argv[i];
@@ -321,6 +322,8 @@ int main(int argc, char** argv)
 			script = next();
 		else if (a == "--root")
 			root = next();
+		else if (a == "--web") // vk-285-118: the settings page's address, so the shelf shows its QR code
+			web = next();
 		else if (a == "--lang")
 			lang = std::atoi(next().c_str());
 		else if (a == "--achievements-preview")
@@ -442,6 +445,12 @@ int main(int argc, char** argv)
 	{
 		std::fprintf(stderr, "[host] app: %s\n", renderer.error().c_str());
 		return 1;
+	}
+	if (!web.empty())
+	{
+		std::string shown = web.substr(web.find("://") == std::string::npos ? 0 : web.find("://") + 3);
+		shown = shown.substr(0, shown.find('/'));
+		app.SetWebUrl(web, shown);
 	}
 
 	const double dt = 1.0 / 60.0;

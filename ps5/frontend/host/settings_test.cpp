@@ -3,6 +3,7 @@
 // tree's fe_web.cpp and against an older one, and compares:
 //   settings_test <folder> web    the page's API over HTTP (127.0.0.1): responses and the files it leaves
 //   settings_test <folder> sheet  the same changes through fe::settings, as the sheet makes them (this tree only)
+//   settings_test <folder> nosettings  vk-285-121: both save into a missing settings/ folder (this tree only)
 // The files must match line for line apart from comment lines (each side names itself in the file's first line).
 //
 // Copyright (C) 2026 Spyros
@@ -252,6 +253,50 @@ int RunSheet(const std::string& data, const std::string& presets)
 	std::printf("%s", Dump(data, true).c_str());
 	return ok && !bad ? 0 : 1;
 }
+
+// vk-285-121: a console without settings/ (two testers' 1.7 logs: every save failed with errno 2). The sheet's save
+// and the page's must each make the folder and write the file.
+int RunNoSettings(const std::string& data, const std::string& presets)
+{
+	using namespace settings;
+	const std::string dir = data + "/settings", god = dir + "/God of War (USA).ini";
+	rmdir(dir.c_str());
+	std::string what, error;
+	const bool sheet = EditSettingsFile(god, "# God of War (SCUS-97399): written from the PS5SX2 shelf",
+		{{Change::Set, "upscale_multiplier", "6"}}, what, error);
+	const bool sheet_file = Read(god).find("upscale_multiplier=6") != std::string::npos;
+	std::printf("%s: the sheet's save without settings/ (%s)\n", sheet && sheet_file ? "PASS" : "FAIL", sheet ? "saved" : error.c_str());
+	unlink(god.c_str());
+	rmdir(dir.c_str());
+	WebServer web;
+	WebConfig cfg;
+	cfg.game_dirs = {data + "/games"};
+	cfg.settings_dir = dir;
+	cfg.gs_ini = data + "/gs.ini";
+	cfg.patches_dir = data + "/patches";
+	cfg.covers_dir = data + "/covers";
+	cfg.cache_dir = data + "/cache";
+	cfg.token_path = data + "/token.txt";
+	cfg.build_tag = "test";
+	cfg.port = static_cast<uint16_t>(20000 + (getpid() + 7) % 20000);
+	cfg.presets = presets;
+	cfg.change_log = data + "/logs/settings.log";
+	cfg.logs_dir = data + "/logs";
+	cfg.top_dir = data;
+	cfg.memcards_dir = data + "/memcards";
+	if (!web.Start(cfg))
+	{
+		std::printf("FAIL: the web server did not start\n");
+		return 1;
+	}
+	const std::string answer = Http(web.Port(), web.Token(), "POST", std::string("/api/settings?id=") + kGod, "set upscale_multiplier=5\n");
+	web.Stop();
+	const bool page_file = Read(god).find("upscale_multiplier=5") != std::string::npos;
+	std::printf("%s: the page's save without settings/\n", page_file ? "PASS" : "FAIL");
+	if (!page_file)
+		std::printf("%s\n", answer.c_str());
+	return sheet && sheet_file && page_file ? 0 : 1;
+}
 #endif
 } // namespace
 
@@ -272,6 +317,8 @@ int main(int argc, char** argv)
 #ifdef FE_HAVE_SETTINGS
 	if (mode == "sheet")
 		return RunSheet(data, presets);
+	if (mode == "nosettings")
+		return RunNoSettings(data, presets);
 #endif
 	std::fprintf(stderr, "mode %s is not in this build\n", mode.c_str());
 	return 2;

@@ -357,55 +357,9 @@ WebServer::~WebServer()
 	Stop();
 }
 
-bool WebServer::LoadToken()
-{
-	std::string text;
-	if (ReadFile(m_cfg.token_path, text))
-	{
-		text = Trim(text);
-		bool ok = text.size() >= 12 && text.size() <= 64;
-		for (char c : text)
-			ok = ok && ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'));
-		if (ok)
-		{
-			m_token = text;
-			return true;
-		}
-	}
-	// A new one: 16 characters from the kernel's random source, or from the clock if it has none.
-	unsigned char raw[16] = {};
-	bool random = false;
-	const int fd = open("/dev/urandom", O_RDONLY);
-	if (fd >= 0)
-	{
-		random = read(fd, raw, sizeof(raw)) == static_cast<ssize_t>(sizeof(raw));
-		close(fd);
-	}
-	if (!random)
-	{
-		uint64_t x = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) ^
-		             static_cast<uint64_t>(std::time(nullptr)) * 0x9E3779B97F4A7C15ull ^ reinterpret_cast<uintptr_t>(&x);
-		for (unsigned char& b : raw)
-		{
-			x ^= x << 13;
-			x ^= x >> 7;
-			x ^= x << 17;
-			b = static_cast<unsigned char>(x >> 24);
-		}
-	}
-	const char* alphabet = "abcdefghijkmnpqrstuvwxyz23456789"; // no 0/o, 1/l
-	m_token.clear();
-	for (unsigned char b : raw)
-		m_token += alphabet[b & 31];
-	if (!WriteFileAtomic(m_cfg.token_path, m_token + "\n"))
-		std::printf("[web] could not save the access token to %s (errno %d); it lasts this session\n", m_cfg.token_path.c_str(), errno);
-	return true;
-}
-
 bool WebServer::Start(const WebConfig& cfg)
 {
 	m_cfg = cfg;
-	LoadToken();
 	for (int i = 0; i < 8 && m_listen < 0; i++)
 	{
 		const int s = socket(AF_INET, SOCK_STREAM, 0);
@@ -453,7 +407,8 @@ bool WebServer::Start(const WebConfig& cfg)
 		m_listen = -1;
 		return false;
 	}
-	std::printf("[web] listening on port %u (token %.4s…)\n", static_cast<unsigned>(m_port), m_token.c_str());
+	std::printf("[web] listening on port %u (no key: http://<the console's address>:%u/)\n", static_cast<unsigned>(m_port),
+		static_cast<unsigned>(m_port));
 	std::fflush(stdout);
 	return true;
 }
@@ -475,7 +430,7 @@ void WebServer::Stop()
 
 std::string WebServer::LoopbackUrl() const
 {
-	return "http://127.0.0.1:" + std::to_string(m_port) + "/?t=" + m_token;
+	return "http://127.0.0.1:" + std::to_string(m_port) + "/";
 }
 
 void WebServer::RequestStats(uint64_t& count, double& age_s) const
@@ -507,7 +462,7 @@ bool WebServer::Address(std::string& url, std::string& shown) const
 	if (ip.empty())
 		return false;
 	shown = ip + ":" + std::to_string(m_port);
-	url = "http://" + shown + "/?t=" + m_token;
+	url = "http://" + shown + "/";
 	return true;
 }
 
@@ -585,8 +540,12 @@ void WebServer::Serve(int fd, const char* peer)
 				const std::string name = Lower(Trim(line.substr(0, colon))), value = Trim(line.substr(colon + 1));
 				if (name == "content-length")
 					content_length = static_cast<size_t>(std::strtoul(value.c_str(), nullptr, 10));
-				else if (name == "x-token")
-					req.token = value;
+				else if (name == "host")
+					req.host = Lower(value);
+				else if (name == "origin")
+					req.origin = Lower(value);
+				else if (name == "sec-fetch-site")
+					req.fetch_site = Lower(value);
 			}
 			pos = e + 2;
 		}
@@ -608,8 +567,6 @@ void WebServer::Serve(int fd, const char* peer)
 			req.body.append(buf, static_cast<size_t>(n));
 		}
 		req.body.resize(std::min(req.body.size(), content_length));
-		if (req.token.empty())
-			req.token = QueryValue(req.query, "t");
 		const double t0 = Now();
 		m_requests.fetch_add(1, std::memory_order_relaxed);
 		m_last_request.store(t0, std::memory_order_relaxed);
@@ -647,9 +604,37 @@ void WebServer::Serve(int fd, const char* peer)
 		SendAll(fd, res.data ? static_cast<const void*>(res.data) : static_cast<const void*>(res.body.data()), size);
 }
 
+// vk-285-118: a request the page itself made (see Route). The Host is an address (an IPv4 one, or [IPv6], with or without
+// the port) or localhost, or absent; the Origin, when there is one, is http:// and that Host; Sec-Fetch-Site isn't
+// cross-site. Requests from outside a browser (curl, scripts) carry neither Origin nor Sec-Fetch-Site and pass.
+static bool SameSite(const std::string& host, const std::string& origin, const std::string& fetch_site)
+{
+	if (fetch_site == "cross-site")
+		return false;
+	if (!host.empty())
+	{
+		std::string name = host;
+		if (name[0] == '[')
+			name = name.substr(0, name.find(']') + 1);
+		else
+			name = name.substr(0, name.find(':'));
+		bool address = !name.empty();
+		if (name[0] == '[')
+			address = name.size() > 2 && name.back() == ']' &&
+			          name.find_first_not_of("0123456789abcdef:.", 1) == name.size() - 1;
+		else
+			address = address && name.find_first_not_of("0123456789.") == std::string::npos;
+		if (!address && name != "localhost")
+			return false;
+	}
+	if (!origin.empty() && origin != "http://" + host)
+		return false;
+	return true;
+}
+
 void WebServer::Route(const Request& req, Response& res)
 {
-	// The page and what it loads need no token: they hold no data.
+	// The page and what it loads are served to anyone: they hold no data.
 	if (req.method == "GET" || req.method == "HEAD")
 		for (const WebAsset& a : m_cfg.assets)
 			if (a.path == req.path)
@@ -666,15 +651,15 @@ void WebServer::Route(const Request& req, Response& res)
 		res.body = Error("not found");
 		return;
 	}
-	// Compared without an early exit, so the time taken says nothing about the token.
-	bool ok = req.token.size() == m_token.size() && !m_token.empty();
-	unsigned diff = 0;
-	for (size_t i = 0; ok && i < m_token.size(); i++)
-		diff |= static_cast<unsigned char>(req.token[i] ^ m_token[i]);
-	if (!ok || diff != 0)
+	// vk-285-118: no key (the console's address is enough). What keeps another web site open on the phone from reading or
+	// changing the settings is what its requests carry: from a page of another site, an Origin that isn't this address, or
+	// Sec-Fetch-Site: cross-site; from a site that points its own name at the console (DNS rebinding), that name as the Host.
+	if (!SameSite(req.host, req.origin, req.fetch_site))
 	{
-		res.status = 401;
-		res.body = Error("scan the QR code on the TV");
+		res.status = 403;
+		res.body = Error("open the console's address itself: http://<its IP>:<port>/");
+		std::printf("[web] %s %s refused: from another site (Host \"%s\", Origin \"%s\", Sec-Fetch-Site \"%s\")\n", req.method.c_str(),
+			req.path.c_str(), req.host.c_str(), req.origin.c_str(), req.fetch_site.c_str());
 		return;
 	}
 	if (req.path == "/api/state" && req.method == "GET")
@@ -807,7 +792,7 @@ void WebServer::ApiGames(Response& res)
 	res.body = out + "]";
 }
 
-// In-game achievements share the settings page's access-token gate (AI-assisted).
+// In-game achievements share the settings page's same-site checks (AI-assisted).
 void WebServer::ApiAchievements(Response& res)
 {
 	std::string playing;

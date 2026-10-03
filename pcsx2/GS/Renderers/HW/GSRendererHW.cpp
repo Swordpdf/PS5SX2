@@ -2782,6 +2782,7 @@ unsigned long long g_orbis_mark[5], g_orbis_draw_t0, g_orbis_m2[6], g_orbis_d[5]
 // vk-285-84's Shadow of the Colossus profile) only runs with the flag file flags/drawprof, read once.
 extern bool OrbisFlag(const char* name);
 static bool s_orbis_drawprof = false, s_orbis_drawprof_read = false;
+static bool s_orbis_decal_modulate = false; // vk-285-118 (AI-assisted): the switch decal_modulate (EmulateTextureSampler), read with drawprof
 static inline void OrbisDrawProfRead()
 {
 	// Read at the first draw (the game runs, the jailbreak is done), not at static init.
@@ -2789,6 +2790,29 @@ static inline void OrbisDrawProfRead()
 	{
 		s_orbis_drawprof_read = true;
 		s_orbis_drawprof = OrbisFlag("drawprof");
+		s_orbis_decal_modulate = OrbisFlag("decal_modulate"); // vk-285-118
+	}
+}
+bool GSRendererHW::OrbisDecalAsModulate()
+{
+	OrbisDrawProfRead();
+	return s_orbis_decal_modulate;
+}
+// A DECAL draw turned into MODULATE: its vertex colours become 128 (and the alpha too when the texture gives it).
+void GSRendererHW::OrbisDecalFixVerts()
+{
+	if (!m_orbis_decal_fix)
+		return;
+	const bool alpha = m_orbis_decal_fix == 2;
+	m_orbis_decal_fix = 0;
+	GSVertex* v = const_cast<GSVertex*>(m_conf.verts);
+	for (u32 i = 0; i < m_conf.nverts; i++)
+	{
+		v[i].RGBAQ.R = 128;
+		v[i].RGBAQ.G = 128;
+		v[i].RGBAQ.B = 128;
+		if (alpha)
+			v[i].RGBAQ.A = 128;
 	}
 }
 #define ORBIS_TSC() (s_orbis_drawprof ? __builtin_ia32_rdtsc() : 0ull)
@@ -3001,6 +3025,7 @@ ORBIS_M2(0);
 
 				m_last_rt->UpdateValidity(valid_area);
 
+				OrbisDecalFixVerts(); // vk-285-118
 				g_gs_device->RenderHW(m_conf);
 
 				if (GSConfig.DumpGSData)
@@ -8348,11 +8373,20 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 	if (m_cached_ctx.TEX0.TFX == TFX_MODULATE && m_vt.m_eq.rgba == 0xFFFF && m_vt.m_min.c.eq(GSVector4i(128)))
 	{
 		// Micro optimization that reduces GPU load (removes 5 instructions on the FS program)
-		m_conf.ps.tfx = TFX_DECAL;
+		m_conf.ps.tfx = OrbisDecalAsModulate() ? TFX_MODULATE : TFX_DECAL; // vk-285-118: not on the PS5 with decal_modulate
 	}
 	else
 	{
 		m_conf.ps.tfx = m_cached_ctx.TEX0.TFX;
+		// vk-285-118 (AI-assisted): .hack//Infection (SLES-52237) menu sprites drawn opaque on the PS5, only the DECAL ones (a
+		// tester's vktrace: PS keys equal but for TFX). DECAL is MODULATE with every vertex colour 128 (tfx(): trunc(128*T/128)
+		// = T; with TCC 0 the alpha stays the vertex's), so with the flag decal_modulate the draw goes through the MODULATE
+		// shader and its vertex colours are set to 128 just before it is handed to the device (OrbisDecalFixVerts).
+		if (m_conf.ps.tfx == TFX_DECAL && OrbisDecalAsModulate())
+		{
+			m_conf.ps.tfx = TFX_MODULATE;
+			m_orbis_decal_fix = m_cached_ctx.TEX0.TCC ? 2 : 1;
+		}
 	}
 
 	m_conf.ps.tcc = m_cached_ctx.TEX0.TCC;
@@ -9685,6 +9719,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		GSHWDrawConfig::DumpConfig(GetDrawDumpPath("%05d_hwconfig.txt", s_n), m_conf);
 	}
 
+	OrbisDecalFixVerts(); // vk-285-118
 	if (!m_channel_shuffle_width)
 		g_gs_device->RenderHW(m_conf);
 	else

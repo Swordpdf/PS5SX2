@@ -320,6 +320,10 @@ private:
 	u32 m_last_channel_shuffle_tbp = 0;
 	u32 m_last_channel_shuffle_end_block = 0;
 	u32 m_channel_shuffle_width = 0;
+	// vk-285-118 (AI-assisted): a DECAL draw sent as MODULATE (decal_modulate switch): 0 none, 1 RGB to 128, 2 RGBA to 128.
+	int m_orbis_decal_fix = 0;
+	static bool OrbisDecalAsModulate();
+	void OrbisDecalFixVerts();
 	GSVector4i m_channel_shuffle_src_valid = GSVector4i::zero();
 	bool m_full_screen_shuffle = false;
 

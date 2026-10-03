@@ -195,11 +195,6 @@ footer a { color: var(--dim); }
          color: var(--text); padding: 10px 16px; border-radius: 99px; font-size: 14px; white-space: nowrap;
          box-shadow: 0 8px 30px rgba(0,0,0,0.5), 0 0 20px rgba(var(--glow),0.25); pointer-events: none; z-index: 5; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
-.gate { display: none; text-align: center; padding: 18vh 20px 0; }
-.gate.show { display: block; }
-.gate .big { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
-.gate .qr { width: 86px; height: 86px; margin: 0 auto 22px; border-radius: 14px; background:
-  conic-gradient(from 90deg at 30% 30%, #fff 25%, transparent 0) 0 0 / 28px 28px, rgba(255,255,255,0.08); opacity: 0.8; }
 .hide { display: none !important; }
 @media (min-width: 700px) {
   .case { flex-basis: 170px; height: 242px; }
@@ -235,12 +230,6 @@ footer a { color: var(--dim); }
     </div>
     <div class="clock" id="clock"></div>
   </header>
-
-  <div class="gate" id="gate">
-    <div class="qr"></div>
-    <div class="big">Scan the QR code on the TV</div>
-    <div style="color:var(--dim)">It's in the corner of the game shelf. This page needs the key it carries.</div>
-  </div>
 
   <main id="main" class="hide">
     <div class="testing hide" id="testing"><span><b>TESTING</b> · <span id="testlabel"></span></span><a href="#report">Report a problem</a></div>
@@ -297,6 +286,11 @@ const BUTTON_TARGETS = [["Cross","Cross"],["Circle","Circle"],["Square","Square"
   ["L2","L2"],["R2","R2"],["L3","L3"],["R3","R3"],["Start","Start"],["Select","Select"],["Up","D-pad up"],["Down","D-pad down"],
   ["Left","D-pad left"],["Right","D-pad right"],["Analog","Analog button"],["Pressure","Light press"],["None","Nothing"]];
 const button = (name, label, def) => ({ key: "PS5SX2/Button" + name, label, type: "pick", def, options: BUTTON_TARGETS });
+// vk-285-118: how hard each button presses (OrbisPadMap.h Config::pressure), as the sheet's StrengthChoices().
+// vk-285-118: the sticks' dead zones (OrbisPadMap.h Config::deadzone_left/right), as the sheet's DeadzoneChoices().
+const DEADZONES = [["0","Off"],["5","5%"],["10","10%"],["15","15%"],["20","20%"],["25","25%"],["30","30%"]];
+const STRENGTHS = [["1","Full"],["0.75","75%"],["0.5","50%"],["0.4","40%"],["0.3","30%"],["0.25","25%"],["0.2","20%"],["0.15","15%"],["0.1","10%"]];
+const strength = (name, label) => ({ key: "PS5SX2/Button" + name + "Pressure", label, type: "pick", def: "1", options: STRENGTHS });
 const INVERT = [["0","Off"],["1","Up-down"],["2","Left-right"],["3","Both"]];
 // vk-285-117: what a save or load button can be (OrbisPadMap.h ComboButtonName), as the sheet's ComboChoices().
 const COMBO_BUTTONS = [["L3R3","L3 + R3"],["Cross","Cross"],["Circle","Circle"],["Square","Square"],["Triangle","Triangle"],["L1","L1"],
@@ -328,6 +322,9 @@ const GROUPS = [
     { key: "CropBottom", label: "Crop bottom", type: "seg", def: "0", short: "Crop bottom %", cols: 5, options: CROP_PX },
   ]},
   { title: "Graphics", items: [
+    { key: "PS5SX2/Renderer", label: "Renderer", type: "seg", def: "Hardware", short: "%", restart: true,
+      options: [["Hardware","Hardware"],["Software","Software"]],
+      hint: "Software draws the game on the CPU, as a PS2 does it: slower, but right in games whose effects the hardware renderer gets wrong. Set it for one game in that game's settings. Takes effect when the game starts." },
     { key: "filter", label: "Texture filtering", type: "seg", def: "2", short: "% filtering",
       options: [["0","Nearest"],["2","PS2"],["1","Bilinear"],["3","Not sprites"]] },
     { key: "MaxAnisotropy", label: "Anisotropic filtering", type: "seg", def: "0", short: "AF %",
@@ -355,7 +352,7 @@ const GROUPS = [
     // driver copy the picture on the CPU (the logs' [readbacks] line and the settings log's "readbacks" line say how many).
     { key: "HWDownloadMode", label: "GPU readbacks", type: "seg", def: "0", short: "Readbacks %", cols: 2,
       options: [["0","Accurate"],["1","Whole area"],["3","Don't wait"],["4","Skip"]],
-      hint: "Some games read the picture back from the GPU, which is slow on the PS5. Accurate is PCSX2's default. Whole area reads everything drawn since the last read in one go, so there are fewer stops. Don't wait doesn't stop the game for the GPU: quicker, but effects that depend on it can flicker. Skip ignores the reads: fastest, and those effects break." },
+      hint: "Some games read the picture back from the GPU, which is slow on the PS5. Accurate is PCSX2's default. Whole area reads everything drawn since the last read in one go, so there are fewer stops. Don't wait doesn't stop the game for the GPU: quicker, but effects that depend on it can flicker. Skip ignores the reads: fastest, and those effects break. A game that slows down because of them (on firmware below 10 each read can wait a vblank; elsewhere some games read so often that the waits add up to a third of the time) switches to Don't wait by itself unless this is set." },
   ]},
   // vk-285-110: the PS2 system language games are told (main-boot.cpp, pcsx2/CDVD/CDVD.cpp). Read when the game starts.
   { title: "Game", items: [
@@ -376,18 +373,29 @@ const GROUPS = [
   // vk-285-116 (AI-assisted): the Controls tab: the remapping, (vk-285-117) the save and load combos and their hold time
   // (main-boot.cpp orbis_ps5opts_from, orbis-shims/OrbisPadMap.h), the sticks, rumble, the keyboard and mouse.
   { title: "Buttons", tab: "controls",
-    hint: "Save and load: hold the two buttons together (slot 1). L3 + R3 is both sticks pressed in; Touchpad left or right is a finger on that side. Below: what each button presses in games (Light press: the other buttons press at half strength, for Metal Gear Solid 2 and 3). PS5SX2's own combos always use the real buttons.",
+    hint: "Save and load: hold the two buttons together (slot 1). L3 + R3 is both sticks pressed in; Touchpad left or right is a finger on that side. Fast forward (experimental, for skipping videos): hold its two buttons to speed the game up, and again for full speed; Nothing on both turns it off. Below: what each button presses in games (Light press: the other buttons press at half strength, for Metal Gear Solid 2 and 3). PS5SX2's own combos always use the real buttons.",
     items: [
     combo("SaveButton1", "Save: button 1", "L3R3", "Save state"), combo("SaveButton2", "Save: button 2", "Up"),
     combo("LoadButton1", "Load: button 1", "L3R3", "Load state"), combo("LoadButton2", "Load: button 2", "Down"),
     { key: "PS5SX2/StateHold", label: "Hold time", type: "seg", def: "0", cols: 6,
       options: [["0","Instant"],["0.5","0.5 s"],["1","1 s"],["1.5","1.5 s"],["2","2 s"],["3","3 s"]],
       hint: "How long the save or load buttons are held before it happens. Instant: as soon as both are down, and that last press doesn't reach the game. A second or two stops saving or loading by accident." },
+    combo("FastButton1", "Fast forward: button 1", "None", "Fast forward (experimental)"), combo("FastButton2", "Fast forward: button 2", "None"),
+    { key: "PS5SX2/FastSpeed", label: "Fast forward speed", type: "seg", def: "0", cols: 4,
+      options: [["0","Max"],["2","2x"],["3","3x"],["4","4x"]],
+      hint: "How fast fast forward runs. Max: as fast as the console can. Some games' videos skip only at Max." },
     button("Cross", "Cross", "Cross"), button("Circle", "Circle", "Circle"), button("Square", "Square", "Square"),
     button("Triangle", "Triangle", "Triangle"), button("L1", "L1", "L1"), button("R1", "R1", "R1"), button("L2", "L2", "L2"),
     button("R2", "R2", "R2"), button("L3", "L3", "L3"), button("R3", "R3", "R3"), button("Options", "Options", "Start"),
     button("Touchpad", "Touchpad click", "Select"), button("Up", "D-pad up", "Up"), button("Down", "D-pad down", "Down"),
     button("Left", "D-pad left", "Left"), button("Right", "D-pad right", "Right"),
+  ]},
+  { title: "Button strength", tab: "controls",
+    hint: "How hard each button presses what it's set to press. The PS2's face buttons, D-pad and shoulders read pressure, and some games act on a light press: SOCOM II crouches at 20% on Triangle, Combined Assault at 30% (a full press goes prone). Set the touchpad click to Triangle at 20% for a crouch button. L2 and R2 press at most this hard.",
+    items: [
+    strength("Cross", "Cross"), strength("Circle", "Circle"), strength("Square", "Square"), strength("Triangle", "Triangle"),
+    strength("L1", "L1"), strength("R1", "R1"), strength("L2", "L2"), strength("R2", "R2"), strength("Touchpad", "Touchpad click"),
+    strength("Up", "D-pad up"), strength("Down", "D-pad down"), strength("Left", "D-pad left"), strength("Right", "D-pad right"),
   ]},
   { title: "Sticks", tab: "controls", items: [
     { key: "PS5SX2/SwapSticks", label: "Swap sticks", type: "toggle", def: "false",
@@ -399,10 +407,18 @@ const GROUPS = [
     { key: "PS5SX2/LeftStickDpad", label: "Left stick as D-pad", type: "seg", def: "0", cols: 3,
       options: [["0","Off"],["1","Also"],["2","Only"]],
       hint: "For games that only read the D-pad. Also: the left stick presses the D-pad as it moves. Only: it presses just the D-pad, and the game's left stick stays still." },
+    { key: "PS5SX2/DeadzoneLeft", label: "Left stick dead zone", type: "pick", def: "0", options: DEADZONES, hint: "Inside this much of the way out, the stick reads as centred; past it, the rest of the way still reaches full. For a stick that drifts, or a game that walks or turns by itself. Off is the stick as it is." },
+    { key: "PS5SX2/DeadzoneRight", label: "Right stick dead zone", type: "pick", def: "0", options: DEADZONES, hint: "Inside this much of the way out, the stick reads as centred; past it, the rest of the way still reaches full. For a stick that drifts, or a game that walks or turns by itself. Off is the stick as it is." },
   ]},
   { title: "Controller", tab: "controls", items: [
     { key: "PS5SX2/Rumble", label: "Rumble", type: "toggle", def: "true", short: "Rumble %",
       hint: "The game's vibration on the controller. In a game, hold L2 and D-pad down for 2 seconds to open this page in the PS5's own web browser; the game keeps running behind it." },
+    { key: "PS5SX2/RumbleStrength", label: "Rumble strength", type: "pick", def: "1",
+      options: [["0.25","25%"],["0.5","50%"],["0.75","75%"],["1","100%"],["1.25","125%"],["1.5","150%"],["2","200%"]],
+      hint: "How strongly the controller vibrates, as a share of what the game asks for. Above 100% lifts weak rumble; it never goes past the motors' full strength." },
+    { key: "PS5SX2/Multitap", label: "Multitap", type: "seg", def: "0", cols: 3, restart: true,
+      options: [["0","Off"],["1","Port 1"],["2","Port 2"]],
+      hint: "For 4-player games. Players 2 to 4 are the other PS5 users logged in when the game starts, each on their own controller. Port 1 suits most games; a few want the multitap in port 2. Off: player 2 on port 2, as before." },
   ]},
   // vk-285-113: a USB keyboard and mouse plugged into the PS5 (orbis-shims/ProsperoKbdMouse.cpp, main-boot.cpp).
   { title: "Keyboard and mouse", tab: "controls", items: [
@@ -435,7 +451,6 @@ let mcdBusy = false;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-let token = "";
 let games = [];
 let state = { mode: "menu", playing: null };
 let current = null;      // the game id shown, or "@global"
@@ -449,25 +464,23 @@ try { const saved = localStorage.getItem("ps5sx2.tab"); if (["controls", "achiev
 let achievementData = null, achievementLoading = false, achievementPage = 0, achievementFilter = "all";
 let achievementImageGeneration = 0;
 
-// ---- The key from the QR code: kept in this browser for this address.
+// vk-285-118: no key any more: the console's address is enough (fe_web.cpp refuses other sites' requests instead). An old
+// bookmark's ?t= is dropped from the address bar.
 (function () {
-  const u = new URL(location.href);
-  const t = u.searchParams.get("t");
   try {
-    if (t) { localStorage.setItem("ps5sx2.token", t); u.searchParams.delete("t"); history.replaceState(null, "", u.pathname + u.search); }
-    token = t || localStorage.getItem("ps5sx2.token") || "";
-  } catch (e) { token = t || ""; }
+    const u = new URL(location.href);
+    if (u.searchParams.has("t")) { u.searchParams.delete("t"); history.replaceState(null, "", u.pathname + u.search); }
+    localStorage.removeItem("ps5sx2.token");
+  } catch (e) {}
 })();
 
 async function api(path, opts = {}) {
-  const r = await fetch(path, Object.assign({}, opts, { headers: Object.assign({ "X-Token": token }, opts.headers || {}) }));
-  if (r.status === 401) { showGate(); throw new Error("unauthorized"); }
+  const r = await fetch(path, opts);
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
-const cover = (id) => "/api/cover?id=" + encodeURIComponent(id) + "&t=" + encodeURIComponent(token);
-function showGate() { $("gate").classList.add("show"); $("main").classList.add("hide"); }
+const cover = (id) => "/api/cover?id=" + encodeURIComponent(id);
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2200);
@@ -560,7 +573,7 @@ async function select(id) {
     data = await api("/api/settings?id=" + encodeURIComponent(id));
     if (current === id) render();
     loadCards(); // vk-285-113: the list may have changed (a card copied in); it draws again only when it has
-  } catch (e) { if (e.message !== "unauthorized") toast("Couldn't load the settings: " + e.message); }
+  } catch (e) { toast("Couldn't load the settings: " + e.message); }
 }
 
 function effective(item) {
@@ -704,7 +717,7 @@ function renderAchievements() {
     image.src = badgeUrl(image);
   }
   function badgeUrl(image) {
-    return '/api/achievement-badge?id=' + image.dataset.achievementId + '&unlocked=' + image.dataset.achievementUnlocked + '&t=' + encodeURIComponent(token);
+    return '/api/achievement-badge?id=' + image.dataset.achievementId + '&unlocked=' + image.dataset.achievementUnlocked;
   }
   nextImage(); nextImage();
 }
@@ -914,7 +927,7 @@ async function mcdCreate() {
     const r = await api("/api/memcards", { method: "POST", body: "create " + mcdSize + " " + name, headers: { "Content-Type": "text/plain" } });
     cards = r; mcdName = "";
     toast("Made " + r.created + " (" + mcdSize + " MB) \u00b7 pick it in a slot");
-  } catch (e) { if (e.message !== "unauthorized") toast("Card not made: " + e.message); }
+  } catch (e) { toast("Card not made: " + e.message); }
   mcdBusy = false;
   if (data) render();
 }
@@ -929,7 +942,7 @@ async function useRecommended() {
     const live = state.playing && (id === "@global" || state.playing.id === id);
     toast(live ? "Recommended settings on \u00b7 applying" + (mtvu ? ", MTVU at next launch" : " in the game") : "Recommended settings on");
     refreshGames();
-  } catch (e) { if (e.message !== "unauthorized") toast("Not saved: " + e.message); }
+  } catch (e) { toast("Not saved: " + e.message); }
 }
 
 // Changes show at once and go to the console after a short pause, so a few taps make one write.
@@ -965,7 +978,7 @@ async function save() {
     const live = state.playing && (id === "@global" || state.playing.id === id);
     toast(live ? (later.length ? "Saved \u00b7 the rest applies now, " + later.join(" and ") + " at next launch" : "Saved \u00b7 applying in the game") : "Saved");
     refreshGames();
-  } catch (e) { if (e.message !== "unauthorized") toast("Not saved: " + e.message); }
+  } catch (e) { toast("Not saved: " + e.message); }
 }
 
 async function refreshGames() {
@@ -1019,7 +1032,7 @@ async function sendNote() {
     toast("Note added to the logs");
     return true;
   } catch (e) {
-    if (e.message !== "unauthorized") toast("The note didn't reach the console");
+    toast("The note didn't reach the console");
     return false;
   }
 }
@@ -1028,7 +1041,7 @@ $("dllogs").addEventListener("click", async (ev) => {
   ev.preventDefault();
   await sendNote();
   toast("Downloading the logs…");
-  location.href = "/api/report?t=" + encodeURIComponent(token);
+  location.href = "/api/report";
 });
 function showTesting(s) {
   if (!(s.test > 0)) return;
@@ -1049,7 +1062,6 @@ $("discord").addEventListener("click", async () => {
 });
 
 (async function start() {
-  if (!token) { showGate(); return; }
   try {
     const s = await api("/api/state");
     state = s;
@@ -1057,7 +1069,7 @@ $("discord").addEventListener("click", async () => {
     $("build").textContent = s.build;
     showTesting(s);
     games = await api("/api/games");
-  } catch (e) { if (e.message !== "unauthorized") toast("The console didn't answer"); return; }
+  } catch (e) { toast("The console didn't answer"); return; }
   $("main").classList.remove("hide");
   buildFlow();
   if (state.playing) { $("now").classList.add("show"); $("nowtitle").textContent = state.playing.title; $("nowcover").src = cover(state.playing.id); }

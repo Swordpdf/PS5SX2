@@ -33,7 +33,7 @@ Expect rough edges. Bug reports with logs are very welcome, and so is patience.
 - **Native, not streamed.** The emulator, its recompilers and its renderer all run on the console itself.
 - **Up to 6x native resolution.** PCSX2's hardware renderer runs on Vulkan with 4K output, and FSR is one of the display filters.
 - **A shelf for your games.** A 3D cover flow of your library. Covers download automatically the first time you start it. Games play from `.iso`, `.chd`, `.cso` and `.zso` files, and each is titled from its serial in PCSX2's game database, whatever the file is called.
-- **Settings from your phone.** The shelf shows a QR code: scan it and a settings page opens on your phone.
+- **Settings from your phone.** The shelf shows a QR code: scan it, or type the address under it (`http://<PS5 IP>:<port>/`) into any browser on the same network, and a settings page opens. Triangle on the shelf shows the QR code large.
   - Change the resolution, aspect ratio, filters, patches and more, for all games or one game.
   - Most changes apply while you play.
   - In a game, hold L2 + D-pad Down for 2 seconds to open the page in the PS5's own web browser. The game keeps running.
@@ -42,9 +42,12 @@ Expect rough edges. Bug reports with logs are very welcome, and so is patience.
 - **Recommended settings** for the games played during development, one tap away on the settings page.
 - **Bigger memory cards.** Make blank 8, 16, 32 or 64 MB cards on the settings page and pick the card in each slot, for all games or for one.
 - **Texture packs.** A game's textures can be replaced with PNG or DDS files kept on the console, on a USB drive or in any folder you name.
-- **Rumble and an FPS graph.** The game's vibration goes to the controller, and a blue frame-rate graph can sit in the corner of the picture. The settings page switches them on and off, and chooses what the info box shows.
+- **Rumble and an FPS graph.** The game's vibration goes to the controller, at the strength you choose, and a blue frame-rate graph can sit in the corner of the picture. The settings page switches them on and off, and chooses what the info box shows.
+- **Up to 4 players** with a multitap: the other PS5 users logged in when the game starts play on their own controllers.
+- **Fast forward** (experimental) on a button combo you choose, to skip videos.
+- **Games, BIOS and textures on a USB drive.** Games are found in the drive's top folder, `games/`, `PCSX2/games/` and `PS5SX2/games/`; a BIOS in `bios/`, `PCSX2/bios/` or `PS5SX2/bios/`.
 - **USB keyboard and mouse** play as the PS2 controller, with PCSX2's own keys. This doesn't work on firmware 11.x and 12.00 yet: see [Known limitations](#known-limitations).
-- **Logs that survive.** The last sessions' boot, emulator and settings logs stay on the console, so a problem can be tracked down afterwards.
+- **Logs that survive.** The last sessions' boot, emulator and settings logs stay on the console, so a problem can be tracked down afterwards. When a game runs slow, a built-in profiler notes in the log which part of the emulator the time went to: logs from slow games are the most useful ones to send.
 
 ## What you need
 
@@ -88,6 +91,7 @@ The first start downloads the covers for your games, then the shelf opens.
 | L1 / R1 | Jump a page |
 | Cross or OPTIONS | Play |
 | Square | The game's settings: L1 / R1 switch between this game and all games, L2 / R2 between *Settings* and *Controls* |
+| Triangle | The settings page's QR code, large |
 
 **In a game**
 
@@ -97,6 +101,9 @@ The first start downloads the covers for your games, then the shelf opens.
 | Hold L3 + R3, then D-pad Up / Down | Save / load state (slot 1) |
 | Hold L3 + R3 and let go | Next display filter |
 | Hold L2 + D-pad Down for 2 seconds | Open the settings page in the PS5's web browser; the game keeps running |
+| The fast forward buttons (Controls tab; none by default) | Fast forward on or off |
+
+In a game the touchpad click is the PS2's SELECT and OPTIONS its START. The Create button (left of the touchpad) does nothing.
 
 You can change the save and load buttons on the *Controls* tab (*Buttons*): pick two buttons for each, and how long to hold them (instant up to 3 seconds). A finger on the touchpad's left or right side counts as a button too: the old touchpad + Cross combo is *Touchpad left* + *Cross* to save and *Touchpad right* + *Cross* to load. These combos always use the controller's own buttons, whatever the remapping below.
 
@@ -123,11 +130,11 @@ The mouse moves a stick (the right one by default), and its left and right butto
 
 ## The settings page
 
-Scan the QR code in the corner of the shelf with a phone on the same network. You can change settings for all games or for one game:
+Scan the QR code in the corner of the shelf with a phone on the same network, or type the address shown under it (`http://<PS5 IP>:<port>/`) into any browser there. You can change settings for all games or for one game:
 
 - **Display:** resolution (1x to 6x), aspect ratio, widescreen patches and display filter (FSR, FSR soft, Classic, CRT).
-- **Graphics:** texture filtering, anisotropic filtering, blending accuracy, mipmapping, texture replacements and the folder they're read from.
-- **Performance:** EE cycle rate and skip, MTVU, and *GPU readbacks* for the few games that read the picture back from the GPU (Guitar Hero II and III, OutRun 2006): *Accurate* is PCSX2's own way, the others trade accuracy for speed.
+- **Graphics:** the renderer (hardware, or software for games the hardware renderer gets wrong; it takes a restart), texture filtering, anisotropic filtering, blending accuracy, mipmapping, texture replacements and the folder they're read from.
+- **Performance:** EE cycle rate and skip, MTVU, and *GPU readbacks* for the few games that read the picture back from the GPU (Guitar Hero II and III, OutRun 2006): *Accurate* is PCSX2's own way, the others trade accuracy for speed. On firmware below 10 a readback can wait for the next vblank, and some games read back so often that the waits add up elsewhere too, so a game that slows down for them switches to *Don't wait* by itself unless you've set this.
 - **Game:** the language the PS2 tells games.
 - **On screen:** the info box in the top right corner (off, FPS, or FPS and how busy the EE, GS and VU threads are) and the blue FPS graph.
 - **Patches:** the game's patch groups, such as 60 FPS.
@@ -135,9 +142,10 @@ Scan the QR code in the corner of the shelf with a phone on the same network. Yo
 
 The **Controls** tab has the controller's settings, for all games or for one game:
 
-- **Buttons:** the two buttons that save the state, the two that load it, and how long they're held first. Then what each of the controller's buttons presses on the PS2 controller: any PS2 button, the analog button, a *light press* (while it's held, the other buttons press at half strength, for games such as Metal Gear Solid 2 and 3 that read how hard a button is pressed) or nothing. A trigger on a face button presses as hard as it's pulled.
-- **Sticks:** swap the sticks, invert either one, and make the left stick press the D-pad (as well as moving, or instead).
-- **Controller:** rumble.
+- **Buttons:** the two buttons that save the state, the two that load it, the two that turn fast forward on and off (experimental; and its speed), and how long they're held first. Then what each of the controller's buttons presses on the PS2 controller: any PS2 button, the analog button, a *light press* (while it's held, the other buttons press at half strength, for games such as Metal Gear Solid 2 and 3 that read how hard a button is pressed) or nothing. A trigger on a face button presses as hard as it's pulled.
+- **Button strength:** how hard each button presses (10% to full), for games that act on a light press: SOCOM II crouches with Triangle at 20% (Combined Assault at 30%), so the touchpad click set to Triangle at 20% makes a crouch button.
+- **Sticks:** swap the sticks, invert either one, make the left stick press the D-pad (as well as moving, or instead), and a dead zone for each stick.
+- **Controller:** rumble and its strength (25% to 200%), and a multitap in PS2 port 1 or 2 for up to 4 players (it takes a restart).
 - **Keyboard and mouse:** whether the keys and the mouse play as the controller or as the PS2's USB devices, which stick the mouse moves, its speed and its buttons.
 
 Most changes show up in the running game straight away. The page marks the few that need a restart. **Recommended** puts back the settings tuned for that game; it leaves your controls, language and memory cards alone.

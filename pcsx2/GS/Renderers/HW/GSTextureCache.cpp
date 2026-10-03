@@ -8894,23 +8894,33 @@ void GSTextureCache::PaletteMap::Clear()
 	}
 }
 
+// vk-285-119 (AI-assisted): a hash that mixes. The old one XORed every field shifted left by one (`hash ^ v << 1` is
+// `hash ^ (v << 1)`), so the fields cancelled out: a game that samples many tiles of one render target (rects like
+// x,y,x+32,y+32 at a few block pointers) put 35,840 such keys on 128 distinct hashes in a host test, chains of ~280, and
+// each lookup cost ~2.2 us instead of ~0.09 us. The testers' profiler (vk-285-118) had this map's find() at 40% of the GS
+// thread in Spider-Man 2 and 27% in Need for Speed Underground 2. Same keys and equality, so the cache behaves the same.
+static inline u64 SurfaceOffsetHashStep(u64 h, u64 v)
+{
+	h = (h ^ v) * 0x9E3779B97F4A7C15ull;
+	return h ^ (h >> 29);
+}
+
 std::size_t GSTextureCache::SurfaceOffsetKeyHash::operator()(const GSTextureCache::SurfaceOffsetKey& key) const
 {
-	std::hash<u32> hash_fn_u32;
-	std::hash<int> hash_fn_int;
-	std::hash<size_t> hash_fn_szt;
-	size_t hash = 0x9e3779b9;
+	u64 h = 0x243F6A8885A308D3ull;
 	for (const SurfaceOffsetKeyElem& elem : key.elems)
 	{
-		hash = hash ^ hash_fn_u32(elem.bp) << 1;
-		hash = hash ^ hash_fn_u32(elem.bw) << 1;
-		hash = hash ^ hash_fn_u32(elem.psm) << 1;
-		hash = hash ^ hash_fn_int(elem.rect.x) << 1;
-		hash = hash ^ hash_fn_int(elem.rect.y) << 1;
-		hash = hash ^ hash_fn_int(elem.rect.z) << 1;
-		hash = hash ^ hash_fn_int(elem.rect.w) << 1;
+		h = SurfaceOffsetHashStep(h, static_cast<u64>(elem.bp) | (static_cast<u64>(elem.bw) << 16) | (static_cast<u64>(elem.psm) << 32));
+		h = SurfaceOffsetHashStep(h, static_cast<u64>(static_cast<u32>(elem.rect.x)) | (static_cast<u64>(static_cast<u32>(elem.rect.y)) << 32));
+		h = SurfaceOffsetHashStep(h, static_cast<u64>(static_cast<u32>(elem.rect.z)) | (static_cast<u64>(static_cast<u32>(elem.rect.w)) << 32));
 	}
-	return hash_fn_szt(hash);
+	// murmur3's finaliser, so every bit of the result depends on every field
+	h ^= h >> 33;
+	h *= 0xff51afd7ed558ccdull;
+	h ^= h >> 33;
+	h *= 0xc4ceb9fe1a85ec53ull;
+	h ^= h >> 33;
+	return static_cast<std::size_t>(h);
 }
 
 bool GSTextureCache::SurfaceOffsetKeyEqual::operator()(const GSTextureCache::SurfaceOffsetKey& lhs, const GSTextureCache::SurfaceOffsetKey& rhs) const

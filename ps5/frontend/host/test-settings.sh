@@ -59,6 +59,12 @@ if diff -u "$work/web-files.txt" "$work/sheet-files.txt" > "$work/files.diff"; t
 else
   echo "FAIL: the sheet's files differ from the page's (see $work/files.diff)"; fail=1
 fi
+# vk-285-121: a console without settings/: both writers make it.
+if "$work/settings_test_new" "$work/new" nosettings "$presets" > "$work/nosettings.txt" 2> "$work/nosettings.log"; then
+  echo "PASS: the sheet and the page make a missing settings/ ($(grep -c '^PASS' "$work/nosettings.txt") saves)"
+else
+  echo "FAIL: a save into a missing settings/ (see $work/nosettings.txt)"; fail=1
+fi
 # vk-285-116: the sheet's options against the page's GROUPS (order, tabs, keys, labels, defaults, values).
 "$CXX" -std=c++20 "${flags[@]}" "$here/options_dump.cpp" "$fe/fe_options.cpp" "$fe/fe_settings.cpp" "${common[@]}" \
   -o "$work/options_dump" -lz -lpthread

@@ -9,8 +9,10 @@
 
 namespace orbis_kbm
 {
-// ScePad button bits, as main-boot.cpp's orbis_pad_apply reads them.
-constexpr uint32_t PAD_SELECT = 0x00000001, PAD_L3 = 0x00000002, PAD_R3 = 0x00000004, PAD_START = 0x00000008;
+// ScePad button bits, as main-boot.cpp's orbis_pad_apply reads them. vk-285-122: Select (Backspace) has a bit of its own,
+// one ScePad never sets: ScePad's 0x1 is the DualSense's Create button (the old Share), which presses nothing now
+// (orbis-shims/OrbisPadMap.h).
+constexpr uint32_t PAD_SELECT = 0x40000000, PAD_L3 = 0x00000002, PAD_R3 = 0x00000004, PAD_START = 0x00000008;
 constexpr uint32_t PAD_UP = 0x00000010, PAD_RIGHT = 0x00000020, PAD_DOWN = 0x00000040, PAD_LEFT = 0x00000080;
 constexpr uint32_t PAD_L1 = 0x00000400, PAD_R1 = 0x00000800;
 constexpr uint32_t PAD_TRIANGLE = 0x00001000, PAD_CIRCLE = 0x00002000, PAD_CROSS = 0x00004000, PAD_SQUARE = 0x00008000;

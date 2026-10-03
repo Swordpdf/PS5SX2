@@ -5,7 +5,7 @@
 // at the next vsync (GSRenderer.cpp OrbisLiveTune -> main-boot.cpp orbis_reload_gs_ini_cpu).
 //
 // Plain BSD sockets, one thread, one request per connection; the same code runs on the PC in
-// fe_host for testing. Every /api/ request needs the access token, which the QR code carries.
+// fe_host for testing. Every /api/ request uses the same-site checks; the console address is sufficient.
 //
 // Copyright (C) 2026 Spyros
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -45,7 +45,7 @@ struct WebConfig
 	std::string patches_dir;            // <serial>_<crc>.pnach
 	std::string covers_dir;             // the user's covers: <serial|stem|title>.jpg/.png
 	std::string cache_dir;              // downloaded covers: <serial>.jpg
-	std::string token_path;             // the access token, made on first start
+	std::string token_path;             // unused since vk-285-118 (no key); kept for the host harness's build of the 1.50 page
 	std::string build_tag;
 	uint16_t port = 8844;               // the first port tried; the next seven if it is taken
 	std::vector<WebAsset> assets;
@@ -81,16 +81,16 @@ public:
 	void Stop();
 
 	uint16_t Port() const { return m_port; }
-	const std::string& Token() const { return m_token; }
+	const std::string& Token() const { return m_token; } // "" since vk-285-118 (the host harness sends it to the 1.50 page)
 
 	// The disc image PCSX2 runs ("" while the shelf is up).
 	void SetNowPlaying(const std::string& image_path);
 
-	// The QR code's address, "http://<ip>:<port>/?t=<token>", and the short "<ip>:<port>" shown
-	// under it. False (both empty) without a network.
+	// The QR code's address, "http://<ip>:<port>/" (vk-285-118: no key), and the short "<ip>:<port>" shown under it.
+	// False (both empty) without a network.
 	bool Address(std::string& url, std::string& shown) const;
 
-	// vk-285-113: for a browser on the console itself, "http://127.0.0.1:<port>/?t=<token>".
+	// vk-285-113: for a browser on the console itself, "http://127.0.0.1:<port>/".
 	std::string LoopbackUrl() const;
 
 	// vk-285-113: how many requests came in and how long ago the last one was (-1 while none has). The browser
@@ -103,6 +103,7 @@ private:
 	struct Request
 	{
 		std::string method, path, query, body, token;
+		std::string host, origin, fetch_site; // vk-285-118: the Host, Origin and Sec-Fetch-Site headers (see Route)
 		std::string peer; // the client's address, for the settings log
 	};
 	struct Response

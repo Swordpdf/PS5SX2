@@ -400,6 +400,61 @@ extern unsigned long long g_orbis_ee_vsyncq_ticks, g_orbis_vu_idle_ticks, g_orbi
 extern std::atomic<int> g_orbis_widescreen, g_orbis_ws_active; // vk-285-12 (pcsx2/OrbisWidescreen.cpp)
 void OrbisEEProfMark(); // vk-285-8 (the port's orbis_eeprof.cpp)
 void OrbisGSProfStart(); // vk-285-24: the same profiler on the GS thread (/data/PCSX2/gsprof)
+void OrbisAutoProfSecond(float speed, float ee, float gs, float vu); // vk-285-118 (orbis_eeprof.cpp)
+std::atomic<int> g_orbis_rb_auto_request{0}; // vk-285-118: StubHost.cpp hands it to main-boot.cpp's OrbisReadbackAutoCpu
+bool OrbisFlag(const char* name);
+
+// vk-285-118 (AI-assisted): the readback stall of older firmware. The testers' logs (2026-09-30..10-03, six consoles) put
+// a GPU readback's wait at 20-36 ms on firmware 4.03, 4.50, 6.00 and 7.40, and at 0.3-6 ms on 10.40, 12.00 and 13.x,
+// for the same kind of tiny reads (0.0 MB): the wait runs to a vblank or two, so a game that reads back once a frame runs
+// at half speed (Crash Nitro Kart and Valkyrie Profile 2 at 50% and 33.3 ms a frame, Fatal Frame, The Matrix: Path of Neo
+// at 29%). When that is what is happening -- the GS thread waits 150 ms a second or more for readbacks, each one 10 ms or
+// more, the game is under 92% speed, for 3 seconds in a row -- GPU readbacks switch to Don't wait (HWDownloadMode 3) for
+// the rest of the game, unless gs.ini or the game's file sets HWDownloadMode itself (OrbisReadbackAutoCpu, on the CPU
+// thread). The flag noautoreadback turns it off.
+// vk-285-119 (AI-assisted): the same switch for many short waits. The vk-285-118 logs (firmware 13.x) had games that
+// read back ~90-170 times a second, each wait only 2.6-5 ms but together 435-500 ms of every second on the GS thread:
+// The Punisher (77% speed), Max Payne 2, Guitar Hero World Tour. So: 300 ms a second or more of readback waits, at 20
+// readbacks or more, under 92% speed, for 5 seconds in a row (the 10 ms-each rule still needs 3) -- and at least 1.5
+// readbacks a displayed frame: a wait also covers the GPU work queued before it, so a game held back by the GPU that
+// reads back once a frame would reach 300 ms too, and Don't wait would buy it little (review of vk-285-119). The three
+// games above read back 2 to 3.4 times a frame.
+std::atomic<int> g_orbis_rb_auto_kind{0}; // 1: each wait 10 ms or more (old firmware), 2: many short waits (main-boot.cpp)
+static void OrbisReadbackAutoSecond(float speed, unsigned fps)
+{
+	static int s_checked = -1;
+	static bool s_done = false;
+	static int s_streak = 0, s_streak_many = 0;
+	static unsigned long long s_n0 = 0, s_ns0 = 0;
+	const unsigned long long n = g_orbis_readback_wait_n - s_n0, ns = g_orbis_readback_wait_ns - s_ns0;
+	s_n0 = g_orbis_readback_wait_n;
+	s_ns0 = g_orbis_readback_wait_ns;
+	if (s_done)
+		return;
+	if (s_checked < 0)
+		s_checked = OrbisFlag("noautoreadback") ? 1 : 0;
+	if (s_checked == 1 || GSConfig.HWDownloadMode > GSHardwareDownloadMode::EnabledForceFull)
+		return;
+	const double ms = static_cast<double>(ns) / 1e6;
+	if (n >= 3 && ms >= 150.0 && ms / static_cast<double>(n) >= 10.0 && speed < 92.0f)
+		s_streak++;
+	else
+		s_streak = 0;
+	if (n >= 20 && ms >= 300.0 && speed < 92.0f && 2ull * n >= 3ull * fps)
+		s_streak_many++;
+	else
+		s_streak_many = 0;
+	const int kind = (s_streak >= 3) ? 1 : (s_streak_many >= 5) ? 2 : 0;
+	if (kind == 0)
+		return;
+	s_done = true;
+	printf("[readbacks] the GS thread waited %.0f ms in the last second for %llu readbacks (%.1f ms each) at %.0f%% speed, "
+		   "%d s in a row: asking for GPU readbacks Don't wait (%s, %u fps)\n", ms, n, ms / static_cast<double>(n), speed,
+		kind == 1 ? s_streak : s_streak_many, kind == 1 ? "each wait 10 ms or more" : "many waits, 300 ms a second or more", fps);
+	fflush(stdout);
+	g_orbis_rb_auto_kind.store(kind, std::memory_order_relaxed);
+	g_orbis_rb_auto_request.store(1, std::memory_order_release);
+}
 #endif
 // vk-285-72: the EE, GS and VU threads' loads over the last second, in percent, from the [load] line's
 // wait counters (1000 ms less the ms each thread waited). The perf line in settings.log, the [perf] line
@@ -421,7 +476,9 @@ struct OrbisLoadMeasure
 	u32 nsw = 0;
 	double vu_mcycles = 0.0; // vk-285-74: VU1 cycles the MTVU thread ran this second, in millions
 	double vu_runs = 0.0; // and VU1 program runs
+	double sw_sync_n[8] = {}, sw_sync_ms[8] = {}; // vk-285-119: the GS thread's SW syncs by reason, per second
 };
+extern unsigned long long g_orbis_sw_sync_n[8], g_orbis_sw_sync_ticks[8]; // vk-285-119 (GSRasterizer.cpp)
 extern std::atomic<u64> g_orbis_vu1_cycles, g_orbis_vu1_runs; // vk-285-74 (MTVU.cpp)
 extern std::atomic<int> g_orbis_vu1_dump_request;
 static OrbisLoadMeasure s_orbis_load_measure;
@@ -458,6 +515,18 @@ static void OrbisMeasureLoad()
 		s_prev[i] = cur[i];
 	for (u32 i = 0; i < m.nsw; i++)
 		s_prev[10 + i] = g_orbis_sw_busy_ticks[i];
+	{
+		// vk-285-119: the software renderer's syncs this second, by reason (GSRendererSW::Sync).
+		static unsigned long long s_sync_n[8] = {}, s_sync_ticks[8] = {};
+		for (int i = 0; i < 8; i++)
+		{
+			const unsigned long long n = g_orbis_sw_sync_n[i], t = g_orbis_sw_sync_ticks[i];
+			m.sw_sync_n[i] = m.measured ? static_cast<double>(n - s_sync_n[i]) / sec : 0.0;
+			m.sw_sync_ms[i] = m.measured ? static_cast<double>(t - s_sync_ticks[i]) * m.k : 0.0;
+			s_sync_n[i] = n;
+			s_sync_ticks[i] = t;
+		}
+	}
 	s_tsc = tsc;
 	s_t = now;
 
@@ -509,6 +578,21 @@ static void OrbisPrintLoad()
 		printf("%s%.0f", i ? "/" : "", m.sw_busy[i]);
 	OrbisPrintCpu(); // eerec-285
 	printf("\n");
+	if (m.nsw != 0)
+	{
+		// vk-285-119: why the GS thread waited for the raster workers (count and ms this second, GSRendererSW::Sync):
+		// at vsync, for the output, a texture the queued draws render into, a target they sample, a transfer or a
+		// readback touching pages in use, anything else.
+		double total = 0.0;
+		for (int i = 0; i < 8; i++)
+			total += m.sw_sync_n[i];
+		if (total > 0.0)
+			printf("[swsync] per s count/ms: vsync=%.0f/%.0f output=%.0f/%.0f texture=%.0f/%.0f target=%.0f/%.0f transfer=%.0f/%.0f "
+				   "readback=%.0f/%.0f other=%.0f/%.0f\n",
+				m.sw_sync_n[0], m.sw_sync_ms[0], m.sw_sync_n[1], m.sw_sync_ms[1], m.sw_sync_n[4], m.sw_sync_ms[4],
+				m.sw_sync_n[5], m.sw_sync_ms[5], m.sw_sync_n[6], m.sw_sync_ms[6], m.sw_sync_n[7], m.sw_sync_ms[7],
+				m.sw_sync_n[2], m.sw_sync_ms[2]);
+	}
 	{
 		// vk-285-77: VU1 program lengths this second (MTVU.cpp).
 		extern std::atomic<u32> g_orbis_vu1_run_hist[8];
@@ -1074,6 +1158,8 @@ static void OrbisGLOSD()
 		const float gs = s_orbis_load_valid ? s_orbis_load_gs : PerformanceMetrics::GetGSThreadUsage();
 		const float vu = s_orbis_load_valid ? s_orbis_load_vu : PerformanceMetrics::GetVUThreadUsage();
 		OrbisPerfMinute(s_fps, PerformanceMetrics::GetSpeed(), ee, gs, vu); // test build 1
+		OrbisAutoProfSecond(PerformanceMetrics::GetSpeed(), ee, gs, vu); // vk-285-118: a slow stretch samples the busy thread
+		OrbisReadbackAutoSecond(PerformanceMetrics::GetSpeed(), s_fps); // vk-285-118: older firmware's readback stall
 		if (print)
 		{
 			printf("[perf] fps=%u vfreq=%.2f speed=%.0f ee=%.0f gs=%.0f vu=%.0f ft=%.1f/%.1f/%.1f sw=", s_fps,

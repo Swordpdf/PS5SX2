@@ -52,10 +52,23 @@ bool ReadFile(const std::string& path, std::string& out)
 }
 
 // Written beside, then renamed over: the GS thread polls these files and must never read half of one.
+// vk-285-121 (AI-assisted): a missing folder is made first, one level -- nothing made settings/, so on a console set up
+// without it every save of a game's settings failed with errno 2 (two testers' 1.7 logs: 36 page saves, 9 sheet saves).
 bool WriteFileAtomic(const std::string& path, const std::string& data)
 {
 	const std::string tmp = path + ".tmp";
 	FILE* f = std::fopen(tmp.c_str(), "wb");
+	if (!f && errno == ENOENT)
+	{
+		const size_t slash = path.rfind('/');
+		if (slash != std::string::npos && slash > 0)
+		{
+			const std::string dir = path.substr(0, slash);
+			if (mkdir(dir.c_str(), 0777) == 0)
+				std::printf("[settings] made %s for %s\n", dir.c_str(), path.c_str() + slash + 1);
+			f = std::fopen(tmp.c_str(), "wb"); // made now, or by another thread meanwhile
+		}
+	}
 	if (!f)
 		return false;
 	const bool ok = std::fwrite(data.data(), 1, data.size(), f) == data.size();

@@ -102,8 +102,8 @@ void App::SetWebUrl(const std::string& url, const std::string& shown)
 	m_qr_size = 0;
 	if (url.empty())
 		return;
-	// Byte mode up to version 10 (57 modules) is plenty for "http://255.255.255.255:65535/?t=" and a
-	// 16-character token; medium error correction.
+	// Byte mode up to version 10 (57 modules) is plenty for "http://255.255.255.255:65535/" (vk-285-118: no key
+	// after it any more); medium error correction.
 	uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(10)], tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(10)];
 	if (!qrcodegen_encodeText(url.c_str(), tmp, qr, qrcodegen_Ecc_MEDIUM, 1, 10, qrcodegen_Mask_AUTO, true))
 	{
@@ -232,6 +232,14 @@ void App::Update(double dt, const Input& in)
 		UpdateSheet(dt, in);
 		m_prev = in;
 	}
+	else if (m_released && !m_qr_big && m_sheet_anim < 0.05f && m_cfg.achievements.state &&
+	         in.l1 && in.square && !(m_prev.l1 && m_prev.square))
+	{
+		// Handle the account chord before shelf navigation or settings (AI-assisted).
+		m_account.Open();
+		m_held = 0;
+		m_prev = in;
+	}
 	else
 	{
 		const bool any = in.left || in.right || in.cross || in.options || in.l1 || in.r1 || in.up || in.down || in.square || in.triangle ||
@@ -269,7 +277,7 @@ void App::Update(double dt, const Input& in)
 				Sound(Step(-5) ? Sfx::JumpLeft : Sfx::Edge, -0.25f);
 			if (in.r1 && !m_prev.r1)
 				Sound(Step(5) ? Sfx::JumpRight : Sfx::Edge, 0.25f);
-			if (((in.cross && !m_prev.cross) || (in.options && !m_prev.options)) && !m_games.empty())
+			if (((in.cross && !m_prev.cross) || (in.options && !m_prev.options)) && !m_games.empty() && !m_qr_big)
 			{
 				if (m_cfg.game_achievements.cancel)
 					m_cfg.game_achievements.cancel();
@@ -277,20 +285,31 @@ void App::Update(double dt, const Input& in)
 				m_launch_time = m_time;
 				Sound(Sfx::Launch, 0.0f);
 			}
+			// Triangle keeps the upstream QR view; Circle opens the RA account (AI-assisted).
+			else if (m_qr_big && ((in.triangle && !m_prev.triangle) || (in.circle && !m_prev.circle)))
+			{
+				m_qr_big = false;
+				Sound(Sfx::Move, -0.3f);
+			}
+			else if (!m_qr_big && (in.triangle && !m_prev.triangle) && m_qr_size > 0 && m_sheet_anim < 0.05f)
+			{
+				m_qr_big = true;
+				Sound(Sfx::Move, 0.3f);
+			}
 			// vk-285-114: Square opens the selected game's options sheet (the settings for all games when there is no game).
-			else if (in.square && !m_prev.square && m_sheet_anim < 0.05f)
+			else if (!m_qr_big && in.square && !m_prev.square && m_sheet_anim < 0.05f)
 			{
 				OpenSheet(m_games.empty());
 				Sound(Sfx::Move, 0.3f);
 			}
-			else if (in.triangle && !m_prev.triangle && m_cfg.achievements.state && m_sheet_anim < 0.05f)
-			{
-				m_account.Open();
-				m_held = 0;
-			}
 		}
 		m_prev = in;
 	}
+
+	m_qr_big_anim += (m_qr_big ? 1.0f : -1.0f) * fdt / 0.18f; // vk-285-118
+	m_qr_big_anim = std::min(1.0f, std::max(0.0f, m_qr_big_anim));
+	if (m_qr_size <= 0)
+		m_qr_big = false;
 
 	// The shelf follows the selection on a critically damped spring.
 	const float k = 150.0f, c = 2.0f * std::sqrt(k);
@@ -623,8 +642,10 @@ void App::Build(FrameDesc& f, const std::string& clock)
 			hint("#L1", "#R1", Tr(Str::HintJump));
 		}
 		hint(icon::Square, nullptr, Tr(Str::HintSettings)); // vk-285-114
-		if (m_cfg.achievements.state)
-			hint(icon::Triangle, nullptr, "RetroAchievements");
+		if (m_cfg.achievements.state && !m_qr_big)
+			hint("#L1", icon::Square, "RetroAchievements");
+		if (m_qr_size > 0)
+			hint(icon::Triangle, nullptr, Tr(m_qr_big ? Str::HintBack : Str::HintQrCode));
 	}
 
 	std::string status = m_covers ? m_covers->Status() : std::string();
@@ -664,6 +685,35 @@ void App::Build(FrameDesc& f, const std::string& clock)
 				0.5f, Fonts::Center);
 			m_fonts->AddText(ui, m_cfg.test_note.c_str(), W * 0.5f, note_base, note_px, Rgba(1, 1, 1, 0.75f), 0.5f, Fonts::Center);
 		}
+	}
+
+	// vk-285-118 (AI-assisted): the QR code large in the middle, black on white for any phone camera (Triangle).
+	if (m_qr_big_anim > 0.0f && m_qr_size > 0)
+	{
+		const float e = Smoothstep(0.0f, 1.0f, m_qr_big_anim);
+		const size_t begin = ui.size();
+		Fonts::AddRoundedRect(ui, 0, 0, W, H, 0.0f, Rgba(0.01f, 0.01f, 0.03f, 0.80f));
+		const int quiet = 4;
+		const float mod = std::floor(H * 0.62f / static_cast<float>(m_qr_size + 2 * quiet));
+		const float side = mod * static_cast<float>(m_qr_size + 2 * quiet);
+		const float tx = std::floor((W - side) * 0.5f), ty = std::floor((H - side) * 0.5f - 40.0f * k);
+		Fonts::AddRoundedRect(ui, tx, ty, side, side, 16.0f * k, Rgba(1.0f, 1.0f, 1.0f));
+		const uint32_t ink = Rgba(0.0f, 0.0f, 0.0f);
+		for (int y = 0; y < m_qr_size; y++)
+			for (int x0 = 0; x0 < m_qr_size;)
+			{
+				if (!m_qr[static_cast<size_t>(y) * m_qr_size + x0])
+				{
+					x0++;
+					continue;
+				}
+				int x1 = x0;
+				while (x1 < m_qr_size && m_qr[static_cast<size_t>(y) * m_qr_size + x1])
+					x1++;
+				Fonts::AddRoundedRect(ui, tx + (x0 + quiet) * mod - 0.4f, ty + (y + quiet) * mod - 0.4f, (x1 - x0) * mod + 0.8f, mod + 0.8f, 0.0f, ink);
+				x0 = x1;
+			}
+		FadeRange(ui, begin, ui.size(), e);
 	}
 	if (m_account.open)
 		BuildAccount(ui, W, H, k);

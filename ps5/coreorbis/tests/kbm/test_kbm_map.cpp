@@ -57,7 +57,9 @@ int main()
 	// The four button bits are the ones main-boot.cpp's orbis_pad_apply reads.
 	CHECK(PAD_UP == 0x10 && PAD_RIGHT == 0x20 && PAD_DOWN == 0x40 && PAD_LEFT == 0x80);
 	CHECK(PAD_TRIANGLE == 0x1000 && PAD_CIRCLE == 0x2000 && PAD_CROSS == 0x4000 && PAD_SQUARE == 0x8000);
-	CHECK(PAD_L1 == 0x400 && PAD_R1 == 0x800 && PAD_L3 == 0x2 && PAD_R3 == 0x4 && PAD_START == 0x8 && PAD_SELECT == 0x1);
+	CHECK(PAD_L1 == 0x400 && PAD_R1 == 0x800 && PAD_L3 == 0x2 && PAD_R3 == 0x4 && PAD_START == 0x8);
+	// vk-285-122: Select (Backspace) has its own bit, one ScePad never sets (its 0x1 is the DualSense's Create button).
+	CHECK(PAD_SELECT == 0x40000000);
 
 	// Sticks: W A S D on the left, T F G H on the right; both keys of an axis cancel.
 	{

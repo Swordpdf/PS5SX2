@@ -13,6 +13,11 @@ extern int g_orbis_swtex; // eerec-279
 extern int g_orbis_diag; // eerec-280
 extern int g_orbis_testpat;
 void OrbisDiagTexture(const char* tag, GSTexture* t);
+// vk-285-119 (AI-assisted): the GS thread's waits for the raster workers by reason (GSRendererSW::Sync's numbers:
+// 0 vsync, 1 output, 4 a texture the queued draws render into, 5 a target the queued draws sample, 6 a transfer into
+// pages in use, 7 a readback of pages in use; 2 anything else), counted and timed when there was work to wait for.
+// GSRenderer.cpp prints them as the [swsync] line under [load].
+extern unsigned long long g_orbis_sw_sync_n[8], g_orbis_sw_sync_ticks[8];
 
 MULTI_ISA_UNSHARED_IMPL;
 
@@ -204,8 +209,10 @@ GSTexture* GSRendererSW::GetOutput(int i, float& scale, int& y_offset)
 		// Top left rect
 		psm.rtx(m_mem, m_mem.GetOffset(curFramebuffer.Block(), curFramebuffer.FBW, curFramebuffer.PSM), r.ralign<Align_Outside>(psm.bs), m_output, pitch, texa);
 		{
+			// vk-285-119: only with the diag flag. Every 200th frame this scanned 4 MB of GS memory and the output on the
+			// GS thread (a few ms) for a [dbg] line nobody reads any more.
 			static unsigned goc = 0;
-			if ((goc++ % 200) == 0)
+			if (::g_orbis_diag && (goc++ % 200) == 0)
 			{
 				u32* mo = reinterpret_cast<u32*>(m_output);
 				unsigned out_nz = 0;
@@ -391,9 +398,9 @@ void GSRendererSW::Draw()
 	{
 		static unsigned long long draws = 0;
 		unsigned long long n = draws++;
-		if (n < 3 || (n % 10000) == 0)
+		if (0 && (n < 3 || (n % 10000) == 0)) // vk-285-119: no fflush every 10,000 draws for a line that never prints
 		{
-			if (0) printf("[dbg] SW Draw #%llu\n", n);
+			printf("[dbg] SW Draw #%llu\n", n);
 			fflush(stdout);
 		}
 	}
@@ -669,7 +676,17 @@ void GSRendererSW::Sync(int reason)
 
 	u64 t = LOG ? GetCPUTicks() : 0;
 
+	const bool orbis_wait = !m_rl->IsSynced(); // vk-285-119: the [swsync] line
+	const unsigned long long orbis_t0 = orbis_wait ? __builtin_ia32_rdtsc() : 0;
+
 	m_rl->Sync();
+
+	if (orbis_wait)
+	{
+		const int i = (reason >= 0 && reason < 8 && reason != 3) ? reason : 2;
+		::g_orbis_sw_sync_n[i]++;
+		::g_orbis_sw_sync_ticks[i] += __builtin_ia32_rdtsc() - orbis_t0;
+	}
 
 	if constexpr (LOG && false)
 	{

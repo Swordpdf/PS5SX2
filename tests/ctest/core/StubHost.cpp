@@ -238,6 +238,9 @@ void Host::RequestVMShutdown(bool allow_confirm, bool allow_save_state, bool def
 // vsync on the CPU thread as PCSX2's hotkeys run through RunOnCPUThread. vk-285-48: 3 = back to the
 // menu (the port's main-boot.cpp stops the VM and re-executes the app into its frontend).
 std::atomic<int> g_orbis_state_request{0};
+extern std::atomic<int> g_orbis_fast_speed; // vk-285-118 (main-boot.cpp): PS5SX2/FastSpeed
+extern std::atomic<int> g_orbis_rb_auto_request; // vk-285-118 (GSRenderer.cpp OrbisReadbackAutoSecond)
+void OrbisReadbackAutoCpu(); // vk-285-118 (main-boot.cpp)
 void OrbisOSDLabel(const char* text);
 void OrbisBackToMenuCpu();
 
@@ -262,6 +265,8 @@ void Host::PumpMessagesOnCPUThread()
 		orbis_reload_gs_ini_cpu();
 	if (const int pin = g_orbis_pin_request.exchange(-1, std::memory_order_acq_rel); pin >= 0)
 		OrbisApplyPinning(pin);
+	if (g_orbis_rb_auto_request.exchange(0, std::memory_order_acq_rel))
+		OrbisReadbackAutoCpu();
 	const int req = g_orbis_state_request.exchange(0, std::memory_order_acq_rel);
 	if (req == 1)
 	{
@@ -287,6 +292,31 @@ void Host::PumpMessagesOnCPUThread()
 	}
 	else if (req == 3)
 		OrbisBackToMenuCpu();
+	else if (req == 4)
+	{
+		// vk-285-118 (AI-assisted): fast forward on or off (the Controls tab's fast forward combo, experimental: for skipping
+		// videos). PS5SX2/FastSpeed: 0 as fast as the console runs it (Unlimited), 2..8 that many times full speed (Turbo).
+		if (VMManager::GetLimiterMode() != LimiterModeType::Nominal)
+		{
+			VMManager::SetLimiterMode(LimiterModeType::Nominal);
+			OrbisOSDLabel("NORMAL SPEED");
+			std::printf("[state] fast forward off\n");
+		}
+		else
+		{
+			const int x = g_orbis_fast_speed.load(std::memory_order_relaxed);
+			if (x >= 2)
+			{
+				EmuConfig.EmulationSpeed.TurboScalar = static_cast<float>(x);
+				VMManager::SetLimiterMode(LimiterModeType::Turbo);
+			}
+			else
+				VMManager::SetLimiterMode(LimiterModeType::Unlimited);
+			OrbisOSDLabel(x >= 2 ? "FAST FORWARD" : "FAST FORWARD (MAX)");
+			std::printf("[state] fast forward on (%s)\n", x >= 2 ? (std::to_string(x) + "x").c_str() : "unlimited");
+		}
+		std::fflush(stdout);
+	}
 }
 
 s32 Host::Internal::GetTranslatedStringImpl(

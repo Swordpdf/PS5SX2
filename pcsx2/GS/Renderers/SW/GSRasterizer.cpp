@@ -17,6 +17,7 @@
 
 unsigned long long g_orbis_gs_swsync_ticks; // eerec-281: GS thread waiting for the SW workers
 unsigned long long g_orbis_sw_busy_ticks[16]; // eerec-281: SW worker i drawing
+unsigned long long g_orbis_sw_sync_n[8], g_orbis_sw_sync_ticks[8]; // vk-285-119: GSRendererSW::Sync by reason
 void OrbisCpuSample(int slot); // eerec-285 (GSRenderer.cpp)
 void OrbisCpuForget(int slot); // eerec-285
 

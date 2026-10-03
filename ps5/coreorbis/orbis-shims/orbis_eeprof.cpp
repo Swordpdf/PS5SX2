@@ -40,6 +40,7 @@
 #include "OrbisPaths.h" // vk-285-33
 #include "OrbisDeferredLog.h" // vk-285-107: OrbisEEProfMark's line
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
@@ -477,8 +478,11 @@ void StartOnThisThread(int mode)
 
 // Host::PumpMessagesOnCPUThread (StubHost.cpp) calls this at every vsync; the first call, on
 // the EE thread, starts the profiler.
+void OrbisAutoProfNoteThread(int which); // vk-285-118, below
+
 void OrbisEEProfStart()
 {
+	OrbisAutoProfNoteThread(0); // vk-285-118: the autoprof samples this thread when it is the busy one
 	static std::atomic<bool> s_ee_checked{false};
 	if (s_ee_checked.load(std::memory_order_relaxed) || s_ee_checked.exchange(true))
 		return;
@@ -513,6 +517,7 @@ void OrbisGSProfStart()
 // JIT registrations the VU1 samples are named by) and no profiler runs yet.
 void OrbisVUProfStart()
 {
+	OrbisAutoProfNoteThread(2); // vk-285-118
 	if (s_started.load(std::memory_order_relaxed))
 		return;
 	static const bool s_vu_wanted = ProfilerWanted() && OrbisFlag("vuprof");
@@ -571,4 +576,336 @@ void OrbisEEProfMark()
 	OrbisDeferredPrintf("[%s] n=%u sent=%u skipped=%u dropped=%u%s\n", s_mode == 2 ? "vuprof" : s_gs_mode ? "gsprof" : "eeprof",
 		s_count.load(std::memory_order_relaxed), s_sent.load(std::memory_order_relaxed),
 		s_skipped.load(std::memory_order_relaxed), s_dropped.load(std::memory_order_relaxed), kill);
+}
+
+// ------------------------------------------------------------------------------------------------------------
+// vk-285-118 (AI-assisted): the automatic profile ("autoprof"). Testers' reports say which thread holds a slow
+// game back ([load]), not what it does there; the profiles above need a flag file and a person to run them. So
+// when a game runs below 90% speed for 4 seconds in a row, the busiest of the EE, GS and VU1 threads is sampled
+// for 8 seconds (SIGPROF every millisecond, as above; the EE's and VU1's accounted waits skipped), and four
+// lines summarise it in boot.log, which every session report carries:
+//   [autoprof] #N <thread> ... : the loads and speed that picked it, the samples, and where they fell (eboot,
+//              recompiled code, system libraries, other), and ref=<run-time address of OrbisEEProfStart>
+//   [autoprof] #N eboot: the 40 busiest 64-byte buckets (24 in vk-285-118) as signed offsets from ref (tools: add the ELF's address
+//              of OrbisEEProfStart and symbolize with the build's llvm-pie.elf)
+//   [autoprof] #N jit: the recompiled code by area (EE, IOP, VIF0/1, mVU0/1, VIF unpack, SW renderer)
+//   [autoprof] #N lib: the busiest library addresses and the eboot code that called them (from the stack)
+// At most 4 windows a session, 90 s apart; none while a flag-file profiler runs; the flag "noautoprof" turns it off, and
+// "autoprof_now" takes one window 20 s into the game at any speed (to check it).
+namespace
+{
+std::atomic<uintptr_t> s_auto_thread[3]; // pthread_self() of the EE, GS and VU1 threads, as last seen
+struct AutoSample
+{
+	uint64_t rip;
+	uint64_t caller; // a library sample's first eboot return address on the stack, else 0
+};
+constexpr uint32_t kAutoMax = 12000;
+constexpr int kAutoSeconds = 8, kAutoWindows = 4, kAutoGapSeconds = 90, kAutoSlowSeconds = 4;
+constexpr float kAutoSlowSpeed = 90.0f;
+AutoSample* s_auto;
+std::atomic<uint32_t> s_auto_n{0};
+std::atomic<uint32_t> s_auto_skipped{0};
+std::atomic<int> s_auto_state{0}; // 0 idle, 1 sampling
+pthread_t s_auto_target;
+int s_auto_which = 0;
+uint64_t s_auto_lo, s_auto_hi; // the target's stack
+uint64_t s_auto_ref; // &OrbisEEProfStart at run time
+char s_auto_head[200];
+int s_auto_index = 0;
+
+} // namespace
+// vk-285-119: the eboot's code, from the port's linker script (orbis-shims/ehframe.ld).
+extern "C" const unsigned char __orbis_text_start[], __orbis_text_end[];
+namespace
+{
+// vk-285-119 (AI-assisted): a word on the stack counts as the eboot code that called a library only when it is inside
+// the eboot's .text. vk-285-118 took anything within 128 MiB of ref, and with the eboot at 0x400000 that let in every
+// small integer on the stack: the testers' "callers" were mostly 0x10, 0x4 and 0x1 (shown as -0xa530a0, -0xa530ac,
+// -0xa530af), which said nothing about the GS thread's 31% in two libkernel addresses. (The bytes before the word are
+// not read to check for a call: a fault in this signal handler would end the app.)
+bool AutoInEboot(uint64_t a)
+{
+	return a >= reinterpret_cast<uint64_t>(__orbis_text_start) && a < reinterpret_cast<uint64_t>(__orbis_text_end);
+}
+
+
+void AutoHandler(int, siginfo_t*, void* ctx)
+{
+	if (!ctx)
+		return;
+	const uint32_t i = s_auto_n.load(std::memory_order_relaxed);
+	if (i >= kAutoMax)
+		return;
+	const uint64_t* q = static_cast<const uint64_t*>(ctx);
+	const uint64_t rip = q[s_rip_index];
+	uint64_t caller = 0;
+	if (rip >= kLibLo && rip < kLibHi && s_auto_hi != 0)
+	{
+		const uint64_t* sp = reinterpret_cast<const uint64_t*>(q[s_rip_index + 3]);
+		const uint64_t at = reinterpret_cast<uint64_t>(sp);
+		if (at >= s_auto_lo && at < s_auto_hi)
+		{
+			const uint64_t end = at + 8ull * kScanWords < s_auto_hi ? at + 8ull * kScanWords : s_auto_hi;
+			for (const uint64_t* p = sp; reinterpret_cast<uint64_t>(p) + 8 <= end; p++)
+				if (AutoInEboot(*p))
+				{
+					caller = *p;
+					break;
+				}
+		}
+	}
+	s_auto[i].rip = rip;
+	s_auto[i].caller = caller;
+	s_auto_n.store(i + 1, std::memory_order_release);
+}
+
+const char* const kAutoThreadName[3] = {"EE", "GS", "VU1"};
+
+struct Bucket
+{
+	int64_t key;
+	uint32_t n;
+};
+
+void TopBuckets(std::vector<Bucket>& v, size_t keep)
+{
+	std::sort(v.begin(), v.end(), [](const Bucket& a, const Bucket& b) { return a.n > b.n; });
+	if (v.size() > keep)
+		v.resize(keep);
+}
+
+void AddBucket(std::vector<Bucket>& v, int64_t key)
+{
+	for (Bucket& b : v)
+		if (b.key == key)
+		{
+			b.n++;
+			return;
+		}
+	v.push_back({key, 1});
+}
+
+void AutoReport()
+{
+	const uint32_t n = s_auto_n.load(std::memory_order_acquire);
+	const double pct = n ? 100.0 / n : 0.0;
+	const uint64_t code = reinterpret_cast<uint64_t>(SysMemory::GetCodePtr(0));
+	struct Area
+	{
+		const char* name;
+		uint32_t off, size;
+		uint32_t n;
+	} areas[] = {
+		{"ee", HostMemoryMap::EErecOffset, HostMemoryMap::EErecSize, 0}, {"iop", HostMemoryMap::IOPrecOffset, HostMemoryMap::IOPrecSize, 0},
+		{"vif0", HostMemoryMap::VIF0recOffset, HostMemoryMap::VIF0recSize, 0}, {"vif1", HostMemoryMap::VIF1recOffset, HostMemoryMap::VIF1recSize, 0},
+		{"mvu0", HostMemoryMap::mVU0recOffset, HostMemoryMap::mVU0recSize, 0}, {"mvu1", HostMemoryMap::mVU1recOffset, HostMemoryMap::mVU1recSize, 0},
+		{"unpack", HostMemoryMap::VIFUnpackRecOffset, HostMemoryMap::VIFUnpackRecSize, 0}, {"sw", HostMemoryMap::SWrecOffset, HostMemoryMap::SWrecSize, 0},
+	};
+	uint32_t eboot = 0, jit = 0, lib = 0, other = 0;
+	std::vector<Bucket> eb, lb, cb;
+	eb.reserve(4096);
+	for (uint32_t i = 0; i < n; i++)
+	{
+		const uint64_t r = s_auto[i].rip;
+		if (r >= code && r < code + HostMemoryMap::CodeSize)
+		{
+			jit++;
+			for (Area& a : areas)
+				if (r - code >= a.off && r - code < a.off + a.size)
+					a.n++;
+		}
+		else if (r >= kLibLo && r < kLibHi)
+		{
+			lib++;
+			AddBucket(lb, static_cast<int64_t>(r & ~0xfull));
+			AddBucket(cb, s_auto[i].caller ? (static_cast<int64_t>(s_auto[i].caller) - static_cast<int64_t>(s_auto_ref)) : INT64_MIN);
+		}
+		else if (AutoInEboot(r))
+		{
+			eboot++;
+			AddBucket(eb, (static_cast<int64_t>(r) - static_cast<int64_t>(s_auto_ref)) & ~int64_t{63});
+		}
+		else
+			other++;
+	}
+	// vk-285-119: 40 buckets (24 in vk-285-118 covered only 20-30% of a GS thread's eboot samples), and their share.
+	TopBuckets(eb, 40);
+	uint32_t covered = 0;
+	for (const Bucket& b : eb)
+		covered += b.n;
+	TopBuckets(lb, 8);
+	TopBuckets(cb, 8);
+	char line[1600];
+	std::snprintf(line, sizeof(line), "[autoprof] #%d %s | %u samples in %d s, %u skipped (waits) | eboot %.1f%% jit %.1f%% lib %.1f%% other %.1f%% | ref=%#llx",
+		s_auto_index, s_auto_head, n, kAutoSeconds, s_auto_skipped.load(std::memory_order_relaxed), eboot * pct, jit * pct, lib * pct, other * pct,
+		static_cast<unsigned long long>(s_auto_ref));
+	OrbisDeferredPrintf("%s\n", line);
+	OrbisDeferredEvent(line);
+	int at = std::snprintf(line, sizeof(line), "[autoprof] #%d eboot:", s_auto_index);
+	for (const Bucket& b : eb)
+		if (at < static_cast<int>(sizeof(line)) - 40)
+			at += std::snprintf(line + at, sizeof(line) - at, " %s%#llx %.1f%%", b.key < 0 ? "-" : "+",
+				static_cast<unsigned long long>(b.key < 0 ? -b.key : b.key), b.n * pct);
+	if (at < static_cast<int>(sizeof(line)) - 40)
+		std::snprintf(line + at, sizeof(line) - at, " | these %u = %.1f%% of the samples", static_cast<unsigned>(eb.size()), covered * pct);
+	OrbisDeferredPrintf("%s\n", line);
+	OrbisDeferredEvent(line); // the settings log too: the installer's report keeps only boot.log's first 64 KB and last 448 KB
+	at = std::snprintf(line, sizeof(line), "[autoprof] #%d jit:", s_auto_index);
+	for (const Area& a : areas)
+		if (a.n)
+			at += std::snprintf(line + at, sizeof(line) - at, " %s %.1f%%", a.name, a.n * pct);
+	OrbisDeferredPrintf("%s\n", line);
+	OrbisDeferredEvent(line);
+	at = std::snprintf(line, sizeof(line), "[autoprof] #%d lib:", s_auto_index);
+	for (const Bucket& b : lb)
+		if (at < static_cast<int>(sizeof(line)) - 40)
+			at += std::snprintf(line + at, sizeof(line) - at, " %#llx %.1f%%", static_cast<unsigned long long>(b.key), b.n * pct);
+	at += std::snprintf(line + at, sizeof(line) - at, " | callers:");
+	for (const Bucket& b : cb)
+		if (at < static_cast<int>(sizeof(line)) - 40)
+		{
+			if (b.key == INT64_MIN)
+				at += std::snprintf(line + at, sizeof(line) - at, " ? %.1f%%", b.n * pct);
+			else
+				at += std::snprintf(line + at, sizeof(line) - at, " %s%#llx %.1f%%", b.key < 0 ? "-" : "+",
+					static_cast<unsigned long long>(b.key < 0 ? -b.key : b.key), b.n * pct);
+		}
+	OrbisDeferredPrintf("%s\n", line);
+	OrbisDeferredEvent(line);
+}
+
+void* AutoSamplerThread(void*)
+{
+	bool raised = false;
+	(void)raised;
+	const timespec idle = {0, 100 * 1000 * 1000};
+	const timespec period = {0, kPeriodUs * 1000};
+	for (;;)
+	{
+		if (s_auto_state.load(std::memory_order_acquire) != 1)
+		{
+			nanosleep(&idle, nullptr);
+			continue;
+		}
+		int normal = -1;
+		scePthreadGetprio(pthread_self(), &normal);
+		scePthreadSetprio(pthread_self(), 256); // as the flag-file profiler's sampler (vk-285-89)
+		raised = true;
+		unsigned long long mask = 0;
+		if (scePthreadGetaffinity(s_auto_target, &mask) == 0 && mask != 0)
+			scePthreadSetaffinity(pthread_self(), mask); // on the target's CPUs (vk-285-88)
+		timespec t0;
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		for (;;)
+		{
+			nanosleep(&period, nullptr);
+			timespec t;
+			clock_gettime(CLOCK_MONOTONIC, &t);
+			if (t.tv_sec - t0.tv_sec >= kAutoSeconds || s_auto_n.load(std::memory_order_relaxed) >= kAutoMax)
+				break;
+			if ((s_auto_which == 0 && g_orbis_ee_waiting.load(std::memory_order_relaxed) != 0) ||
+				(s_auto_which == 2 && g_orbis_vu_waiting.load(std::memory_order_relaxed) != 0))
+			{
+				s_auto_skipped.fetch_add(1, std::memory_order_relaxed);
+				continue;
+			}
+			pthread_kill(s_auto_target, SIGPROF);
+		}
+		nanosleep(&period, nullptr); // the last signal's handler
+		if (normal >= 256)
+			scePthreadSetprio(pthread_self(), normal); // the summary at the normal priority: it must not hold the target up
+		AutoReport();
+		s_auto_state.store(0, std::memory_order_release);
+	}
+	return nullptr;
+}
+} // namespace
+
+void OrbisAutoProfNoteThread(int which)
+{
+	s_auto_thread[which].store(reinterpret_cast<uintptr_t>(pthread_self()), std::memory_order_relaxed);
+}
+
+// GSRenderer.cpp calls this once a second on the GS thread with the speed (%) and the threads' loads (%).
+void OrbisAutoProfSecond(float speed, float ee, float gs, float vu)
+{
+	OrbisAutoProfNoteThread(1);
+	static const bool off = OrbisFlag("noautoprof");
+	static int slow = 0, windows = 0;
+	static timespec last = {0, 0};
+	if (off || s_started.load(std::memory_order_relaxed) || windows >= kAutoWindows)
+		return;
+	// The switch autoprof_now (a test): one window 20 s into the game whatever the speed.
+	static const bool now_flag = OrbisFlag("autoprof_now");
+	static int seconds = 0;
+	seconds++;
+	slow = (speed > 2.0f && speed < kAutoSlowSpeed) ? slow + 1 : 0;
+	const bool forced = now_flag && windows == 0 && seconds >= 20;
+	if ((slow < kAutoSlowSeconds && !forced) || s_auto_state.load(std::memory_order_acquire) != 0)
+		return;
+	timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (windows > 0 && now.tv_sec - last.tv_sec < kAutoGapSeconds)
+		return;
+	int which = 1;
+	float best = gs;
+	if (ee > best && s_auto_thread[0].load(std::memory_order_relaxed))
+	{
+		which = 0;
+		best = ee;
+	}
+	if (vu > best && s_auto_thread[2].load(std::memory_order_relaxed))
+	{
+		which = 2;
+		best = vu;
+	}
+	const uintptr_t handle = s_auto_thread[which].load(std::memory_order_relaxed);
+	if (!handle)
+		return;
+	if (!s_auto)
+	{
+		s_auto = new (std::nothrow) AutoSample[kAutoMax];
+		if (!s_auto)
+		{
+			windows = kAutoWindows;
+			return;
+		}
+		pthread_t t;
+		if (pthread_create(&t, nullptr, AutoSamplerThread, nullptr) != 0)
+		{
+			windows = kAutoWindows;
+			return;
+		}
+		pthread_detach(t);
+	}
+	s_auto_target = reinterpret_cast<pthread_t>(handle);
+	s_auto_which = which;
+	s_auto_ref = reinterpret_cast<uint64_t>(&OrbisEEProfStart);
+	s_auto_lo = s_auto_hi = 0;
+	{
+		pthread_attr_t attr;
+		if (pthread_attr_init(&attr) == 0)
+		{
+			void* addr = nullptr;
+			size_t size = 0;
+			if (pthread_attr_get_np(s_auto_target, &attr) == 0 && pthread_attr_getstack(&attr, &addr, &size) == 0 && addr)
+			{
+				s_auto_lo = reinterpret_cast<uint64_t>(addr);
+				s_auto_hi = s_auto_lo + size;
+			}
+			pthread_attr_destroy(&attr);
+		}
+	}
+	if (!Install(AutoHandler))
+	{
+		windows = kAutoWindows;
+		return;
+	}
+	s_auto_index = ++windows;
+	last = now;
+	std::snprintf(s_auto_head, sizeof(s_auto_head), "%s thread (speed %.0f%%, load ee %.0f gs %.0f vu %.0f)", kAutoThreadName[which], speed, ee, gs, vu);
+	s_auto_n.store(0, std::memory_order_relaxed);
+	s_auto_skipped.store(0, std::memory_order_relaxed);
+	s_auto_state.store(1, std::memory_order_release);
 }

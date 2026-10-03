@@ -348,7 +348,8 @@ std::string OrbisFindBiosElsewhere(std::string* seen)
 		for (const std::string& name : names)
 		{
 			const bool is_bios = strcasecmp(name.c_str(), "bios") == 0;
-			const bool is_ps5sx2 = strcasecmp(name.c_str(), "ps5sx2") == 0;
+			// vk-285-118 (AI-assisted): PCSX2/bios too, a drive laid out like /data/PCSX2 (as its games/ and textures/).
+			const bool is_ps5sx2 = strcasecmp(name.c_str(), "ps5sx2") == 0 || strcasecmp(name.c_str(), "pcsx2") == 0;
 			if (!(is_bios || is_ps5sx2) || !OrbisIsDir(root + "/" + name))
 				continue;
 			dirs.push_back(root + "/" + name);

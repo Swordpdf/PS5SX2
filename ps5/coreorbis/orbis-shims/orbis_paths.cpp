@@ -111,6 +111,11 @@ bool Has(const std::vector<std::string>& names, const char* name)
 void OrbisFlagsRefresh()
 {
 	std::vector<std::string> flags = ListNames((std::string(kRoot) + "/flags").c_str());
+	// vk-285-118 (AI-assisted): switch names in any letter case. 2026-10-02's reports had a console whose flags/ held
+	// FASTMEM, VK_16K and VK_ASYNC: it ran without them (12% of its minutes below full speed). Every switch is lower case.
+	for (std::string& f : flags)
+		for (char& c : f)
+			c = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
 	std::vector<std::string> root = ListNames(kRoot);
 	std::vector<std::string> paths;
 	{

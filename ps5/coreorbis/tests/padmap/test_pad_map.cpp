@@ -71,7 +71,8 @@ int main()
 		CHECK(Only(Apply(c, Held(0x0004)), {T_R3}));
 		CHECK(Only(Apply(c, Held(0x0008)), {T_START}));
 		CHECK(Only(Apply(c, Held(0x00100000)), {T_SELECT}));
-		CHECK(Only(Apply(c, Held(0x00000001)), {T_SELECT}));
+		CHECK(Only(Apply(c, Held(0x40000000)), {T_SELECT})); // the keyboard's Backspace
+		CHECK(Only(Apply(c, Held(0x00000001)), {}));        // vk-285-122: the Create (Share) button presses nothing
 		CHECK(Only(Apply(c, Held(0x0010)), {T_UP}));
 		CHECK(Only(Apply(c, Held(0x0040)), {T_DOWN}));
 		CHECK(Only(Apply(c, Held(0x0080)), {T_LEFT}));
@@ -164,7 +165,8 @@ int main()
 		CHECK(Only(Apply(c, Held(0x0040)), {T_CROSS}));
 		CHECK(Only(Apply(c, Held(0x0008)), {T_SELECT}));
 		CHECK(Only(Apply(c, Held(0x00100000)), {T_START}));
-		CHECK(Only(Apply(c, Held(0x00000001)), {T_START})); // the keyboard's Backspace follows the touchpad's click
+		CHECK(Only(Apply(c, Held(0x40000000)), {T_START})); // the keyboard's Backspace follows the touchpad's click
+		CHECK(Only(Apply(c, Held(0x00000001)), {}));        // vk-285-122: the Create (Share) button follows nothing
 	}
 
 	// Sticks: swapped, then inverted (the PS2's sticks), then the left one on the D-pad.
@@ -275,8 +277,12 @@ int main()
 		CHECK(save.Update(c.save, c.hold_ms, s, 10508, block));
 		// The keyboard's Backspace counts as the touchpad's click.
 		ComboWatch k;
-		s.buttons = 0x1 | 0x800;
+		s.buttons = 0x40000000 | 0x800;
 		CHECK(!k.Update(c.save, c.hold_ms, s, 0, block) && k.Update(c.save, c.hold_ms, s, 1500, block));
+		// vk-285-122: the Create (Share) button, ScePad's 0x1, does not.
+		ComboWatch cr;
+		s.buttons = 0x1 | 0x800;
+		CHECK(!cr.Update(c.save, c.hold_ms, s, 0, block) && !cr.Update(c.save, c.hold_ms, s, 5000, block));
 		CHECK(DescribeCombo(c.save, c.hold_ms) == "the touchpad's click + R1 held 1.5 s");
 		CHECK(Describe(c) == "save state on the touchpad's click + R1 held 1.5 s, load on the touchpad's click + L1 held 1.5 s");
 	}
@@ -350,6 +356,67 @@ int main()
 	{
 		Target x;
 		CHECK(!ParseTarget("Crosss", x) && !ParseTarget("Cros", x) && !ParseTarget("", x));
+	}
+
+	// vk-285-118: a button's strength (SOCOM II's crouch: the touchpad click as Triangle at 0.20).
+	{
+		const Config c = From({{"ButtonTouchpad", "Triangle"}, {"ButtonTouchpadPressure", "0.20"}, {"ButtonCrossPressure", "30%"},
+			{"ButtonL2Pressure", "0.5"}, {"ButtonCirclePressure", "2"}, {"ButtonSquarePressure", "0"}, {"ButtonR1Pressure", "x"}});
+		CHECK(std::fabs(c.pressure[S_TOUCHPAD] - 0.2f) < 1e-6f && std::fabs(c.pressure[S_CROSS] - 0.3f) < 1e-6f);
+		CHECK(c.pressure[S_CIRCLE] == 1.0f && c.pressure[S_SQUARE] == 1.0f && c.pressure[S_R1] == 1.0f);
+		CHECK(!c.IsDefault() && !From({{"ButtonCrossPressure", "0.5"}}).IsDefault() && From({{"ButtonCrossPressure", "1"}}).IsDefault());
+		const Out touch = Apply(c, Held(0x00100000u));
+		CHECK(Only(touch, {T_TRIANGLE}) && std::fabs(touch.value[T_TRIANGLE] - 0.2f) < 1e-6f);
+		// the real Triangle still presses fully; the two together press as the harder one
+		const Out both = Apply(c, Held(0x00100000u | 0x1000u));
+		CHECK(both.value[T_TRIANGLE] == 1.0f);
+		State trig;
+		trig.l2 = 255;
+		CHECK(std::fabs(Apply(c, trig).value[T_L2] - 0.5f) < 1e-6f);
+		CHECK(Describe(c) == "Cross presses Cross at 30%, L2 presses L2 at 50%, the touchpad's click presses Triangle at 20%");
+		// on/off targets press as on at any strength
+		const Config m = From({{"ButtonL3", "Pressure"}, {"ButtonL3Pressure", "0.2"}});
+		CHECK(Apply(m, Held(0x0002)).value[T_PRESSURE] == 1.0f);
+	}
+
+	// vk-285-118: dead zones (round, then stretched; the right stick's own; before Swap sticks).
+	{
+		const Config c = From({{"DeadzoneLeft", "20"}, {"DeadzoneRight", "60"}});
+		CHECK(c.deadzone_left == 20 && c.deadzone_right == 0 && !c.IsDefault());
+		State st;
+		st.lx = 128 + 20; // about 16%: inside
+		st.ly = 128 - 10;
+		st.rx = 140;
+		Out o = Apply(c, st);
+		CHECK(o.lx == 128 && o.ly == 128 && o.rx == 140);
+		st.lx = 255; st.ly = 128; // all the way: still all the way
+		o = Apply(c, st);
+		CHECK(o.lx == 255 && o.ly == 128);
+		st.lx = 0;
+		CHECK(Apply(c, st).lx <= 1);
+		st.lx = 128 + 76; // 60% out: (0.6 - 0.2) / 0.8 = half way
+		o = Apply(c, st);
+		CHECK(o.lx >= 190 && o.lx <= 193);
+		const Config sw = From({{"DeadzoneLeft", "30"}, {"SwapSticks", "1"}});
+		State drift;
+		drift.lx = 150;
+		drift.rx = 150;
+		o = Apply(sw, drift);
+		CHECK(o.rx == 128 && o.lx == 150);
+		CHECK(Describe(From({{"DeadzoneLeft", "10"}})) == "left stick dead zone 10%");
+	}
+
+	// vk-285-118: the fast forward combo: off by default; set, it fires like the others.
+	{
+		CHECK(Config().fast[0] == CB_NONE && Config().fast[1] == CB_NONE);
+		const Config c = From({{"FastButton1", "L3R3"}, {"FastButton2", "Right"}});
+		CHECK(c.fast[0] == CB_L3R3 && c.fast[1] == CB_RIGHT && !c.IsDefault());
+		CHECK(Describe(c) == "fast forward on L3+R3 + D-pad right");
+		ComboWatch w;
+		ComboState st;
+		st.buttons = 0x6u | 0x20u;
+		uint32_t block = 0;
+		CHECK(w.Update(c.fast, c.hold_ms, st, 0, block) && !w.Update(c.fast, c.hold_ms, st, 10, block));
 	}
 
 	if (s_failures == 0)

@@ -108,6 +108,53 @@ std::vector<OptionDef> ButtonRows()
 	return out;
 }
 
+// vk-285-118: how hard each button presses (OrbisPadMap.h Config::pressure, PS5SX2/Button<Name>Pressure), as the page's
+// STRENGTHS and its Button strength group.
+std::vector<OptionChoice> StrengthChoices()
+{
+	return {{"1", "Full"}, {"0.75", "75%"}, {"0.5", "50%"}, {"0.4", "40%"}, {"0.3", "30%"}, {"0.25", "25%"}, {"0.2", "20%"},
+		{"0.15", "15%"}, {"0.1", "10%"}};
+}
+
+std::vector<OptionDef> StrengthGroup()
+{
+	static const struct
+	{
+		const char* key;
+		const char* glyph;
+		const char* name;
+	} rows[] = {
+		{"PS5SX2/ButtonCrossPressure", icon::Cross, "Cross"},
+		{"PS5SX2/ButtonCirclePressure", icon::Circle, "Circle"},
+		{"PS5SX2/ButtonSquarePressure", icon::Square, "Square"},
+		{"PS5SX2/ButtonTrianglePressure", icon::Triangle, "Triangle"},
+		{"PS5SX2/ButtonL1Pressure", icon::Blank, "L1"},
+		{"PS5SX2/ButtonR1Pressure", icon::Blank, "R1"},
+		{"PS5SX2/ButtonL2Pressure", icon::Blank, "L2"},
+		{"PS5SX2/ButtonR2Pressure", icon::Blank, "R2"},
+		{"PS5SX2/ButtonTouchpadPressure", icon::Blank, "Touchpad click"},
+		{"PS5SX2/ButtonUpPressure", icon::DpadUp, "D-pad up"},
+		{"PS5SX2/ButtonDownPressure", icon::DpadDown, "D-pad down"},
+		{"PS5SX2/ButtonLeftPressure", icon::DpadLeft, "D-pad left"},
+		{"PS5SX2/ButtonRightPressure", icon::DpadRight, "D-pad right"},
+	};
+	std::vector<OptionDef> out;
+	for (const auto& r : rows)
+		out.push_back(Seg(r.key, Sym(r.glyph, r.name).c_str(), "1", "", StrengthChoices(),
+			"How hard this button presses what it's set to press. The PS2's face buttons, D-pad and shoulders read pressure, and some "
+			"games act on a light press: SOCOM II crouches at 20% on Triangle, Combined Assault at 30% (a full press goes prone). Set "
+			"the touchpad click to Triangle at 20% for a crouch button. L2 and R2 press at most this hard."));
+	return out;
+}
+
+// vk-285-118: the sticks' dead zones (OrbisPadMap.h Config::deadzone_left/right), as the page's DEADZONES.
+std::vector<OptionChoice> DeadzoneChoices()
+{
+	return {{"0", "Off"}, {"5", "5%"}, {"10", "10%"}, {"15", "15%"}, {"20", "20%"}, {"25", "25%"}, {"30", "30%"}};
+}
+
+constexpr const char* kDeadzoneHint = "Inside this much of the way out, the stick reads as centred; past it, the rest of the way still reaches full. For a stick that drifts, or a game that walks or turns by itself. Off is the stick as it is.";
+
 std::vector<OptionChoice> InvertChoices()
 {
 	return {{"0", "Off"}, {"1", "Up-down"}, {"2", "Left-right"}, {"3", "Both"}};
@@ -132,6 +179,7 @@ std::vector<OptionDef> ButtonsGroup()
 	constexpr const char* load_hint = "Hold both load buttons together to load the state (slot 1). L3 + R3: both sticks pressed in. Touchpad "
 									  "left or right: a finger on that side. Nothing, or the same button twice, makes it one button. F3 on a "
 									  "keyboard loads too.";
+	constexpr const char* fast_hint = "Experimental, for skipping videos: hold both fast forward buttons together (for the hold time above) to run the game as fast as it goes, and again to go back to full speed. Nothing on both: no fast forward button. Sound may skip while it's on.";
 	std::vector<OptionDef> out = {
 		Seg("PS5SX2/SaveButton1", "Save: button 1", "L3R3", "", ComboChoices(), save_hint),
 		Seg("PS5SX2/SaveButton2", "Save: button 2", "Up", "", ComboChoices(), save_hint),
@@ -140,6 +188,10 @@ std::vector<OptionDef> ButtonsGroup()
 		Seg("PS5SX2/StateHold", "Hold time", "0", "", {{"0", "Instant"}, {"0.5", "0.5 s"}, {"1", "1 s"}, {"1.5", "1.5 s"}, {"2", "2 s"}, {"3", "3 s"}},
 			"How long the save or load buttons are held before it happens. Instant: as soon as both are down, and that last press doesn't "
 			"reach the game. A second or two stops saving or loading by accident."),
+		// vk-285-118: fast forward (experimental), after the same hold time.
+		Seg("PS5SX2/FastButton1", "Fast forward: button 1", "None", "", ComboChoices(), fast_hint),
+		Seg("PS5SX2/FastButton2", "Fast forward: button 2", "None", "", ComboChoices(), fast_hint),
+		Seg("PS5SX2/FastSpeed", "Fast forward speed", "0", "", {{"0", "Max"}, {"2", "2x"}, {"3", "3x"}, {"4", "4x"}}, "How fast fast forward runs. Max: as fast as the console can. Some games' videos skip only at Max."),
 	};
 	for (OptionDef& d : ButtonRows())
 		out.push_back(std::move(d));
@@ -211,6 +263,7 @@ const std::vector<OptionGroup>& OptionGroups()
 			}},
 		{"Graphics",
 			{
+				Seg("PS5SX2/Renderer", "Renderer", "Hardware", "%", {{"Hardware", "Hardware"}, {"Software", "Software"}}, "Software draws the game on the CPU, as a PS2 does it: slower, but right in games whose effects the hardware renderer gets wrong. Set it for one game in that game's settings. Takes effect when the game starts.", true), // vk-285-118
 				Seg("filter", "Texture filtering", "2", "% filtering", {{"0", "Nearest"}, {"2", "PS2"}, {"1", "Bilinear"}, {"3", "Not sprites"}}),
 				Seg("MaxAnisotropy", "Anisotropic filtering", "0", "AF %", {{"0", "Off"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}),
 				Seg("accurate_blending_unit", "Blending accuracy", "1", "Blending %", {{"0", "Min"}, {"1", "Basic"}, {"2", "Med"}, {"3", "High"}},
@@ -230,7 +283,9 @@ const std::vector<OptionGroup>& OptionGroups()
 				Seg("HWDownloadMode", "GPU readbacks", "0", "Readbacks %", {{"0", "Accurate"}, {"1", "Whole area"}, {"3", "Don't wait"}, {"4", "Skip"}},
 					"Some games read the picture back from the GPU, which is slow on the PS5. Accurate is PCSX2's default. Whole area reads "
 					"everything drawn since the last read in one go, so there are fewer stops. Don't wait doesn't stop the game for the GPU: "
-					"quicker, but effects that depend on it can flicker. Skip ignores the reads: fastest, and those effects break."),
+					"quicker, but effects that depend on it can flicker. Skip ignores the reads: fastest, and those effects break. A game that "
+					"slows down because of them (on firmware below 10 each read can wait a vblank; elsewhere some games read so often that "
+					"the waits add up to a third of the time) switches to Don't wait by itself unless this is set."),
 			}},
 		{"Game",
 			{
@@ -251,6 +306,7 @@ const std::vector<OptionGroup>& OptionGroups()
 		// vk-285-116 (AI-assisted): the Controls tab (R2 on the sheet, as the page's Controls tab). The remapping, (vk-285-117) the
 		// save and load combos: main-boot.cpp orbis_ps5opts_from, orbis-shims/OrbisPadMap.h.
 		{"Buttons", ButtonsGroup(), kTabControls},
+		{"Button strength", StrengthGroup(), kTabControls}, // vk-285-118
 		{"Sticks",
 			{
 				Toggle("PS5SX2/SwapSticks", "Swap sticks", "false", "", "The left stick moves the game's right stick, and the right stick its left one."),
@@ -262,6 +318,8 @@ const std::vector<OptionGroup>& OptionGroups()
 				Seg("PS5SX2/LeftStickDpad", "Left stick as D-pad", "0", "", {{"0", "Off"}, {"1", "Also"}, {"2", "Only"}},
 					"For games that only read the D-pad. Also: the left stick presses the D-pad as it moves. Only: it presses just the D-pad, "
 					"and the game's left stick stays still."),
+				Seg("PS5SX2/DeadzoneLeft", "Left stick dead zone", "0", "", DeadzoneChoices(), kDeadzoneHint),
+				Seg("PS5SX2/DeadzoneRight", "Right stick dead zone", "0", "", DeadzoneChoices(), kDeadzoneHint),
 			},
 			kTabControls},
 		{"Controller",
@@ -269,6 +327,10 @@ const std::vector<OptionGroup>& OptionGroups()
 				Toggle("PS5SX2/Rumble", "Rumble", "true", "Rumble %",
 					"The game's vibration on the controller. In a game, hold L2 and D-pad down for 2 seconds to open the settings page in the "
 					"PS5's own web browser; the game keeps running behind it."),
+				Seg("PS5SX2/RumbleStrength", "Rumble strength", "1", "",
+					{{"0.25", "25%"}, {"0.5", "50%"}, {"0.75", "75%"}, {"1", "100%"}, {"1.25", "125%"}, {"1.5", "150%"}, {"2", "200%"}},
+					"How strongly the controller vibrates, as a share of what the game asks for. Above 100% lifts weak rumble; it never goes past the motors' full strength."),
+				Seg("PS5SX2/Multitap", "Multitap", "0", "", {{"0", "Off"}, {"1", "Port 1"}, {"2", "Port 2"}}, "For 4-player games. Players 2 to 4 are the other PS5 users logged in when the game starts, each on their own controller. Port 1 suits most games; a few want the multitap in port 2. Off: player 2 on port 2, as before.", true),
 			},
 			kTabControls},
 		{"Keyboard and mouse",

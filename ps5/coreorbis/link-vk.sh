@@ -132,8 +132,41 @@ else
 fi
 cp "$VK_LIB_PS5VK" "$OUT/driver/libps5vk.ps5.a"
 "$OBJCOPY" --redefine-sym vkGetInstanceProcAddr=ps5vk_driver_vkGetInstanceProcAddr "$OUT/driver/libps5vk.ps5.a"
-if "$NM" "$OUT/driver/libps5vk.ps5.a" 2>/dev/null | grep -qE " [A-Za-z] vkGetInstanceProcAddr$"; then
+# vk-285-119: nm's output through a file -- `nm | grep -q` under pipefail failed whenever grep found the name and stopped
+# reading, so this check could never fire.
+"$NM" "$OUT/driver/libps5vk.ps5.a" > "$OUT/driver/libps5vk.nm.txt" 2>/dev/null || true
+if grep -qE " [A-Za-z] vkGetInstanceProcAddr$" "$OUT/driver/libps5vk.nm.txt"; then
   echo "[link-vk] error: the driver archive still names vkGetInstanceProcAddr" >&2; exit 1
+fi
+# vk-285-119: the driver's write-after-read list lookup, four entries a compare (orbis-shims/orbis_ps5vk_war.c, which
+# says why). Only for the object it was written against -- ps5vk_cmd_buffer.o of the 6a20943 release, byte for byte,
+# since the shim reads that build's field offsets -- and not with ORBIS_WAR_SHIM=0. The copy's ps5vk_cmd_buffer.o
+# gets its two definitions renamed *_orig; the other driver objects call the shim's through the GOT.
+WAR_SHIM_OBJ=
+WAR_SHIM_WANT=885012e2c56712e5646212e3b3cb1c6a1794535ccefbb40b57dbd234cac61019
+if [[ ${ORBIS_WAR_SHIM:-1} != 0 ]]; then
+  war_dir="$OUT/driver/war"
+  rm -rf "$war_dir" && mkdir -p "$war_dir"
+  (cd "$war_dir" && ar x "$VK_LIB_PS5VK" ps5vk_cmd_buffer.o 2>/dev/null) || true
+  war_got=$( [[ -f $war_dir/ps5vk_cmd_buffer.o ]] && sha256sum "$war_dir/ps5vk_cmd_buffer.o" | cut -d' ' -f1 || echo none)
+  if [[ $war_got == "$WAR_SHIM_WANT" ]]; then
+    (cd "$war_dir" && ar x "$OUT/driver/libps5vk.ps5.a" ps5vk_cmd_buffer.o)
+    "$OBJCOPY" --redefine-sym ps5vk_cmd_buffer_note_draw_samples=ps5vk_cmd_buffer_note_draw_samples_orig \
+      --redefine-sym ps5vk_cmd_buffer_sampled_earlier=ps5vk_cmd_buffer_sampled_earlier_orig "$war_dir/ps5vk_cmd_buffer.o"
+    (cd "$war_dir" && ar r "$OUT/driver/libps5vk.ps5.a" ps5vk_cmd_buffer.o)
+    "$NM" "$OUT/driver/libps5vk.ps5.a" > "$war_dir/nm.txt" 2>/dev/null || true
+    for s in ps5vk_cmd_buffer_note_draw_samples_orig ps5vk_cmd_buffer_sampled_earlier_orig; do
+      grep -qE " T $s$" "$war_dir/nm.txt" ||
+        { echo "[link-vk] error: the WAR shim's rename left no $s in the driver archive" >&2; exit 1; }
+    done
+    sh "$NATIVE/tooling/prospero-clang18" -std=c11 -O2 -march=znver2 -mavx2 -ffunction-sections -fdata-sections \
+      -c "$here/orbis-shims/orbis_ps5vk_war.c" -o "$OUT/build/obj/orbis_ps5vk_war.o"
+    WAR_SHIM_OBJ="$OUT/build/obj/orbis_ps5vk_war.o"
+    OBJS="$OBJS $WAR_SHIM_OBJ"
+    echo "[link-vk] driver: WAR list lookup shim linked (ps5vk_cmd_buffer.o is the 6a20943 release's)"
+  else
+    echo "[link-vk] driver: WAR list lookup shim not linked (ps5vk_cmd_buffer.o is ${war_got:0:12}, not 6a20943's)"
+  fi
 fi
 VK_ARCHIVES=(
   "$OUT/driver/libps5vk.ps5.a"

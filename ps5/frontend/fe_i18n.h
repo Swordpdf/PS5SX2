@@ -51,6 +51,8 @@ enum class Str : int
 	NotifyGsFailed,     // "PS5SX2: the game's graphics didn't start. ..."
 	// vk-285-116: the sheet's second tab (L2 and R2 switch: "Settings" is HintSettings).
 	SheetControls,      // "Controls"
+	// vk-285-118: Triangle on the shelf shows the QR code large.
+	HintQrCode,         // "QR code"
 	// Shared RetroAchievements browser text (AI-assisted).
 	Achievements,
 	AchievementAll,

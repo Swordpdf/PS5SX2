@@ -14,7 +14,7 @@ credential-section lookup that prevented shelf browsing in non-English languages
 
 ## Account screen
 
-On the game shelf, press **Triangle** to open **RetroAchievements**. Select
+On the game shelf, press **L1 + Square** to open **RetroAchievements**. Select
 **Username** or **Password** with the D-pad and Cross. On the local keyboard:
 
 - D-pad selects a character; Cross types it.
@@ -95,8 +95,9 @@ browser before launching a game.
 The web server copies the active rcheevos client data under the achievement
 lock. It does not evaluate frames, log in or submit achievement requests.
 Only the main achievement set is shown, and either softcore or hardcore
-unlocks count as unlocked. Both endpoints require the existing web access
-token, and responses contain no RetroAchievements account credentials.
+unlocks count as unlocked. Both endpoints use the upstream web server's same-site access checks. Requests
+from another site are rejected, and responses contain no RetroAchievements
+account credentials.
 
 Badge downloads use the runtime cache and asynchronous downloader, with at
 most two pending web badge requests to leave room for gameplay requests.
@@ -115,7 +116,7 @@ French, Spanish (Spain and Latin America), German, Italian, Dutch and Portuguese
 (Portugal and Brazil). Other system languages fall back to English.
 Achievement titles and descriptions remain the text supplied by RetroAchievements.
 
-The authenticated `/api/state` response supplies `language` and `strings`
+The same-site `/api/state` response supplies `language` and `strings`
 from the console catalog. The web page uses these translations and escapes
 labels inserted into HTML, including file overrides. It retains English
 fallbacks for missing web keys. The existing settings and controls web pages
@@ -287,3 +288,17 @@ private-field omission, badge ID validation and PNG responses. The JavaScript
 checks exercise filtering, pagination, image request scheduling and refresh
 using the production page functions. These local checks do not replace
 build 9 localization checks on the console. (AI-assisted)
+
+## Upstream 1.8 merge
+
+The feature branch integrates upstream `dece6a8` (tag `vk-285-122`). The upstream
+QR action remains on Triangle; **L1 + Square** opens the RetroAchievements
+account panel before shelf navigation or the settings action is processed.
+Square alone still opens game settings. The web badge requests no longer
+append an access token and use the upstream same-site checks instead.
+Build 11 includes this merge with the existing public RADV driver configuration.
+The upstream WAR test requires the private ps5vk `6a20943` release archive;
+that test cannot run with the available public RADV dependency. Native and
+host frontend compilation, achievement tests, web-origin checks and the
+upstream controller/keyboard mapping tests passed. Console validation of
+this combined build is pending. (AI-assisted)

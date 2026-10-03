@@ -18,6 +18,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -80,8 +81,10 @@ struct SourceInfo
 	Target def;       // what it presses when the setting is unset
 };
 
-// ScePad's bits, as orbis_pad_apply always read them. The touchpad's click is 0x00100000; 0x1 is the keyboard's Select
-// (Backspace, orbis-shims/ProsperoKbdMap.h PAD_SELECT).
+// ScePad's bits, as orbis_pad_apply always read them. The touchpad's click is 0x00100000; 0x40000000 is the keyboard's
+// Select (Backspace, orbis-shims/ProsperoKbdMap.h PAD_SELECT). vk-285-122 (AI-assisted): ScePad's 0x1, the DualSense's
+// Create button (the old Share, left of the touchpad), presses nothing -- it pressed Select with the touchpad's click
+// until now (Spyros: "unbind select from the share button").
 inline const SourceInfo& SourceAt(int s)
 {
 	static const SourceInfo k[S_COUNT] = {
@@ -96,7 +99,7 @@ inline const SourceInfo& SourceAt(int s)
 		{"ButtonL3", "L3", 0x00000002u, T_L3},
 		{"ButtonR3", "R3", 0x00000004u, T_R3},
 		{"ButtonOptions", "Options", 0x00000008u, T_START},
-		{"ButtonTouchpad", "the touchpad's click", 0x00100001u, T_SELECT},
+		{"ButtonTouchpad", "the touchpad's click", 0x40100000u, T_SELECT},
 		{"ButtonUp", "D-pad up", 0x00000010u, T_UP},
 		{"ButtonDown", "D-pad down", 0x00000040u, T_DOWN},
 		{"ButtonLeft", "D-pad left", 0x00000080u, T_LEFT},
@@ -222,7 +225,7 @@ inline uint32_t ComboBits(ComboButton b)
 		case CB_L3: return 0x00000002u;
 		case CB_R3: return 0x00000004u;
 		case CB_OPTIONS: return 0x00000008u;
-		case CB_TOUCHPAD: return 0x00100001u; // the click, and the keyboard's Backspace (as the remapping's source)
+		case CB_TOUCHPAD: return 0x40100000u; // the click, and the keyboard's Backspace (as the remapping's source)
 		case CB_UP: return 0x00000010u;
 		case CB_DOWN: return 0x00000040u;
 		case CB_LEFT: return 0x00000080u;
@@ -234,28 +237,46 @@ inline uint32_t ComboBits(ComboButton b)
 struct Config
 {
 	Target target[S_COUNT];
+	// vk-285-118: how hard each button presses what it presses, 0.05..1 (PS5SX2/Button<Name>Pressure; 1, a full press, by
+	// default). A DualShock 2's face buttons, D-pad and shoulders read pressure, and some games act on a partial press: SOCOM
+	// II crouches at about 0.20 on Triangle, Combined Assault at 0.30 (a full press goes prone). The triggers press at most
+	// this hard. Targets that only read on or off (Start, Select, L3, R3, Analog, Light press) press the same at any strength.
+	float pressure[S_COUNT];
 	bool swap_sticks = false;
 	uint8_t left_dpad = 0;    // 0 no, 1 the D-pad too, 2 the D-pad only
+	// vk-285-118: each stick's dead zone, percent of the way out (0..50; PS5SX2/DeadzoneLeft, DeadzoneRight): inside it the
+	// stick reads as centred, past it the rest of the way is stretched over the whole range (no jump at its edge). For
+	// sticks that drift, or games that read a resting stick as a push. Of the controller's sticks, before Swap sticks.
+	uint8_t deadzone_left = 0;
+	uint8_t deadzone_right = 0;
 	uint8_t invert_left = 0;  // bit 0 up-down, bit 1 left-right
 	uint8_t invert_right = 0;
 	// vk-285-117: the save and load state combos (two buttons each) and how long they're held first.
 	ComboButton save[2] = {CB_L3R3, CB_UP};
 	ComboButton load[2] = {CB_L3R3, CB_DOWN};
 	int hold_ms = 0;
+	// vk-285-118: the fast forward combo (PS5SX2/FastButton1/2, experimental, to skip videos): it turns fast forward on and
+	// off, after the same hold time. Nothing on both (the default): no combo.
+	ComboButton fast[2] = {CB_NONE, CB_NONE};
 
 	Config()
 	{
 		for (int s = 0; s < S_COUNT; s++)
+		{
 			target[s] = SourceAt(s).def;
+			pressure[s] = 1.0f;
+		}
 	}
 
 	bool operator==(const Config& o) const
 	{
 		for (int s = 0; s < S_COUNT; s++)
-			if (target[s] != o.target[s])
+			if (target[s] != o.target[s] || pressure[s] != o.pressure[s])
 				return false;
-		return swap_sticks == o.swap_sticks && left_dpad == o.left_dpad && invert_left == o.invert_left && invert_right == o.invert_right &&
-		       save[0] == o.save[0] && save[1] == o.save[1] && load[0] == o.load[0] && load[1] == o.load[1] && hold_ms == o.hold_ms;
+		return swap_sticks == o.swap_sticks && left_dpad == o.left_dpad && deadzone_left == o.deadzone_left &&
+		       deadzone_right == o.deadzone_right && invert_left == o.invert_left && invert_right == o.invert_right &&
+		       save[0] == o.save[0] && save[1] == o.save[1] && load[0] == o.load[0] && load[1] == o.load[1] && hold_ms == o.hold_ms &&
+		       fast[0] == o.fast[0] && fast[1] == o.fast[1];
 	}
 	bool operator!=(const Config& o) const { return !(*this == o); }
 	bool IsDefault() const { return *this == Config(); }
@@ -276,6 +297,18 @@ inline uint8_t SmallInt(const std::string& v, int max)
 	return static_cast<uint8_t>(n);
 }
 
+// vk-285-118: a button's strength, "0.2" or "20%"; anything outside 0.05..1, or not a number, is a full press.
+inline float ParsePressure(const std::string& v)
+{
+	char* end = nullptr;
+	double p = std::strtod(v.c_str(), &end);
+	if (v.empty() || end == v.c_str())
+		return 1.0f;
+	if (*end == '%')
+		p /= 100.0;
+	return (p >= 0.05 && p <= 1.0) ? static_cast<float>(p) : 1.0f;
+}
+
 // The settings, read with `get(key, value)` (the key within [PS5SX2]; true when it is set). An unknown value leaves that
 // button or stick option as it is by default.
 template <typename Get>
@@ -289,6 +322,9 @@ inline Config FromSettings(Get get)
 		Target t;
 		if (get(SourceAt(s).key, v) && ParseTarget(v, t))
 			c.target[s] = t;
+		v.clear();
+		if (get((std::string(SourceAt(s).key) + "Pressure").c_str(), v))
+			c.pressure[s] = ParsePressure(v);
 	}
 	v.clear();
 	if (get("SwapSticks", v))
@@ -297,15 +333,21 @@ inline Config FromSettings(Get get)
 	if (get("LeftStickDpad", v))
 		c.left_dpad = SmallInt(v, 2);
 	v.clear();
+	if (get("DeadzoneLeft", v))
+		c.deadzone_left = SmallInt(v, 50);
+	v.clear();
+	if (get("DeadzoneRight", v))
+		c.deadzone_right = SmallInt(v, 50);
+	v.clear();
 	if (get("InvertLeft", v))
 		c.invert_left = SmallInt(v, 3);
 	v.clear();
 	if (get("InvertRight", v))
 		c.invert_right = SmallInt(v, 3);
 	// vk-285-117: the save and load combos; a value that isn't a button leaves that one at its default.
-	static const char* const combo_keys[4] = {"SaveButton1", "SaveButton2", "LoadButton1", "LoadButton2"};
-	ComboButton* const combo[4] = {&c.save[0], &c.save[1], &c.load[0], &c.load[1]};
-	for (int i = 0; i < 4; i++)
+	static const char* const combo_keys[6] = {"SaveButton1", "SaveButton2", "LoadButton1", "LoadButton2", "FastButton1", "FastButton2"};
+	ComboButton* const combo[6] = {&c.save[0], &c.save[1], &c.load[0], &c.load[1], &c.fast[0], &c.fast[1]};
+	for (int i = 0; i < 6; i++)
 	{
 		v.clear();
 		ComboButton b;
@@ -465,6 +507,27 @@ inline uint8_t Invert(uint8_t v)
 	return static_cast<uint8_t>(std::min(255, 256 - static_cast<int>(v)));
 }
 
+// vk-285-118: a stick through a round dead zone of `percent` (Config::deadzone_left/right).
+inline void DeadZone(uint8_t& x, uint8_t& y, int percent)
+{
+	if (percent <= 0)
+		return;
+	const float dx = (static_cast<float>(x) - 128.0f) / 127.0f, dy = (static_cast<float>(y) - 128.0f) / 127.0f;
+	const float r = std::sqrt(dx * dx + dy * dy), dz = static_cast<float>(percent) / 100.0f;
+	if (r <= dz)
+	{
+		x = y = 128;
+		return;
+	}
+	const float k = std::min(1.0f, (r - dz) / (1.0f - dz)) / r;
+	auto axis = [&](float d) {
+		const int v = static_cast<int>(std::lround(128.0f + d * k * 127.0f));
+		return static_cast<uint8_t>(std::max(0, std::min(255, v)));
+	};
+	x = axis(dx);
+	y = axis(dy);
+}
+
 inline Out Apply(const Config& c, const State& s)
 {
 	Out o;
@@ -478,10 +541,10 @@ inline Out Apply(const Config& c, const State& s)
 		{
 			const uint8_t raw = src == S_L2 ? s.l2 : s.r2;
 			const bool to_trigger = t == T_L2 || t == T_R2;
-			v = (to_trigger || raw >= kTriggerPress) ? raw / 255.0f : 0.0f;
+			v = (to_trigger || raw >= kTriggerPress) ? raw / 255.0f * c.pressure[src] : 0.0f;
 		}
 		else
-			v = (s.buttons & SourceAt(src).bits) ? 1.0f : 0.0f;
+			v = (s.buttons & SourceAt(src).bits) ? c.pressure[src] : 0.0f;
 		// PCSX2 reads the analog button and the pressure modifier as on or off (it acts when they change).
 		if ((t == T_ANALOG || t == T_PRESSURE) && v > 0.0f)
 			v = 1.0f;
@@ -489,6 +552,8 @@ inline Out Apply(const Config& c, const State& s)
 	}
 
 	uint8_t lx = s.lx, ly = s.ly, rx = s.rx, ry = s.ry;
+	DeadZone(lx, ly, c.deadzone_left);
+	DeadZone(rx, ry, c.deadzone_right);
 	if (c.swap_sticks)
 	{
 		std::swap(lx, rx);
@@ -529,12 +594,14 @@ inline std::string Describe(const Config& c)
 	for (int s = 0; s < S_COUNT; s++)
 	{
 		const Target t = c.target[s];
-		if (t == SourceAt(s).def)
+		if (t == SourceAt(s).def && c.pressure[s] == 1.0f)
 			continue;
 		if (!buttons.empty())
 			buttons += ", ";
 		buttons += SourceAt(s).name;
 		buttons += t == T_NONE ? std::string(" presses nothing") : std::string(" presses ") + TargetName(t);
+		if (t != T_NONE && c.pressure[s] != 1.0f)
+			buttons += " at " + std::to_string(static_cast<int>(c.pressure[s] * 100.0f + 0.5f)) + "%";
 	}
 	auto add = [&](const std::string& what) { sticks += (sticks.empty() ? "" : ", ") + what; };
 	static const char* const axes[4] = {"", "up-down", "left-right", "up-down and left-right"};
@@ -544,6 +611,10 @@ inline std::string Describe(const Config& c)
 		add(std::string("left stick ") + axes[c.invert_left & 3] + " inverted");
 	if (c.invert_right)
 		add(std::string("right stick ") + axes[c.invert_right & 3] + " inverted");
+	if (c.deadzone_left)
+		add("left stick dead zone " + std::to_string(c.deadzone_left) + "%");
+	if (c.deadzone_right)
+		add("right stick dead zone " + std::to_string(c.deadzone_right) + "%");
 	if (c.left_dpad == 1)
 		add("left stick also the D-pad");
 	if (c.left_dpad == 2)
@@ -554,6 +625,8 @@ inline std::string Describe(const Config& c)
 	if (c.save[0] != def.save[0] || c.save[1] != def.save[1] || c.load[0] != def.load[0] || c.load[1] != def.load[1] ||
 		c.hold_ms != def.hold_ms)
 		states = "save state on " + DescribeCombo(c.save, c.hold_ms) + ", load on " + DescribeCombo(c.load, c.hold_ms);
+	if (c.fast[0] != CB_NONE || c.fast[1] != CB_NONE)
+		states += (states.empty() ? "" : ", ") + std::string("fast forward on ") + DescribeCombo(c.fast, c.hold_ms);
 	std::string out = buttons;
 	for (const std::string* part : {&sticks, &states})
 		if (!part->empty())
