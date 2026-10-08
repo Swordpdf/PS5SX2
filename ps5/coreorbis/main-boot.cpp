@@ -63,6 +63,8 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/OrbisTextureRoots.h" // vk-285-113: a game's texture pack on a USB drive
 #include "orbis-shims/ProsperoKbdMouse.h" // vk-285-72, vk-285-113: the PS5's USB keyboard and mouse
 #include "orbis-shims/OrbisPadMap.h"     // vk-285-116: the controller remapping
+#include "orbis-shims/ProsperoUsbPad.h"  // vk-285-140: USB guitars and pads the PS5 doesn't take as controllers
+#include "SIO/Pad/PadGuitar.h"
 #include "OrbisNfs.h"                     // vk-285-135: games on NFS shares
 #include <mutex>
 #include <set> // vk-285-134
@@ -571,6 +573,9 @@ static int32_t g_orbis_second_user = -1;
 // player 1 on port 1, players 2..4 on 2A..2C (1, 5, 6). Each extra player is the next logged-in user, with their controller.
 static int g_orbis_multitap = 0;
 static int g_orbis_extra_count = 0;
+// vk-285-140 (AI-assisted): PS2 port 1 is PCSX2's Guitar controller (a USB guitar found at the start, or Pad1/Type=Guitar in
+// gs.ini or the game's file): the pad thread then sets the guitar's inputs instead of a DualShock 2's.
+static std::atomic<bool> g_orbis_port1_guitar{false};
 static int32_t g_orbis_extra_user[3] = {-1, -1, -1};
 static u32 g_orbis_extra_index[3] = {1, 0, 0};
 
@@ -678,6 +683,52 @@ static void orbis_pad_apply(OrbisPadPort &p, const OrbisPadData &d)
   last[0] = o.lx; last[1] = o.ly; last[2] = o.rx; last[3] = o.ry;
 }
 
+// vk-285-140 (AI-assisted): PS2 port 1 as PCSX2's Guitar. The DualSense plays it with PCSX2's default guitar bindings (R2 green,
+// Circle red, Triangle yellow, Cross blue, Square orange, the D-pad's up and down strum, the left stick's up the whammy, L2 tilt,
+// the touchpad's click Select, Options Start); a USB guitar adds its own frets, strum, whammy, star power and tilt. Only changes
+// are sent, as for the DualShock 2.
+static void orbis_pad_apply_guitar(OrbisPadPort &p, const OrbisPadData &d, const OrbisUsbPadOut *usb)
+{
+  float v[PadGuitar::Inputs::LENGTH] = {};
+  const uint32_t b = d.buttons;
+  v[PadGuitar::Inputs::GREEN] = ((b & 0x200u) || d.r2 >= 64) ? 1.0f : 0.0f;
+  v[PadGuitar::Inputs::RED] = (b & 0x2000u) ? 1.0f : 0.0f;
+  v[PadGuitar::Inputs::YELLOW] = (b & 0x1000u) ? 1.0f : 0.0f;
+  v[PadGuitar::Inputs::BLUE] = (b & 0x4000u) ? 1.0f : 0.0f;
+  v[PadGuitar::Inputs::ORANGE] = (b & 0x8000u) ? 1.0f : 0.0f;
+  v[PadGuitar::Inputs::STRUM_UP] = (b & 0x10u) ? 1.0f : 0.0f;
+  v[PadGuitar::Inputs::STRUM_DOWN] = (b & 0x40u) ? 1.0f : 0.0f;
+  v[PadGuitar::Inputs::SELECT] = (b & 0x40100000u) ? 1.0f : 0.0f;
+  v[PadGuitar::Inputs::START] = (b & 0x8u) ? 1.0f : 0.0f;
+  v[PadGuitar::Inputs::TILT] = ((b & 0x100u) || d.l2 >= 64) ? 1.0f : 0.0f;
+  // PadGuitar::Set takes the whammy's value times 255 off 127: 0.5 is all the way down.
+  v[PadGuitar::Inputs::WHAMMY] = d.ly < 118 ? std::min(1.0f, (118.0f - d.ly) / 118.0f) * 0.5f : 0.0f;
+  if (usb && usb->guitar)
+  {
+    const orbis_usbpad::GuitarOut &g = usb->strings;
+    if (g.green) v[PadGuitar::Inputs::GREEN] = 1.0f;
+    if (g.red) v[PadGuitar::Inputs::RED] = 1.0f;
+    if (g.yellow) v[PadGuitar::Inputs::YELLOW] = 1.0f;
+    if (g.blue) v[PadGuitar::Inputs::BLUE] = 1.0f;
+    if (g.orange) v[PadGuitar::Inputs::ORANGE] = 1.0f;
+    if (g.strum_up) v[PadGuitar::Inputs::STRUM_UP] = 1.0f;
+    if (g.strum_down) v[PadGuitar::Inputs::STRUM_DOWN] = 1.0f;
+    if (g.select) v[PadGuitar::Inputs::SELECT] = 1.0f;
+    if (g.start) v[PadGuitar::Inputs::START] = 1.0f;
+    if (g.tilt) v[PadGuitar::Inputs::TILT] = 1.0f;
+    v[PadGuitar::Inputs::WHAMMY] = std::max(v[PadGuitar::Inputs::WHAMMY], g.whammy * 0.5f);
+  }
+  static_assert(static_cast<int>(PadGuitar::Inputs::LENGTH) <= static_cast<int>(orbis_padmap::T_COUNT), "the guitar's inputs fit OrbisPadPort's last values");
+  for (int i = 0; i < PadGuitar::Inputs::LENGTH; i++)
+  {
+    if (v[i] != p.last_value[i])
+    {
+      Pad::SetControllerState(p.port, static_cast<u32>(i), v[i]);
+      p.last_value[i] = v[i];
+    }
+  }
+}
+
 // vk-285-113: one controller's rumble: what the game last asked for (or nothing: Rumble off, or leaving for the menu),
 // sent when it changes. The first few changes and any failure are logged (a DualSense in PS4 mode takes the same
 // two-motor call).
@@ -782,6 +833,8 @@ static void *orbis_pad_thread(void *)
     OrbisPadData d;
     memset(&d, 0, sizeof(d));
     int rc = p_read(handle, &d);
+    OrbisUsbPadOut usb_now; // vk-285-140
+    bool have_usb = false;
     // vk-285-113: the PS5's USB keyboard and mouse as the PS2 controller (orbis-shims/ProsperoKbdMouse.cpp): the keys held,
     // the mouse's buttons and its aim are added to what the DualSense reports (a button held on either is held; a stick the
     // keyboard or mouse moves is theirs while they move it). With no DualSense data at all they stand alone.
@@ -808,6 +861,35 @@ static void *orbis_pad_thread(void *)
         if (kp.ry != 128) d.ry = kp.ry;
       }
       s_kbm_was_active = active;
+      // vk-285-140 (AI-assisted): a USB pad or guitar the PS5 doesn't take as a controller (orbis-shims/ProsperoUsbPad.cpp),
+      // added the same way. A guitar on a port that is PCSX2's Guitar goes to orbis_pad_apply_guitar instead.
+      {
+        const bool usb = OrbisUsbPadState(usb_now);
+        have_usb = usb;
+        if (usb && !(usb_now.guitar && g_orbis_port1_guitar.load(std::memory_order_relaxed)))
+        {
+          const orbis_usbpad::PadOut &up = usb_now.pad;
+          if (rc != 0)
+          {
+            memset(&d, 0, sizeof(d));
+            d.lx = d.ly = d.rx = d.ry = 128;
+            rc = 0;
+          }
+          d.buttons |= up.buttons;
+          d.l2 = std::max(d.l2, up.l2);
+          d.r2 = std::max(d.r2, up.r2);
+          if (up.lx < 118 || up.lx > 138) d.lx = up.lx;
+          if (up.ly < 118 || up.ly > 138) d.ly = up.ly;
+          if (up.rx < 118 || up.rx > 138) d.rx = up.rx;
+          if (up.ry < 118 || up.ry > 138) d.ry = up.ry;
+        }
+        else if (usb && rc != 0)
+        {
+          memset(&d, 0, sizeof(d));
+          d.lx = d.ly = d.rx = d.ry = 128;
+          rc = 0;
+        }
+      }
       if (const int hotkey = OrbisKbdMouseTakeHotkey())
       {
         g_orbis_state_request.store(hotkey, std::memory_order_release);
@@ -949,7 +1031,10 @@ static void *orbis_pad_thread(void *)
         else
           s_holding = false;
       }
-      orbis_pad_apply(port1, d);
+      if (g_orbis_port1_guitar.load(std::memory_order_relaxed))
+        orbis_pad_apply_guitar(port1, d, have_usb ? &usb_now : nullptr); // vk-285-140
+      else
+        orbis_pad_apply(port1, d);
     }
     {
       static OrbisRumbleOut s_rumble1, s_rumble_extra[3];
@@ -3080,6 +3165,10 @@ int main()
     s_base_si.SetBoolValue("DEV9/Eth", "InterceptDHCP", true);
   }
   printf("[boot] PS2 network adapter %s\n", orbis_flag("nonetwork") ? "off (flag nonetwork)" : "on by default (sockets, DHCP)");
+  // vk-285-140 (AI-assisted): USB guitars and pads the PS5 doesn't take as controllers (orbis-shims/ProsperoUsbPad.cpp). Started
+  // here so that a guitar plugged in before the game can make PS2 port 1 a Guitar below (up to a second's wait for it).
+  OrbisUsbPadStart();
+  const bool usb_guitar_at_start = OrbisUsbPadWaitGuitar(1000);
   {
     // vk-285-109: player 2 (see g_orbis_second_user).
     int32_t first = -1;
@@ -3126,6 +3215,22 @@ int main()
     printf("[boot] users: first %d, %d more; multitap %s (PS5SX2/Multitap);%s\n", first, n_others,
       g_orbis_multitap == 0 ? "off" : g_orbis_multitap == 1 ? "in port 1" : "in port 2",
       who.empty() ? " PS2 port 2 stays empty" : who.c_str());
+  }
+  {
+    // vk-285-140: a USB guitar at the start makes PS2 port 1 PCSX2's Guitar, unless gs.ini or the game's file sets Pad1's type.
+    MemorySettingsInterface peek = s_base_si;
+    orbis_apply_gs_ini(peek, true);
+    std::string own_type;
+    const bool typed = peek.GetStringValue("Pad1", "Type", &own_type) && !own_type.empty();
+    if (usb_guitar_at_start && !typed)
+      s_base_si.SetStringValue("Pad1", "Type", "Guitar");
+    MemorySettingsInterface after = s_base_si;
+    orbis_apply_gs_ini(after, true);
+    const std::string type = after.GetStringValue("Pad1", "Type", "DualShock2");
+    g_orbis_port1_guitar.store(type == "Guitar", std::memory_order_relaxed);
+    printf("[boot] PS2 port 1: %s%s\n", type.c_str(),
+      usb_guitar_at_start ? (typed ? " (a USB guitar is connected, but gs.ini or the game's file sets Pad1's type)" : " (a USB guitar is connected)") : "");
+    fflush(stdout);
   }
   s_base_pre_gsini = s_base_si; // eerec-285
   orbis_apply_gs_ini(s_base_si);
