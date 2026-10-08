@@ -1611,6 +1611,11 @@ static std::mutex g_launch_lock;
 static std::string g_launch_request; // under g_launch_lock
 static bool g_shelf_up = false;      // under g_launch_lock
 
+uint64_t orbis_frontend_free_bytes(const std::string& dir)
+{
+	return TexturePackFreeBytes(dir);
+}
+
 bool orbis_frontend_request_launch(const std::string& path)
 {
 	std::lock_guard<std::mutex> lock(g_launch_lock);

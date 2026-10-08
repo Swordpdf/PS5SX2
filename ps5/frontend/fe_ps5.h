@@ -129,3 +129,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 // vk-285-144 (AI-assisted): starts a game from outside the shelf (a PS2 disc put in the drive, orbis-shims/ProsperoDiscDump.cpp):
 // the running shelf closes as if the image at `path` had been picked. False when no shelf is up to take it.
 bool orbis_frontend_request_launch(const std::string& path);
+
+// vk-285-145 (AI-assisted): free bytes in `dir` through libkernel's _fstatfs (libc's statfs makes the system call from the
+// app's code, which the PS5 kills the app for). UINT64_MAX when it can't tell.
+uint64_t orbis_frontend_free_bytes(const std::string& dir);

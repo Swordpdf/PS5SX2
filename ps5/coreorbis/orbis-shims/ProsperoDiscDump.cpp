@@ -6,8 +6,8 @@
 // writes them to games/<title> (<serial>).iso, which the shelf then lists like any other image.
 //
 // Not tried on a console: which /dev node is the drive, and whether it gives a PS2 disc's sectors at all, is what the
-// first log shows. So it logs a lot, once ([disc] lines in boot.log): every /dev name, the mounted file systems, and
-// for each candidate node (a name that looks like an optical drive, or what a mounted cd9660/udf file system came from)
+// first log shows. So it logs a lot, once ([disc] lines in boot.log): every /dev name and
+// for each candidate node (a /dev name that looks like an optical drive)
 // whether it opens, its size and sector size, and what sector 16 holds (an ISO 9660 volume says "CD001").
 //
 // Then every 3 s while the app runs: a node whose sector 16 is an ISO 9660 volume with a PS2 SYSTEM.CNF (BOOT2) is
@@ -22,6 +22,14 @@
 // logs/relaunch.txt), or the disc's game would start again at once. Taking the disc out and putting it back starts it
 // again. While a game runs, a new disc is copied but nothing starts.
 //
+// vk-285-145: 144 crashed at boot on testers' consoles (SYSTEM_ILLEGAL_FUNCTION_CALL right after "PS5SX2: starting"). The list
+// of mounted file systems came from libc's getmntinfo, which makes the getfsstat system call from the app's own code, and
+// the free-space check from statfs, the same: the PS5 kills an app that makes a system call outside libkernel. Both are
+// gone: no list of mounts (the /dev names are enough), free space through libkernel's _fstatfs like the texture packs.
+// Also: a /dev name counts as a drive only as an exact name or the name plus a number (cd0, bd0, acd0...), so Sony's own
+// nodes (bluetooth_hid, ...) are never opened, and the first look waits 5 s so the app's start never runs into it.
+// Needs proper testing on a console with a disc drive.
+//
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -35,7 +43,6 @@
 #include <sys/types.h>
 #include <sys/disk.h>
 #include <sys/ioctl.h>
-#include <sys/mount.h>
 #include <sys/param.h>
 #include <sys/stat.h>
 
@@ -75,10 +82,19 @@ namespace
 
 	bool LooksOptical(const std::string& n)
 	{
-		static const char* const prefixes[] = {"cd", "bd", "disc", "odd", "dvd", "sbd", "blu", "optical", "acd", "scd", "bdrom", "drive"};
-		for (const char* p : prefixes)
-			if (n.rfind(p, 0) == 0)
+		// The name alone or the name plus a number: cd0 yes, bluetooth_hid / bdbus / cdev no.
+		static const char* const names[] = {"cd", "bd", "disc", "odd", "dvd", "sbd", "optical", "acd", "scd", "bdrom"};
+		for (const char* p : names)
+		{
+			const size_t len = strlen(p);
+			if (n.compare(0, len, p) != 0)
+				continue;
+			bool digits = true;
+			for (size_t i = len; i < n.size(); i++)
+				digits = digits && n[i] >= '0' && n[i] <= '9';
+			if (digits)
 				return true;
+		}
 		return false;
 	}
 
@@ -148,17 +164,7 @@ namespace
 			}
 			closedir(d);
 		}
-		struct statfs* mounts = nullptr;
-		const int count = getmntinfo(&mounts, MNT_NOWAIT);
-		for (int i = 0; i < count; i++)
-		{
-			const std::string type = mounts[i].f_fstypename, from = mounts[i].f_mntfromname, on = mounts[i].f_mntonname;
-			if (log && (type != "devfs" && type != "nullfs" && type != "tmpfs"))
-				Log("mounted: %s on %s (%s)", from.c_str(), on.c_str(), type.c_str());
-			if ((type == "cd9660" || type == "udf" || type.find("bd") != std::string::npos) && from.rfind("/dev/", 0) == 0 &&
-				std::find(out.begin(), out.end(), from) == out.end())
-				out.push_back(from);
-		}
+		// vk-285-145: no getmntinfo here (a system call from the app's own code: the PS5 kills the app).
 		if (log)
 		{
 			Log("/dev:%s", all.c_str());
@@ -203,10 +209,10 @@ namespace
 			}
 			return iso;
 		}
-		struct statfs fs;
-		if (statfs(games.c_str(), &fs) == 0)
+		// vk-285-145: libkernel's _fstatfs (fe_ps5), never libc's statfs. UINT64_MAX: not known, copied anyway.
+		const uint64_t free_bytes = orbis_frontend_free_bytes(games);
+		if (free_bytes != UINT64_MAX)
 		{
-			const uint64_t free_bytes = static_cast<uint64_t>(fs.f_bavail) * fs.f_bsize;
 			if (free_bytes < node.bytes + (256ull << 20))
 			{
 				Log("%s: %llu MB needed, %llu MB free: not copied", serial.c_str(), static_cast<unsigned long long>(node.bytes >> 20),
@@ -334,6 +340,7 @@ namespace
 		std::string handled;
 		std::string pending; // a copy whose game waits for the shelf
 		const bool relaunch = TakeRelaunchMark();
+		sleep(5); // vk-285-145: well after the app's start
 		if (relaunch)
 			Log("a re-exec into the shelf: a disc in the drive now doesn't start its game");
 		for (;;)
