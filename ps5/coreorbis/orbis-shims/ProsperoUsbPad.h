@@ -9,6 +9,10 @@
 // keeps it off.
 void OrbisUsbPadStart();
 
+// vk-285-142: the game is a Guitar Hero / Rock Band one: a USB device known only by its reports' shape is a guitar. Set
+// before OrbisUsbPadStart.
+void OrbisUsbPadSetGuitarHint(bool on);
+
 // Waits up to `ms` for the thread's first look at the USB devices. True when a guitar was found then (main-boot puts
 // PCSX2's Guitar controller on PS2 port 1 for it).
 bool OrbisUsbPadWaitGuitar(int ms);

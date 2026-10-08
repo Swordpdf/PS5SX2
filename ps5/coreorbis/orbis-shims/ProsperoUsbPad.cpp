@@ -75,6 +75,20 @@ namespace
 	std::condition_variable s_scan_cv;
 	bool s_first_scan_done = false; // under s_scan_lock
 	bool s_first_scan_guitar = false;
+	std::vector<std::string> s_usb_nodes; // /dev/usb's names ("1.3.2"), from the last scan; the thread's
+	std::atomic<bool> s_guitar_hint{false}; // vk-285-142: the game is a Guitar Hero / Rock Band one (main-boot)
+
+	// vk-285-142 (AI-assisted): the 13.60 tester log (vk-285-140, a base PS5) showed /dev/ugenB.A and /dev/usb/B.A.E nodes,
+	// but every ugen control node answered USB_GET_DEVICEINFO with ENOTTY: Sony's kernel doesn't take FreeBSD's ugen
+	// ioctls there. The endpoint nodes may still read. A candidate is an endpoint node that opened for reading; the
+	// first one whose reports look like a PS3 pad, a DualShock 3 or an XInput pad is taken (no IDs to go by then).
+	struct Candidate
+	{
+		std::string path;
+		int fd = -1;
+		unsigned reads = 0, logged = 0;
+	};
+	std::vector<Candidate> s_cands; // the thread's
 
 	void Log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 	void Log(const char* fmt, ...)
@@ -342,6 +356,161 @@ namespace
 		return true;
 	}
 
+	const char* IoctlResult(int rc)
+	{
+		static char b[32];
+		if (rc == 0)
+			return "ok";
+		snprintf(b, sizeof(b), "errno %d", errno);
+		return b;
+	}
+
+	// What the ugen nodes of a device answer, logged once, and its endpoint nodes opened for reading as candidates.
+	void ProbeUgen(const std::string& node, int fd)
+	{
+		unsigned bus = 0, addr = 0;
+		if (sscanf(node.c_str(), "ugen%u.%u", &bus, &addr) != 2)
+			return;
+		usb_device_descriptor dd = {};
+		const int r_dd = ioctl(fd, USB_GET_DEVICE_DESC, &dd);
+		const char* s_dd = IoctlResult(r_dd);
+		int cfg_no = -1;
+		const int r_cfg = ioctl(fd, USB_GET_CONFIG, &cfg_no);
+		std::string s_cfg = IoctlResult(r_cfg);
+		uint8_t raw[18] = {};
+		uint16_t actual = 0;
+		const bool r_req = UgenRequest(fd, 0x80, 0x06, 0x0100, 0, raw, sizeof(raw), &actual);
+		Log("/dev/%s: USB_GET_DEVICE_DESC %s%s, USB_GET_CONFIG %s (%d), GET_DESCRIPTOR(device) %s%s", node.c_str(), s_dd,
+			r_dd == 0 ? (" " + Hex(reinterpret_cast<const uint8_t*>(&dd), sizeof(dd))).c_str() : "", s_cfg.c_str(), cfg_no,
+			r_req ? "ok" : IoctlResult(-1), r_req ? (" " + Hex(raw, actual)).c_str() : "");
+		char p0[48];
+		snprintf(p0, sizeof(p0), "/dev/usb/%u.%u.0", bus, addr);
+		const int fd0 = open(p0, O_RDWR);
+		if (fd0 >= 0)
+		{
+			usb_device_info di = {};
+			const int r = ioctl(fd0, USB_GET_DEVICEINFO, &di);
+			Log("%s: USB_GET_DEVICEINFO %s%s", p0, IoctlResult(r),
+				r == 0 ? (std::string(" ") + std::to_string(di.udi_vendorNo) + ":" + std::to_string(di.udi_productNo) + " " + di.udi_product).c_str() : "");
+			close(fd0);
+		}
+		else
+			Log("%s: open: errno %d", p0, errno);
+		// The device's endpoint nodes. One with endpoint numbers above 7 or more than 6 of them is an internal module (the
+		// wireless one): never read.
+		char prefix[24];
+		snprintf(prefix, sizeof(prefix), "%u.%u.", bus, addr);
+		std::vector<unsigned> eps;
+		for (const std::string& n : s_usb_nodes)
+		{
+			unsigned e = 0;
+			if (n.rfind(prefix, 0) == 0 && sscanf(n.c_str() + strlen(prefix), "%u", &e) == 1 && e > 0)
+				eps.push_back(e);
+		}
+		const bool internal = eps.size() > 6 || std::any_of(eps.begin(), eps.end(), [](unsigned e) { return e > 7; });
+		if (internal)
+		{
+			Log("/dev/%s: %zu endpoint nodes, numbers above 7: an internal device, not read", node.c_str(), eps.size());
+			return;
+		}
+		for (unsigned e : eps)
+		{
+			char path[48];
+			snprintf(path, sizeof(path), "/dev/usb/%u.%u.%u", bus, addr, e);
+			if (std::any_of(s_cands.begin(), s_cands.end(), [&](const Candidate& c) { return c.path == path; }))
+				continue;
+			const int ep = open(path, O_RDONLY | O_NONBLOCK);
+			if (ep < 0)
+			{
+				Log("%s: open for reading: errno %d", path, errno);
+				continue;
+			}
+			int one = 1;
+			const int r1 = ioctl(ep, USB_SET_RX_SHORT_XFER, &one);
+			Log("%s: open for reading: ok (short transfers: %s); a candidate", path, IoctlResult(r1));
+			Candidate c;
+			c.path = path;
+			c.fd = ep;
+			s_cands.push_back(c);
+			if (s_cands.size() >= 8)
+				break;
+		}
+	}
+
+	// A report whose shape says what sent it: the PS3 layout (27 bytes or more, the hat nibble 0-8 or 15), a DualShock 3
+	// (report 1, 49 bytes) or XInput (type 0, length 0x14).
+	Format GuessFormat(const uint8_t* r, int n)
+	{
+		if (n >= 20 && r[0] == 0x00 && r[1] == 0x14)
+			return Format::XInput;
+		if (n == 49 && r[0] == 0x01)
+			return Format::Ds3;
+		if (n >= 27 && n <= 64 && ((r[2] & 0x0F) <= 8 || (r[2] & 0x0F) == 0x0F))
+			return Format::Ps3Fixed;
+		return Format::None;
+	}
+
+	// Waits up to `ms` on the candidates. True: one was taken into `d`.
+	bool PollCandidates(Device& d, int ms)
+	{
+		if (s_cands.empty())
+		{
+			usleep(static_cast<useconds_t>(ms) * 1000);
+			return false;
+		}
+		const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+		while (std::chrono::steady_clock::now() < end)
+		{
+			std::vector<pollfd> p;
+			for (const Candidate& c : s_cands)
+				p.push_back({c.fd, POLLIN, 0});
+			if (poll(p.data(), static_cast<nfds_t>(p.size()), 100) <= 0)
+				continue;
+			for (size_t i = 0; i < s_cands.size(); i++)
+			{
+				if (!(p[i].revents & (POLLIN | POLLERR | POLLHUP)))
+					continue;
+				Candidate& c = s_cands[i];
+				uint8_t buf[256];
+				const ssize_t n = read(c.fd, buf, sizeof(buf));
+				if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+					continue;
+				if (n <= 0)
+				{
+					Log("%s: read %zd (errno %d): no longer a candidate", c.path.c_str(), n, errno);
+					close(c.fd);
+					s_cands.erase(s_cands.begin() + static_cast<long>(i));
+					return false;
+				}
+				c.reads++;
+				const Format f = GuessFormat(buf, static_cast<int>(n));
+				if (c.logged < 12)
+				{
+					c.logged++;
+					Log("%s: report %u (%zd bytes): %s -> %s", c.path.c_str(), c.reads, n, Hex(buf, static_cast<size_t>(n)).c_str(),
+						f == Format::None ? "not a pad's shape" : FormatName(f));
+				}
+				if (f == Format::None)
+					continue;
+				d = Device();
+				d.name = c.path;
+				d.route = Route::UgenNode;
+				d.ep = c.fd;
+				d.format = f;
+				d.target.max_packet = 64;
+				d.guitar = OrbisFlag("usbguitar") ? true : OrbisFlag("usbpad") ? false : s_guitar_hint.load();
+				s_cands.erase(s_cands.begin() + static_cast<long>(i));
+				for (Candidate& o : s_cands)
+					close(o.fd);
+				s_cands.clear();
+				Log("taken: %s by its reports' shape (%s), as a %s%s", d.name.c_str(), FormatName(f), d.guitar ? "guitar" : "controller",
+					OrbisFlag("usbguitar") ? " (flag usbguitar)" : OrbisFlag("usbpad") ? " (flag usbpad)" : d.guitar ? " (a Guitar Hero or Rock Band game)" : "");
+				return true;
+			}
+		}
+		return false;
+	}
+
 	bool TryUgen(const std::string& node, Device& d)
 	{
 		const std::string path = "/dev/" + node;
@@ -355,6 +524,7 @@ namespace
 		if (ioctl(fd, USB_GET_DEVICEINFO, &di) != 0)
 		{
 			Log("%s: USB_GET_DEVICEINFO: errno %d", path.c_str(), errno);
+			ProbeUgen(node, fd); // vk-285-142
 			close(fd);
 			return false;
 		}
@@ -659,17 +829,21 @@ namespace
 			Log("/dev: opendir errno %d", errno);
 		std::sort(uhid.begin(), uhid.end());
 		std::sort(ugen.begin(), ugen.end());
+		s_usb_nodes.clear();
+		std::string usb;
+		if (DIR* dir = opendir("/dev/usb"))
+		{
+			while (dirent* e = readdir(dir))
+				if (e->d_name[0] != '.')
+				{
+					s_usb_nodes.push_back(e->d_name);
+					usb += std::string(" ") + e->d_name;
+				}
+			closedir(dir);
+		}
 		if (log)
 		{
 			Log("/dev's USB nodes:%s", all.empty() ? " none" : all.c_str());
-			std::string usb;
-			if (DIR* dir = opendir("/dev/usb"))
-			{
-				while (dirent* e = readdir(dir))
-					if (e->d_name[0] != '.')
-						usb += std::string(" ") + e->d_name;
-				closedir(dir);
-			}
 			Log("/dev/usb:%s", usb.empty() ? " (none or not readable)" : usb.c_str());
 		}
 	}
@@ -700,10 +874,8 @@ namespace
 					return true;
 			}
 		}
-		// libSceUsbd when /dev has no USB nodes at all for this app.
-		if (uhid.empty() && ugen.empty())
-			return TryUsbd(d, seen);
-		return false;
+		// libSceUsbd (vk-285-142: also when the ugen nodes gave nothing, as on 13.60).
+		return TryUsbd(d, seen);
 	}
 
 	// ---- reading -------------------------------------------------------------------------------------------------------------
@@ -801,17 +973,23 @@ namespace
 		{
 			if (d.route == Route::None)
 			{
-				const bool found = Scan(d, seen, first);
+				bool found = Scan(d, seen, first);
 				if (first)
 				{
 					std::lock_guard<std::mutex> lock(s_scan_lock);
 					s_first_scan_done = true;
-					s_first_scan_guitar = found && d.guitar;
+					// vk-285-142: in a Guitar Hero / Rock Band game, an endpoint that opened counts as the guitar for PS2
+					// port 1 (its first report may come only when it's touched).
+					s_first_scan_guitar = (found && d.guitar) ||
+					                      (!found && !s_cands.empty() && s_guitar_hint.load() && !OrbisFlag("usbpad")) ||
+					                      (!found && !s_cands.empty() && OrbisFlag("usbguitar"));
 					s_scan_cv.notify_all();
 					if (!found)
 						Log("nothing found at the start; looking again every 2 s");
 				}
 				first = false;
+				if (!found)
+					found = PollCandidates(d, 2000); // vk-285-142 (else a 2 s wait)
 				if (!found)
 				{
 					// A device plugged in later gets a new node name; nodes already looked at are only looked at again
@@ -819,7 +997,6 @@ namespace
 					static unsigned rounds = 0;
 					if (++rounds % 15 == 0)
 						seen.clear();
-					sleep(2);
 					continue;
 				}
 				reports = 0;
@@ -907,6 +1084,11 @@ void OrbisUsbPadStart()
 		s_first_scan_done = true;
 		s_scan_cv.notify_all();
 	}
+}
+
+void OrbisUsbPadSetGuitarHint(bool on)
+{
+	s_guitar_hint.store(on);
 }
 
 bool OrbisUsbPadWaitGuitar(int ms)

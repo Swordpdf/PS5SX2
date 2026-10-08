@@ -3198,6 +3198,22 @@ int main()
   printf("[boot] PS2 network adapter %s\n", orbis_flag("nonetwork") ? "off (flag nonetwork)" : "on by default (sockets, DHCP)");
   // vk-285-140 (AI-assisted): USB guitars and pads the PS5 doesn't take as controllers (orbis-shims/ProsperoUsbPad.cpp). Started
   // here so that a guitar plugged in before the game can make PS2 port 1 a Guitar below (up to a second's wait for it).
+  {
+    // vk-285-142: in a Guitar Hero / Rock Band game a USB device known only by its reports' shape is taken as a guitar.
+    fe::GameInfo gi;
+    gi.path = s_game_path;
+    gi.serial = fe::ReadSerial(s_game_path);
+    const size_t slash = s_game_path.rfind('/');
+    gi.title = s_game_path.substr(slash == std::string::npos ? 0 : slash + 1);
+    fe::ApplyGameDbTitle(gi);
+    std::string low = gi.title + " " + s_game_path;
+    for (char &ch : low)
+      ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    const bool guitar_game = low.find("guitar hero") != std::string::npos || low.find("rock band") != std::string::npos ||
+                             low.find("band hero") != std::string::npos;
+    OrbisUsbPadSetGuitarHint(guitar_game);
+    printf("[boot] USB pads: %s (\"%s\")\n", guitar_game ? "a Guitar Hero or Rock Band game" : "not a guitar game", gi.title.c_str());
+  }
   OrbisUsbPadStart();
   const bool usb_guitar_at_start = OrbisUsbPadWaitGuitar(1000);
   {
