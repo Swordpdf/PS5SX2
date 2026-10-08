@@ -1,0 +1,420 @@
+// PS5SX2 (vk-285-144, AI-assisted): a PS2 DVD in the PS5's drive, copied to /data/PCSX2/games as an .iso.
+//
+// swordpdf: "enable disc support, the disc needs to be mounted and dumped to data/pcsx2/games". The PS5's drive reads DVDs
+// (it can't read CDs, so PS2 CD games are out), but the system has no use for a PS2 disc and doesn't mount it for an app.
+// This thread looks for the drive's device node the kernel gives the jailbroken app, reads the disc's sectors itself and
+// writes them to games/<title> (<serial>).iso, which the shelf then lists like any other image.
+//
+// Not tried on a console: which /dev node is the drive, and whether it gives a PS2 disc's sectors at all, is what the
+// first log shows. So it logs a lot, once ([disc] lines in boot.log): every /dev name, the mounted file systems, and
+// for each candidate node (a name that looks like an optical drive, or what a mounted cd9660/udf file system came from)
+// whether it opens, its size and sector size, and what sector 16 holds (an ISO 9660 volume says "CD001").
+//
+// Then every 3 s while the app runs: a node whose sector 16 is an ISO 9660 volume with a PS2 SYSTEM.CNF (BOOT2) is
+// copied, unless games/ already has that file at full size: 1 MiB reads, each retried; a range that still won't read is
+// re-read sector by sector and what stays unreadable is written as zeros and counted. The copy goes to a .part file,
+// renamed to .iso at the end. Notifications at the start, every 25% and at the end. Nothing is ever written to the disc
+// or a device. Flag nodiscdump: off.
+//
+// swordpdf: "after its dumped, whenever inserted should start that game with ps5sx2". A PS2 disc put in while the shelf is
+// up starts its copy (once the copy is made), as if picked on the shelf; so does one already in the drive when the app is
+// opened. Not when the app was re-executed into the shelf (back to the menu, a game that didn't start: main-boot writes
+// logs/relaunch.txt), or the disc's game would start again at once. Taking the disc out and putting it back starts it
+// again. While a game runs, a new disc is copied but nothing starts.
+//
+// Copyright (C) 2026 swordpdf
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "ProsperoDiscDump.h"
+#include "ProsperoNotify.h"
+
+#include "OrbisPaths.h"
+#include "../../frontend/fe_games.h"
+#include "../../frontend/fe_ps5.h"
+
+#include <sys/types.h>
+#include <sys/disk.h>
+#include <sys/ioctl.h>
+#include <sys/mount.h>
+#include <sys/param.h>
+#include <sys/stat.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <cstdarg>
+#include <dirent.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <string>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+
+namespace
+{
+	std::atomic<bool> s_started{false};
+	std::atomic<bool> s_busy{false};
+
+	void Log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+	void Log(const char* fmt, ...)
+	{
+		char line[1024];
+		va_list ap;
+		va_start(ap, fmt);
+		vsnprintf(line, sizeof(line), fmt, ap);
+		va_end(ap);
+		printf("[disc] %s\n", line);
+		fflush(stdout);
+	}
+
+	bool LooksOptical(const std::string& n)
+	{
+		static const char* const prefixes[] = {"cd", "bd", "disc", "odd", "dvd", "sbd", "blu", "optical", "acd", "scd", "bdrom", "drive"};
+		for (const char* p : prefixes)
+			if (n.rfind(p, 0) == 0)
+				return true;
+		return false;
+	}
+
+	uint32_t Le32(const uint8_t* p) { return static_cast<uint32_t>(p[0]) | (p[1] << 8) | (p[2] << 16) | (static_cast<uint32_t>(p[3]) << 24); }
+
+	struct Node
+	{
+		std::string path;
+		uint64_t bytes = 0; // the media's size (DIOCGMEDIASIZE), or the ISO volume's
+	};
+
+	// What a node holds: false when it doesn't open or sector 16 isn't an ISO 9660 volume. `log`: say what was found.
+	bool ProbeNode(const std::string& path, Node& out, bool log)
+	{
+		const int fd = open(path.c_str(), O_RDONLY);
+		if (fd < 0)
+		{
+			if (log)
+				Log("%s: open: errno %d", path.c_str(), errno);
+			return false;
+		}
+		off_t media = 0;
+		u_int sector = 0;
+		const int r1 = ioctl(fd, DIOCGMEDIASIZE, &media);
+		const int e1 = r1 ? errno : 0;
+		const int r2 = ioctl(fd, DIOCGSECTORSIZE, &sector);
+		const int e2 = r2 ? errno : 0;
+		uint8_t pvd[2048] = {};
+		const ssize_t n = pread(fd, pvd, sizeof(pvd), 16 * 2048);
+		const int e3 = n < 0 ? errno : 0;
+		close(fd);
+		const bool iso = n == 2048 && pvd[0] == 1 && memcmp(pvd + 1, "CD001", 5) == 0;
+		const uint64_t vol = iso ? static_cast<uint64_t>(Le32(pvd + 80)) * 2048 : 0;
+		if (log)
+		{
+			char label[33] = {};
+			if (iso)
+				memcpy(label, pvd + 40, 32);
+			Log("%s: opens; media size %s %lld, sector size %s %u; sector 16: %s%zd bytes%s%s%s", path.c_str(), r1 ? "errno" : "",
+				r1 ? static_cast<long long>(e1) : static_cast<long long>(media), r2 ? "errno" : "", r2 ? static_cast<unsigned>(e2) : sector,
+				n < 0 ? "read errno " : "", n < 0 ? static_cast<ssize_t>(e3) : n, iso ? ", ISO 9660 volume \"" : "", iso ? label : "",
+				iso ? "\"" : (n == 2048 ? ", not ISO 9660" : ""));
+		}
+		if (!iso)
+			return false;
+		out.path = path;
+		out.bytes = (r1 == 0 && media > 0) ? static_cast<uint64_t>(media) : vol;
+		if (vol && out.bytes > vol)
+			out.bytes = vol; // the volume's own size: a drive may report the whole disc's capacity
+		return out.bytes > 0;
+	}
+
+	std::vector<std::string> Candidates(bool log)
+	{
+		std::vector<std::string> out;
+		std::string all;
+		if (DIR* d = opendir("/dev"))
+		{
+			while (dirent* e = readdir(d))
+			{
+				const std::string n = e->d_name;
+				if (n == "." || n == "..")
+					continue;
+				all += " " + n;
+				if (LooksOptical(n))
+					out.push_back("/dev/" + n);
+			}
+			closedir(d);
+		}
+		struct statfs* mounts = nullptr;
+		const int count = getmntinfo(&mounts, MNT_NOWAIT);
+		for (int i = 0; i < count; i++)
+		{
+			const std::string type = mounts[i].f_fstypename, from = mounts[i].f_mntfromname, on = mounts[i].f_mntonname;
+			if (log && (type != "devfs" && type != "nullfs" && type != "tmpfs"))
+				Log("mounted: %s on %s (%s)", from.c_str(), on.c_str(), type.c_str());
+			if ((type == "cd9660" || type == "udf" || type.find("bd") != std::string::npos) && from.rfind("/dev/", 0) == 0 &&
+				std::find(out.begin(), out.end(), from) == out.end())
+				out.push_back(from);
+		}
+		if (log)
+		{
+			Log("/dev:%s", all.c_str());
+			std::string c;
+			for (const std::string& p : out)
+				c += " " + p;
+			Log("candidate drive nodes:%s", c.empty() ? " none" : c.c_str());
+		}
+		return out;
+	}
+
+	std::string Clean(std::string s)
+	{
+		for (char& ch : s)
+			if (strchr("/\\:*?\"<>|", ch) || static_cast<unsigned char>(ch) < 0x20)
+				ch = ' ';
+		while (!s.empty() && (s.back() == ' ' || s.back() == '.'))
+			s.pop_back();
+		return s;
+	}
+
+	// Copies the disc unless games/ has it. The copy's path when it's there in full at the end, else empty.
+	std::string Dump(const Node& node, const std::string& serial)
+	{
+		fe::GameInfo gi;
+		gi.serial = serial;
+		gi.title = serial;
+		fe::ApplyGameDbTitle(gi);
+		const std::string title = gi.title.empty() || gi.title == serial ? std::string("PS2 disc") : gi.title;
+		const std::string games = OrbisDir("games");
+		mkdir(games.c_str(), 0777);
+		const std::string name = Clean(title + " (" + serial + ")");
+		const std::string iso = games + "/" + name + ".iso", part = iso + ".part";
+		struct stat st;
+		if (stat(iso.c_str(), &st) == 0 && static_cast<uint64_t>(st.st_size) == node.bytes)
+		{
+			static std::string s_said;
+			if (s_said != iso)
+			{
+				s_said = iso;
+				Log("%s is already copied (%s)", serial.c_str(), iso.c_str());
+			}
+			return iso;
+		}
+		struct statfs fs;
+		if (statfs(games.c_str(), &fs) == 0)
+		{
+			const uint64_t free_bytes = static_cast<uint64_t>(fs.f_bavail) * fs.f_bsize;
+			if (free_bytes < node.bytes + (256ull << 20))
+			{
+				Log("%s: %llu MB needed, %llu MB free: not copied", serial.c_str(), static_cast<unsigned long long>(node.bytes >> 20),
+					static_cast<unsigned long long>(free_bytes >> 20));
+				char msg[200];
+				snprintf(msg, sizeof(msg), "PS2 disc %s: not enough space to copy it (%llu MB needed)", title.c_str(),
+					static_cast<unsigned long long>(node.bytes >> 20));
+				OrbisNotifyPlain(msg);
+				sleep(60);
+				return {};
+			}
+		}
+		const int in = open(node.path.c_str(), O_RDONLY);
+		const int out = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+		if (in < 0 || out < 0)
+		{
+			Log("%s: open failed (drive %d, file %d, errno %d)", serial.c_str(), in, out, errno);
+			if (in >= 0) close(in);
+			if (out >= 0) close(out);
+			return {};
+		}
+		Log("copying %s (%s, %llu MB) from %s to %s", serial.c_str(), title.c_str(), static_cast<unsigned long long>(node.bytes >> 20),
+			node.path.c_str(), iso.c_str());
+		{
+			char msg[200];
+			snprintf(msg, sizeof(msg), "Copying PS2 disc: %s (%llu MB)", title.c_str(), static_cast<unsigned long long>(node.bytes >> 20));
+			OrbisNotifyPlain(msg);
+		}
+		constexpr size_t kChunk = 1 << 20;
+		std::vector<uint8_t> buf(kChunk);
+		uint64_t done = 0, bad_sectors = 0;
+		int last_pct = -1, last_note = 0;
+		bool failed = false;
+		const auto t0 = std::chrono::steady_clock::now();
+		while (done < node.bytes)
+		{
+			const size_t want = static_cast<size_t>(std::min<uint64_t>(kChunk, node.bytes - done));
+			ssize_t got = -1;
+			for (int tries = 0; tries < 3 && got != static_cast<ssize_t>(want); tries++)
+				got = pread(in, buf.data(), want, static_cast<off_t>(done));
+			if (got != static_cast<ssize_t>(want))
+			{
+				// sector by sector; what stays unreadable is zeros
+				for (size_t off = 0; off < want; off += 2048)
+				{
+					const size_t len = std::min<size_t>(2048, want - off);
+					ssize_t g = -1;
+					for (int tries = 0; tries < 3 && g != static_cast<ssize_t>(len); tries++)
+						g = pread(in, buf.data() + off, len, static_cast<off_t>(done + off));
+					if (g != static_cast<ssize_t>(len))
+					{
+						memset(buf.data() + off, 0, len);
+						if (++bad_sectors <= 20)
+							Log("sector %llu unreadable (errno %d): zeros", static_cast<unsigned long long>((done + off) / 2048), errno);
+					}
+				}
+				if (bad_sectors > 4096)
+				{
+					Log("more than 4096 unreadable sectors: stopped");
+					failed = true;
+					break;
+				}
+			}
+			if (write(out, buf.data(), want) != static_cast<ssize_t>(want))
+			{
+				Log("write failed at %llu MB (errno %d)", static_cast<unsigned long long>(done >> 20), errno);
+				failed = true;
+				break;
+			}
+			done += want;
+			const int pct = static_cast<int>(done * 100 / node.bytes);
+			if (pct / 5 != last_pct / 5)
+			{
+				last_pct = pct;
+				const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+				Log("%d%% (%llu of %llu MB, %.1f MB/s, %llu unreadable sectors)", pct, static_cast<unsigned long long>(done >> 20),
+					static_cast<unsigned long long>(node.bytes >> 20), secs > 0 ? (done / 1048576.0) / secs : 0.0,
+					static_cast<unsigned long long>(bad_sectors));
+				if (pct >= last_note + 25 && pct < 100)
+				{
+					last_note = pct - pct % 25;
+					char msg[160];
+					snprintf(msg, sizeof(msg), "Copying %s: %d%%", title.c_str(), last_note);
+					OrbisNotifyPlain(msg);
+				}
+			}
+		}
+		close(in);
+		fsync(out);
+		close(out);
+		if (failed)
+		{
+			OrbisNotifyPlain("PS2 disc copy failed: see the log (Download logs)");
+			unlink(part.c_str());
+			sleep(30);
+			return {};
+		}
+		rename(part.c_str(), iso.c_str());
+		const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		Log("done: %s, %llu MB in %.0f s, %llu unreadable sectors", iso.c_str(), static_cast<unsigned long long>(done >> 20), secs,
+			static_cast<unsigned long long>(bad_sectors));
+		char msg[220];
+		snprintf(msg, sizeof(msg), bad_sectors ? "Copied %s, but %llu sectors couldn't be read: the game may not work" :
+		                                         "Copied %s", title.c_str(), static_cast<unsigned long long>(bad_sectors));
+		OrbisNotifyPlain(msg);
+		return iso;
+	}
+
+	// The start was a re-exec into the shelf (logs/relaunch.txt from the last minutes), not the user opening the app.
+	bool TakeRelaunchMark()
+	{
+		const std::string path = OrbisLogPath("relaunch.txt");
+		struct stat st;
+		if (stat(path.c_str(), &st) != 0)
+			return false;
+		unlink(path.c_str());
+		return time(nullptr) - st.st_mtime < 300;
+	}
+
+	void* Thread(void*)
+	{
+		bool first = true;
+		std::vector<std::string> logged; // nodes already described
+		// The disc whose game was started (or that was in the drive at a re-exec): not started again until it leaves.
+		std::string handled;
+		std::string pending; // a copy whose game waits for the shelf
+		const bool relaunch = TakeRelaunchMark();
+		if (relaunch)
+			Log("a re-exec into the shelf: a disc in the drive now doesn't start its game");
+		for (;;)
+		{
+			const std::vector<std::string> nodes = Candidates(first);
+			bool any_ps2 = false;
+			for (const std::string& path : nodes)
+			{
+				const bool log = std::find(logged.begin(), logged.end(), path) == logged.end();
+				Node node;
+				const bool iso = ProbeNode(path, node, log);
+				if (log)
+					logged.push_back(path);
+				if (!iso)
+					continue;
+				const std::string serial = fe::ReadSerial(path);
+				if (serial.empty())
+				{
+					static std::string s_said;
+					if (s_said != path)
+					{
+						s_said = path;
+						Log("%s: an ISO 9660 disc without a PS2 SYSTEM.CNF: not a PS2 game", path.c_str());
+					}
+					continue;
+				}
+				any_ps2 = true;
+				if (first && relaunch)
+					handled = serial;
+				s_busy.store(true);
+				const std::string copy = Dump(node, serial);
+				s_busy.store(false);
+				if (copy.empty() || handled == serial)
+					continue;
+				handled = serial;
+				pending = copy; // started when the shelf takes it (it may not be up yet)
+				Log("%s: its game starts when the shelf is up (%s)", serial.c_str(), copy.c_str());
+			}
+			if (!pending.empty() && orbis_frontend_request_launch(pending))
+			{
+				Log("starting %s", pending.c_str());
+				OrbisNotifyPlain("PS2 disc: starting the game");
+				pending.clear();
+			}
+			if (!any_ps2 && !handled.empty())
+			{
+				Log("the disc is out: %s starts again when it's put back", handled.c_str());
+				handled.clear();
+				pending.clear();
+			}
+			// a node that went away and came back (a disc swapped) is described again
+			if (logged.size() > 32)
+				logged.clear();
+			first = false;
+			sleep(3);
+		}
+		return nullptr;
+	}
+} // namespace
+
+void OrbisDiscDumpStart()
+{
+	if (s_started.exchange(true))
+		return;
+	if (OrbisFlag("nodiscdump"))
+	{
+		Log("off (flag nodiscdump)");
+		return;
+	}
+	pthread_t t;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, 512 * 1024);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	const int rc = pthread_create(&t, &attr, Thread, nullptr);
+	pthread_attr_destroy(&attr);
+	if (rc != 0)
+		Log("thread: pthread_create %d", rc);
+}
+
+bool OrbisDiscDumpBusy()
+{
+	return s_busy.load();
+}

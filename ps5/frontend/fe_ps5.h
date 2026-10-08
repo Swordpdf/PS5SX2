@@ -125,3 +125,7 @@ void orbis_frontend_set_language(const std::string& lang_dir);
 // result is empty. One image opens the shelf too (vk-285-69, for its QR code); the caller's nomenu
 // flag skips the shelf.
 std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* build_tag, bool* ran);
+
+// vk-285-144 (AI-assisted): starts a game from outside the shelf (a PS2 disc put in the drive, orbis-shims/ProsperoDiscDump.cpp):
+// the running shelf closes as if the image at `path` had been picked. False when no shelf is up to take it.
+bool orbis_frontend_request_launch(const std::string& path);

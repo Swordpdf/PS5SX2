@@ -64,6 +64,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/ProsperoKbdMouse.h" // vk-285-72, vk-285-113: the PS5's USB keyboard and mouse
 #include "orbis-shims/OrbisPadMap.h"     // vk-285-116: the controller remapping
 #include "orbis-shims/ProsperoUsbPad.h"  // vk-285-140: USB guitars and pads the PS5 doesn't take as controllers
+#include "orbis-shims/ProsperoDiscDump.h" // vk-285-144: PS2 discs in the drive
 #include "SIO/Pad/PadGuitar.h"
 #include "OrbisNfs.h"                     // vk-285-135: games on NFS shares
 #include <mutex>
@@ -1902,6 +1903,17 @@ void OrbisBackToMenuCpu()
   OrbisExitApp(status);
 }
 
+// vk-285-144 (AI-assisted): the next start is a re-exec into the shelf, not the user opening the app: a PS2 disc still in the drive
+// doesn't start its game again then (orbis-shims/ProsperoDiscDump.cpp reads and deletes this file).
+static void orbis_mark_relaunch()
+{
+  if (FILE *f = fopen(OrbisLogPath("relaunch.txt").c_str(), "wb"))
+  {
+    fprintf(f, "%lld\n", static_cast<long long>(time(nullptr)));
+    fclose(f);
+  }
+}
+
 // vk-285-109: our own eboot again, into the shelf, after a start that failed (the VM never ran, so no memory
 // card or NVRAM to write back). Returns when LoadExec doesn't take.
 static void orbis_restart_to_menu()
@@ -1911,6 +1923,7 @@ static void orbis_restart_to_menu()
   if (stat(path, &st) != 0)
     path = "/app0/eboot.bin";
   printf("[menu] the game didn't start: re-executing %s\n", path);
+  orbis_mark_relaunch(); // vk-285-144
   orbis_output_default();
   orbis_log_drain();
   fflush(stdout);
@@ -1944,6 +1957,7 @@ static void orbis_back_to_menu()
   if (stat(path, &st) != 0)
     path = "/app0/eboot.bin";
   printf("[menu] re-executing %s\n", path);
+  orbis_mark_relaunch(); // vk-285-144
   orbis_output_default();
   fflush(stdout);
   fflush(stderr);
@@ -2977,6 +2991,8 @@ int main()
   orbis_scan_usb("after the jailbreak"); // test build 1: games on USB drives
   orbis_check_bios(); // vk-285-134: after the drives are seen, before the shelf
   orbis_boot_log_release("before the settings page starts"); // vk-285-113: still holding? (the folder can show up late)
+  // vk-285-144 (AI-assisted): a PS2 DVD in the drive, copied to games/ and started (orbis-shims/ProsperoDiscDump.cpp).
+  OrbisDiscDumpStart();
   if (!orbis_flag("nowebui"))
     orbis_web_start(orbis_frontend_paths(false), orbis_build_label().c_str());
   // vk-285-110: the shelf tries the missing covers of games on USB drives (the prefetch above can't see

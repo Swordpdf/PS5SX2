@@ -1606,6 +1606,36 @@ int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budge
 	return saved;
 }
 
+// vk-285-144: a launch asked for from outside the shelf (a disc in the drive), taken by the shelf's loop.
+static std::mutex g_launch_lock;
+static std::string g_launch_request; // under g_launch_lock
+static bool g_shelf_up = false;      // under g_launch_lock
+
+bool orbis_frontend_request_launch(const std::string& path)
+{
+	std::lock_guard<std::mutex> lock(g_launch_lock);
+	if (!g_shelf_up)
+		return false;
+	g_launch_request = path;
+	return true;
+}
+
+static std::string TakeLaunchRequest()
+{
+	std::lock_guard<std::mutex> lock(g_launch_lock);
+	std::string r;
+	r.swap(g_launch_request);
+	return r;
+}
+
+static void SetShelfUp(bool up)
+{
+	std::lock_guard<std::mutex> lock(g_launch_lock);
+	g_shelf_up = up;
+	if (!up)
+		g_launch_request.clear();
+}
+
 std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* build_tag, bool* ran)
 {
 	*ran = false;
@@ -1845,9 +1875,18 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	unsigned frames = 0, slot = 0;
 	double worst = 0;
 	bool first_shown = false;
+	std::string launch_path; // vk-285-144: a disc's game, asked for from outside
+	SetShelfUp(ok);
 	while (ok && !app.Done())
 	{
 		const double now = Now();
+		launch_path = TakeLaunchRequest();
+		if (!launch_path.empty())
+		{
+			std::printf("[frontend] launch asked for from outside the shelf: %s\n", launch_path.c_str());
+			std::fflush(stdout);
+			break;
+		}
 		refresh_web(now);
 		const double dt = now - last_t;
 		last_t = now;
@@ -1943,8 +1982,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		}
 	}
 
+	SetShelfUp(false);
 	const int chosen = app.Chosen();
-	const bool picked = ok && app.Done();
+	const bool picked = ok && (app.Done() || !launch_path.empty());
 	const bool system_menu = app.SystemMenuChosen(); // 2026-10-08
 	renderer.WaitIdle();
 	app.Shutdown();
@@ -2006,6 +2046,14 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		return {};
 	}
 	*ran = true;
+	if (!launch_path.empty())
+	{
+		const size_t slash = launch_path.rfind('/');
+		WriteLastGame(paths.top_dir, slash == std::string::npos ? launch_path : launch_path.substr(slash + 1));
+		std::printf("[frontend] started %s (a disc in the drive)\n", launch_path.c_str());
+		std::fflush(stdout);
+		return launch_path;
+	}
 	if (system_menu)
 	{
 		// 2026-10-08: the PS2's own menu, no disc (main-boot.cpp boots the BIOS for kOrbisSystemMenuPath). The last game stays.
