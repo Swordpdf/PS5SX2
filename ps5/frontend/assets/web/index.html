@@ -521,6 +521,9 @@ const GROUPS = [
     { key: "PS5SX2/Multitap", label: "Multitap", type: "seg", def: "0", cols: 3, restart: true,
       options: [["0","Off"],["1","Port 1"],["2","Port 2"]],
       hint: "For 4-player games. Players 2 to 4 are the other PS5 users logged in when the game starts, each on their own controller. Port 1 suits most games; a few want the multitap in port 2. Off: player 2 on port 2, as before." },
+    { key: "PS5SX2/Microphone", label: "Microphone", type: "seg", def: "auto", cols: 4, restart: true,
+      options: [["auto","Auto"],["0","Off"],["1","Mic"],["2","Headset"]],
+      hint: "The controller's microphone as a PS2 USB microphone, for games that need one (Lifeline - Voice Action Adventure). Auto turns it on for those games; Headset suits a game that asks for a USB headset. Takes effect when the game starts." },
   ]},
   // vk-285-113: a USB keyboard and mouse plugged into the PS5 (orbis-shims/ProsperoKbdMouse.cpp, main-boot.cpp).
   { title: "Keyboard and mouse", tab: "controls", items: [

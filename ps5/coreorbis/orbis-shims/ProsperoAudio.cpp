@@ -7,6 +7,7 @@
 #include "common/Error.h"
 #include "USB/usb-mic/audiodev.h"
 #include "USB/usb-mic/audiodev-cubeb.h"
+#include "ProsperoMic.h" // vk-285-141
 
 // (AudioDevice::CreateDevice/GetInputDeviceList live in usb-mic.cpp already.)
 
@@ -114,60 +115,80 @@ std::unique_ptr<AudioStream> AudioStream::CreateSDLAudioStream(u32 sample_rate, 
   return nullptr;
 }
 
-// No cubeb on Orbis: null device (silence), empty lists.
+// No cubeb on Orbis. vk-285-141 (AI-assisted): the USB microphone's and headset's audio source is the controller's microphone
+// (ProsperoMic.cpp); a sink (the headset's speaker) takes what it is given and plays nothing. mDeviceId, which cubeb would
+// use, marks a started source here (the header stays PCSX2's).
 namespace usb_mic
 {
 namespace audiodev_cubeb
 {
+static const int kStarted = 1;
 CubebAudioDevice::CubebAudioDevice(AudioDir dir, u32 channels, std::string devname, s32 latency)
   : AudioDevice(dir, channels)
   , mDeviceName(std::move(devname))
 {
-  (void)dir;
-  (void)channels;
   (void)latency;
   mContext = nullptr;
   mDeviceId = nullptr;
+  std::printf("[mic] USB audio %s \"%s\", %u channel%s\n", dir == AUDIODIR_SOURCE ? "source" : "sink", mDeviceName.c_str(),
+    (unsigned)channels, channels == 1 ? "" : "s");
 }
 CubebAudioDevice::~CubebAudioDevice()
 {
+  Stop();
 }
 std::vector<std::pair<std::string, std::string>> CubebAudioDevice::GetDeviceList(bool input)
 {
-  (void)input;
+  if (input)
+    return {{"DualSense", "The controller's microphone"}};
   return {};
 }
 uint32_t CubebAudioDevice::GetBuffer(int16_t* buff, uint32_t frames)
 {
-  (void)buff;
-  (void)frames;
-  return 0;
+  if (mAudioDir != AUDIODIR_SOURCE || !mDeviceId || !buff)
+    return 0;
+  return static_cast<uint32_t>(orbis_mic::Read(static_cast<int>(mSampleRate), buff, frames, GetChannels()));
 }
 uint32_t CubebAudioDevice::SetBuffer(int16_t* buff, uint32_t frames)
 {
   (void)buff;
-  (void)frames;
-  return 0;
+  return frames; // the headset's speaker: taken and dropped
 }
 bool CubebAudioDevice::GetFrames(uint32_t* size)
 {
   if (size)
-    *size = 0;
-  return false;
+    *size = (mAudioDir == AUDIODIR_SOURCE && mDeviceId) ? static_cast<uint32_t>(orbis_mic::Available(static_cast<int>(mSampleRate))) : 0;
+  return true;
 }
 void CubebAudioDevice::SetResampling(int samplerate)
 {
-  (void)samplerate;
+  if (samplerate > 0)
+    mSampleRate = static_cast<u32>(samplerate);
+  std::printf("[mic] USB audio %s at %d Hz\n", mAudioDir == AUDIODIR_SOURCE ? "source" : "sink", samplerate);
+  if (mAudioDir == AUDIODIR_SOURCE && mDeviceId)
+    orbis_mic::Reset();
 }
 bool CubebAudioDevice::Start()
 {
-  return false;
+  if (mAudioDir == AUDIODIR_SOURCE && !mDeviceId)
+  {
+    orbis_mic::Acquire();
+    mDeviceId = &kStarted;
+  }
+  return true;
 }
 void CubebAudioDevice::Stop()
 {
+  if (mAudioDir == AUDIODIR_SOURCE && mDeviceId)
+  {
+    mDeviceId = nullptr;
+    orbis_mic::Release();
+  }
 }
 void CubebAudioDevice::ResetBuffers()
 {
+  if (mAudioDir == AUDIODIR_SOURCE && mDeviceId)
+    orbis_mic::Reset();
 }
 long CubebAudioDevice::DataCallback(struct cubeb_stream* stream, void* user_ptr, void const* input_buffer,
   void* output_buffer, long nframes)

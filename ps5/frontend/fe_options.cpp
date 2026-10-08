@@ -477,6 +477,9 @@ const std::vector<OptionGroup>& OptionGroups()
 					{{"0.25", "25%"}, {"0.5", "50%"}, {"0.75", "75%"}, {"1", "100%"}, {"1.25", "125%"}, {"1.5", "150%"}, {"2", "200%"}},
 					"How strongly the controller vibrates, as a share of what the game asks for. Above 100% lifts weak rumble; it never goes past the motors' full strength."),
 				Seg("PS5SX2/Multitap", "Multitap", "0", "", {{"0", "Off"}, {"1", "Port 1"}, {"2", "Port 2"}}, "For 4-player games. Players 2 to 4 are the other PS5 users logged in when the game starts, each on their own controller. Port 1 suits most games; a few want the multitap in port 2. Off: player 2 on port 2, as before.", true),
+				// vk-285-141 (AI-assisted): main-boot.cpp's microphone block (orbis-shims/ProsperoAudio.cpp captures it).
+				Seg("PS5SX2/Microphone", "Microphone", "auto", "", {{"auto", "Auto"}, {"0", "Off"}, {"1", "Mic"}, {"2", "Headset"}},
+					"The controller's microphone as a PS2 USB microphone, for games that need one (Lifeline - Voice Action Adventure). Auto turns it on for those games; Headset suits a game that asks for a USB headset. Takes effect when the game starts.", true),
 			},
 			kTabControls},
 		{"Keyboard and mouse",

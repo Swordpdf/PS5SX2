@@ -3151,6 +3151,37 @@ int main()
     s_base_si.SetStringValue("USB2", "Type", "hidmouse");
   }
   printf("[boot] USB keyboard and mouse %s\n", orbis_flag("nousbkbm") ? "off (flag nousbkbm)" : "on ports 1 and 2");
+  // vk-285-141 (AI-assisted): the controller's microphone as a PS2 USB microphone (orbis-shims/ProsperoMic.cpp captures it,
+  // ProsperoAudio.cpp hands it to PCSX2's USB microphone). PS5SX2/Microphone, the game's file or gs.ini: auto (the default:
+  // on for the games that won't start without one: Lifeline, Operator's Side), 0 off, 1 a USB microphone (PCSX2's
+  // "singstar" device as Logitech's), 2 a USB headset (Logitech's; what the game sends its speaker plays nowhere). It takes
+  // the PS2's USB port 2, the mouse's; a game's own USB2/Type still wins.
+  {
+    MemorySettingsInterface peek = s_base_si;
+    orbis_apply_gs_ini(peek, true);
+    const std::string mode = peek.GetStringValue("PS5SX2", "Microphone", "auto");
+    const std::string serial = fe::ReadSerial(s_game_path);
+    static const char* const needs_mic[] = {"SLUS-20848", "SCPS-15038", "SCPS-15039", "SCPS-19213"};
+    bool needs = false;
+    for (const char* s : needs_mic)
+      needs = needs || serial == s;
+    const int mic = mode == "1" ? 1 : mode == "2" ? 2 : mode == "0" ? 0 : (needs ? 1 : 0);
+    if (mic == 1)
+    {
+      s_base_si.SetStringValue("USB2", "Type", "singstar");
+      s_base_si.SetUIntValue("USB2", "singstar_subtype", 1u); // MIC_LOGITECH: one microphone, Logitech's USB IDs
+      s_base_si.SetStringValue("USB2", "singstar_input_device_name", "DualSense");
+    }
+    else if (mic == 2)
+    {
+      s_base_si.SetStringValue("USB2", "Type", "headset");
+      s_base_si.SetStringValue("USB2", "headset_input_device_name", "DualSense");
+    }
+    printf("[boot] microphone: %s (PS5SX2/Microphone %s, serial %s%s)\n",
+      mic == 1 ? "a USB microphone on USB port 2" : mic == 2 ? "a USB headset on USB port 2" : "off", mode.c_str(),
+      serial.empty() ? "unknown" : serial.c_str(), needs ? ", a game that needs one" : "");
+    fflush(stdout);
+  }
   // 2026-10-05 (AI-assisted; swordpdf: the network adapter on for every game, after a tester went online in Resident Evil
   // Outbreak with SOCOM II's lines): the PS2's network adapter as SOCOM II's file sets it (claude/socom2-online.md):
   // PCSX2's sockets backend on the console's own connection, its DHCP server giving the game an address, and the DNS the
