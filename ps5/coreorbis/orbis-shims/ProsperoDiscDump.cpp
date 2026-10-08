@@ -11,7 +11,7 @@
 // whether it opens, its size and sector size, and what sector 16 holds (an ISO 9660 volume says "CD001").
 //
 // Then every 3 s while the app runs: a node whose sector 16 is an ISO 9660 volume with a PS2 SYSTEM.CNF (BOOT2) is
-// copied, unless games/ already has that file at full size: 1 MiB reads, each retried; a range that still won't read is
+// copied, unless games/ already has that file at full size: 4 MiB reads (vk-285-147; 1 MiB before), each retried; a range that still won't read is
 // re-read sector by sector and what stays unreadable is written as zeros and counted. The copy goes to a .part file,
 // renamed to .iso at the end. Notifications at the start, every 25% and at the end. Nothing is ever written to the disc
 // or a device. Flag nodiscdump: off.
@@ -35,10 +35,16 @@
 // SYSTEM.CNF at its own length and the drive reads only whole 2048-byte sectors. fe_games' reader now retries in whole
 // sectors. And a disc that games/ already has an image of (same serial, any file name) isn't copied again; that image starts.
 //
+// vk-285-147 (swordpdf: "for next round we should try 8x dump speed"): the drive is asked for its top read speed
+// (CDRIOCREADSPEED, logged whether it takes it), the disc is read 4 MiB at a time, up to 4 reads ahead of the writing
+// (OrbisDiscCopy.h), and the log gives the speed as a DVD multiple ("now" over the last 5%, and the average). Flag disc_1m:
+// 1 MiB reads, to compare.
+//
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "ProsperoDiscDump.h"
+#include "OrbisDiscCopy.h"
 #include "ProsperoNotify.h"
 
 #include "OrbisPaths.h"
@@ -46,6 +52,7 @@
 #include "../../frontend/fe_ps5.h"
 
 #include <sys/types.h>
+#include <sys/cdrio.h>
 #include <sys/disk.h>
 #include <sys/ioctl.h>
 #include <sys/param.h>
@@ -292,65 +299,61 @@ namespace
 			snprintf(msg, sizeof(msg), "Copying PS2 disc: %s (%llu MB)", title.c_str(), static_cast<unsigned long long>(node.bytes >> 20));
 			OrbisNotifyPlain(msg);
 		}
-		constexpr size_t kChunk = 1 << 20;
-		std::vector<uint8_t> buf(kChunk);
-		uint64_t done = 0, bad_sectors = 0;
-		int last_pct = -1, last_note = 0;
-		bool failed = false;
-		const auto t0 = std::chrono::steady_clock::now();
-		while (done < node.bytes)
+		// vk-285-147 (swordpdf: "try 8x dump speed"): ask the drive for its top read speed (FreeBSD cd(4)'s
+		// CDRIOCREADSPEED, through libkernel's ioctl; CDR_MAX_SPEED is "as fast as it goes"). The PS5's drive may not
+		// take it: the log says. Then reads run ahead of the writes (OrbisDiscCopy.h).
 		{
-			const size_t want = static_cast<size_t>(std::min<uint64_t>(kChunk, node.bytes - done));
-			ssize_t got = -1;
-			for (int tries = 0; tries < 3 && got != static_cast<ssize_t>(want); tries++)
-				got = pread(in, buf.data(), want, static_cast<off_t>(done));
-			if (got != static_cast<ssize_t>(want))
-			{
-				// sector by sector; what stays unreadable is zeros
-				for (size_t off = 0; off < want; off += 2048)
-				{
-					const size_t len = std::min<size_t>(2048, want - off);
-					ssize_t g = -1;
-					for (int tries = 0; tries < 3 && g != static_cast<ssize_t>(len); tries++)
-						g = pread(in, buf.data() + off, len, static_cast<off_t>(done + off));
-					if (g != static_cast<ssize_t>(len))
-					{
-						memset(buf.data() + off, 0, len);
-						if (++bad_sectors <= 20)
-							Log("sector %llu unreadable (errno %d): zeros", static_cast<unsigned long long>((done + off) / 2048), errno);
-					}
-				}
-				if (bad_sectors > 4096)
-				{
-					Log("more than 4096 unreadable sectors: stopped");
-					failed = true;
-					break;
-				}
-			}
-			if (write(out, buf.data(), want) != static_cast<ssize_t>(want))
-			{
-				Log("write failed at %llu MB (errno %d)", static_cast<unsigned long long>(done >> 20), errno);
-				failed = true;
-				break;
-			}
-			done += want;
-			const int pct = static_cast<int>(done * 100 / node.bytes);
-			if (pct / 5 != last_pct / 5)
-			{
+			int speed = CDR_MAX_SPEED;
+			const int rc = ioctl(in, CDRIOCREADSPEED, &speed);
+			Log("read speed: CDRIOCREADSPEED max -> %s%d", rc ? "errno " : "rc ", rc ? errno : rc);
+		}
+		const size_t chunk = static_cast<size_t>(OrbisFlag("disc_1m") ? 1 : 4) << 20;
+		const int depth = 4;
+		int last_pct = -1, last_note = 0;
+		const auto t0 = std::chrono::steady_clock::now();
+		auto rate = [&](uint64_t done) {
+			const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+			return secs > 0 ? done / secs : 0.0;
+		};
+		// the speed over the last 5% (a CAV drive speeds up toward the disc's edge)
+		uint64_t mark_done = 0;
+		auto mark_time = t0;
+		Log("reading %zu MiB at a time, %d ahead", chunk >> 20, depth);
+		const orbis_disc::CopyResult res = orbis_disc::Copy(
+			node.bytes, chunk, depth, 3, 4096,
+			[&](uint64_t off, void* buf, size_t len) { return pread(in, buf, len, static_cast<off_t>(off)); },
+			[&](const void* buf, size_t len) { return write(out, buf, len) == static_cast<ssize_t>(len); },
+			[&](uint64_t done, uint64_t bad) {
+				const int pct = static_cast<int>(done * 100 / node.bytes);
+				if (pct / 5 == last_pct / 5)
+					return;
 				last_pct = pct;
-				const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-				Log("%d%% (%llu of %llu MB, %.1f MB/s, %llu unreadable sectors)", pct, static_cast<unsigned long long>(done >> 20),
-					static_cast<unsigned long long>(node.bytes >> 20), secs > 0 ? (done / 1048576.0) / secs : 0.0,
-					static_cast<unsigned long long>(bad_sectors));
+				const auto now = std::chrono::steady_clock::now();
+				const double span = std::chrono::duration<double>(now - mark_time).count();
+				const double recent = span > 0 ? (done - mark_done) / span : 0.0;
+				mark_done = done;
+				mark_time = now;
+				const double avg = rate(done);
+				Log("%d%% (%llu of %llu MB, %.1f MB/s = %.1fx now, %.1fx average, %llu unreadable sectors)", pct,
+					static_cast<unsigned long long>(done >> 20), static_cast<unsigned long long>(node.bytes >> 20), recent / 1e6,
+					recent / orbis_disc::kDvd1x, avg / orbis_disc::kDvd1x, static_cast<unsigned long long>(bad));
 				if (pct >= last_note + 25 && pct < 100)
 				{
 					last_note = pct - pct % 25;
 					char msg[160];
-					snprintf(msg, sizeof(msg), "Copying %s: %d%%", title.c_str(), last_note);
+					snprintf(msg, sizeof(msg), "Copying %s: %d%% (%.1fx)", title.c_str(), last_note, recent / orbis_disc::kDvd1x);
 					OrbisNotifyPlain(msg);
 				}
-			}
-		}
+			},
+			[&](uint64_t sector) {
+				static int s_said = 0;
+				if (++s_said <= 20)
+					Log("sector %llu unreadable (errno %d): zeros", static_cast<unsigned long long>(sector), errno);
+			});
+		const uint64_t done = res.done, bad_sectors = res.bad_sectors;
+		const bool failed = res.failed;
+		if (failed)
+			Log("copy stopped: %s (errno %d)", res.why.c_str(), errno);
 		close(in);
 		fsync(out);
 		close(out);
@@ -363,8 +366,9 @@ namespace
 		}
 		rename(part.c_str(), iso.c_str());
 		const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-		Log("done: %s, %llu MB in %.0f s, %llu unreadable sectors", iso.c_str(), static_cast<unsigned long long>(done >> 20), secs,
-			static_cast<unsigned long long>(bad_sectors));
+		Log("done: %s, %llu MB in %.0f s (%.1f MB/s, %.1fx average), %llu unreadable sectors", iso.c_str(),
+			static_cast<unsigned long long>(done >> 20), secs, secs > 0 ? done / secs / 1e6 : 0.0,
+			secs > 0 ? done / secs / orbis_disc::kDvd1x : 0.0, static_cast<unsigned long long>(bad_sectors));
 		char msg[220];
 		snprintf(msg, sizeof(msg), bad_sectors ? "Copied %s, but %llu sectors couldn't be read: the game may not work" :
 		                                         "Copied %s", title.c_str(), static_cast<unsigned long long>(bad_sectors));
