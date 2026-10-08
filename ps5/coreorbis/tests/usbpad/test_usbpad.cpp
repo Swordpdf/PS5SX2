@@ -107,6 +107,17 @@ int main()
 		CHECK(g.strum_down && !g.strum_up);
 		CHECK(g.select && !g.start);
 		CHECK(g.whammy == 0.0f); // the first report is the rest
+		// vk-285-143: Square is yellow, Triangle blue (the tester's guitars).
+		{
+			Common y;
+			CHECK(DecodeHid(L, Ps3Report(B_SQUARE, 8, 0x80, 0x80, 0x7F, 0x80).data(), 27, y));
+			WhammyCal c2;
+			const GuitarOut gy = ToGuitar(y, Format::Hid, c2);
+			CHECK(gy.yellow && !gy.blue);
+			CHECK(DecodeHid(L, Ps3Report(B_TRIANGLE, 8, 0x80, 0x80, 0x7F, 0x80).data(), 27, y));
+			const GuitarOut gb = ToGuitar(y, Format::Hid, c2);
+			CHECK(gb.blue && !gb.yellow);
+		}
 		CHECK(DecodeHid(L, Ps3Report(B_CIRCLE | B_TRIANGLE | B_SQUARE, 0, 0x80, 0x80, 0xFF, 0x80).data(), 27, c));
 		g = ToGuitar(c, Format::Hid, cal);
 		CHECK(g.red && g.yellow && g.blue && !g.green);

@@ -8,8 +8,8 @@
 // and four axes 0..255 (the right stick is a guitar's whammy). Then, by role:
 //   pad:    the DualSense's ScePad button bits, triggers and sticks, so the pad thread merges it like the keyboard's controller;
 //   guitar: frets, strum, whammy, star power, Start and tilt, for PCSX2's Guitar controller on PS2 port 1. PS3 guitars put
-//           the frets on Cross (green), Circle (red), Triangle (yellow), Square (blue) and L1 (orange), strum on the hat's
-//           up and down, the whammy on the right stick's X and star power on Select; XInput guitars use A, B, Y, X, LB, the
+//           the frets on Cross (green), Circle (red), Square (yellow), Triangle (blue) and L1 (orange), strum on the hat's
+//           up and down, the whammy on the right stick's X and star power on Select; XInput guitars use A, B, X, Y, LB, the
 //           D-pad, the right stick's X (whammy) and Y (tilt).
 //
 // Copyright (C) 2026 swordpdf
@@ -559,8 +559,10 @@ namespace orbis_usbpad
 		const uint16_t b = c.buttons;
 		g.green = b & B_CROSS;
 		g.red = b & B_CIRCLE;
-		g.yellow = b & B_TRIANGLE;
-		g.blue = b & B_SQUARE;
+		// vk-285-143: yellow on Square / X and blue on Triangle / Y. The tester's guitars (vk-285-142, Guitar Hero II, a PS3-mode
+		// and an Xbox 360 one): "Blue and yellow are swapped on both 360 and PS3" with Triangle/Y as yellow.
+		g.yellow = b & B_SQUARE;
+		g.blue = b & B_TRIANGLE;
 		g.orange = b & B_L1;
 		g.strum_up = c.hat == 0 || c.hat == 1 || c.hat == 7;
 		g.strum_down = c.hat == 3 || c.hat == 4 || c.hat == 5;
