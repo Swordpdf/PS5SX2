@@ -12,6 +12,23 @@
 #include <string>
 #include <vector>
 #include <cstdlib>
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+// vk-285-146: the PS5's disc drive (/dev/cd0) reads only whole 2048-byte sectors. Files whose name holds "drive" act
+// like it here: a read of another length or offset fails with EINVAL, as a raw disk device's does.
+extern "C" ssize_t pread(int fd, void* buf, size_t len, off_t off)
+{
+	char link[64], name[512] = {};
+	std::snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+	if (readlink(link, name, sizeof(name) - 1) > 0 && std::strstr(name, "drive") && (len % 2048 || off % 2048))
+	{
+		errno = EINVAL;
+		return -1;
+	}
+	return syscall(SYS_pread64, fd, buf, len, off);
+}
 static int fails = 0;
 static void Check(bool ok, const std::string& w) { std::printf("%s  %s\n", ok ? "PASS" : "FAIL", w.c_str()); fails += !ok; }
 // A 2048-byte ISO image (as settings_test.cpp), then written as raw sectors of `block` bytes with the data `offset` in.
@@ -74,6 +91,16 @@ int main(int argc, char** argv)
 	Check(seen.find("Track 2") == std::string::npos, "an audio track isn't listed");
 	Check(seen.find("Homebrew.elf=;") != std::string::npos, "an ELF is listed, without a serial");
 	Check(seen.find("Notes.elf") == std::string::npos, "a file named .elf that isn't one isn't listed");
+	{
+		// vk-285-146: SYSTEM.CNF is 60-odd bytes; the drive gives only whole sectors.
+		const std::string drive = dir + "/cd0-drive";
+		WriteRaw(drive, Iso("SLUS_210.65", 64), 2048, 0);
+		Check(fe::ReadSerial(drive) == "SLUS-21065", "a disc that reads only in whole sectors (the PS5's /dev/cd0) gives its serial");
+		uint8_t probe[6];
+		const int fd = open(drive.c_str(), 0);
+		Check(fd >= 0 && pread(fd, probe, sizeof(probe), 16 * 2048) < 0, "(the test's drive refuses a 6-byte read)");
+		if (fd >= 0) close(fd);
+	}
 	std::printf(fails ? "%d FAILED\n" : "all passed\n", fails);
 	return fails ? 1 : 0;
 }

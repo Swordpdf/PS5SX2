@@ -95,7 +95,21 @@ public:
 	bool Read(uint32_t lba, void* buf, size_t len) override
 	{
 		if (m_block == 2048 && m_offset == 0)
-			return ReadAt(m_fd, static_cast<uint64_t>(lba) * 2048, buf, len);
+		{
+			if (ReadAt(m_fd, static_cast<uint64_t>(lba) * 2048, buf, len))
+				return true;
+			// vk-285-146 (AI-assisted): the PS5's disc drive (/dev/cd0) reads only whole 2048-byte sectors, so a
+			// SYSTEM.CNF of 60 bytes failed there. Again in whole sectors, through a buffer. (An image file read
+			// exactly as before; this runs only when that failed.)
+			const size_t whole = (len + 2047) & ~static_cast<size_t>(2047);
+			if (whole == len || whole > (8u << 20))
+				return false;
+			std::vector<uint8_t> tmp(whole);
+			if (!ReadAt(m_fd, static_cast<uint64_t>(lba) * 2048, tmp.data(), whole))
+				return false;
+			std::memcpy(buf, tmp.data(), len);
+			return true;
+		}
 		// A raw image: sector by sector, the 2048 bytes of data m_offset bytes into each m_block-byte sector.
 		uint8_t* p = static_cast<uint8_t*>(buf);
 		for (; len; lba++)

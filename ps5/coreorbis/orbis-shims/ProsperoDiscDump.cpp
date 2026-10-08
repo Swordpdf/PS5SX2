@@ -30,6 +30,11 @@
 // nodes (bluetooth_hid, ...) are never opened, and the first look waits 5 s so the app's start never runs into it.
 // Needs proper testing on a console with a disc drive.
 //
+// vk-285-146: the first console log (13.60, NFS Underground 2 in the drive): /dev/cd0 opens, DIOCGMEDIASIZE 2874605568
+// (the size of the tester's own .iso of it), sector 16 reads. But "without a PS2 SYSTEM.CNF": fe::ReadSerial read
+// SYSTEM.CNF at its own length and the drive reads only whole 2048-byte sectors. fe_games' reader now retries in whole
+// sectors. And a disc that games/ already has an image of (same serial, any file name) isn't copied again; that image starts.
+//
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -48,6 +53,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -186,6 +192,40 @@ namespace
 		return s;
 	}
 
+	// vk-285-146: an image of this disc already in games/ under any name (the tester's NFS Underground 2 was there as
+	// "SLUS_210.65.Need for Speed Underground 2.iso"): same serial, at least 90% of the disc's size (dumps differ in
+	// padding). Only .iso files of about the right size are opened, so the scan stays cheap.
+	std::string FindExisting(const std::string& games, const std::string& serial, uint64_t bytes)
+	{
+		DIR* d = opendir(games.c_str());
+		if (!d)
+			return {};
+		std::string found;
+		while (dirent* e = readdir(d))
+		{
+			const std::string n = e->d_name;
+			if (n.size() < 5)
+				continue;
+			std::string ext = n.substr(n.size() - 4);
+			for (char& c : ext)
+				c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+			if (ext != ".iso")
+				continue;
+			const std::string path = games + "/" + n;
+			struct stat st;
+			if (stat(path.c_str(), &st) != 0 || static_cast<uint64_t>(st.st_size) < bytes / 10 * 9 ||
+				static_cast<uint64_t>(st.st_size) > bytes + (64ull << 20))
+				continue;
+			if (fe::ReadSerial(path) == serial)
+			{
+				found = path;
+				break;
+			}
+		}
+		closedir(d);
+		return found;
+	}
+
 	// Copies the disc unless games/ has it. The copy's path when it's there in full at the end, else empty.
 	std::string Dump(const Node& node, const std::string& serial)
 	{
@@ -208,6 +248,17 @@ namespace
 				Log("%s is already copied (%s)", serial.c_str(), iso.c_str());
 			}
 			return iso;
+		}
+		const std::string existing = FindExisting(games, serial, node.bytes);
+		if (!existing.empty())
+		{
+			static std::string s_said;
+			if (s_said != existing)
+			{
+				s_said = existing;
+				Log("%s is already in games/ as %s: not copied again", serial.c_str(), existing.c_str());
+			}
+			return existing;
 		}
 		// vk-285-145: libkernel's _fstatfs (fe_ps5), never libc's statfs. UINT64_MAX: not known, copied anyway.
 		const uint64_t free_bytes = orbis_frontend_free_bytes(games);
