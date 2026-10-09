@@ -46,6 +46,10 @@
 // ("drive busy"), so a held drive shows as busy near 100% at a flat speed; an 8x request in kB/s when "max" is refused; the
 // /dev list in pieces (one log line stops at 1024 characters, so 146's list lost its end). File names: ": " becomes " - ".
 //
+// vk-285-149: a notification every 5% (it was every 25%) with the speed over the last 5% and the drive's busy share.
+// RPCS3To5's PS3 disc dumper (a payload, not a title) says a title's file writes are throttled after about 1.3 GiB: "drive
+// busy" well under 100% would show the copy waiting on writes rather than on the drive.
+//
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -383,11 +387,14 @@ namespace
 				Log("%d%% (%llu of %llu MB, %.1f MB/s = %.1fx now, %.1fx average; %.0f ms per read, drive busy %.0f%%; %llu unreadable sectors)",
 					pct, static_cast<unsigned long long>(done >> 20), static_cast<unsigned long long>(node.bytes >> 20), recent / 1e6,
 					recent / orbis_disc::kDvd1x, avg / orbis_disc::kDvd1x, per, busy, static_cast<unsigned long long>(bad));
-				if (pct >= last_note + 25 && pct < 100)
+				// vk-285-149 (swordpdf: "need more frequent popups with percentages every 5% or so and also the momentary
+				// read speed"): a notification every 5%, with the speed over the last 5% and how busy the drive was
+				if (pct >= last_note + 5 && pct < 100)
 				{
-					last_note = pct - pct % 25;
-					char msg[160];
-					snprintf(msg, sizeof(msg), "Copying %s: %d%% (%.1fx)", title.c_str(), last_note, recent / orbis_disc::kDvd1x);
+					last_note = pct - pct % 5;
+					char msg[200];
+					snprintf(msg, sizeof(msg), "Copying %s: %d%% | %.1f MB/s (%.1fx) | drive busy %.0f%%", title.c_str(), last_note,
+						recent / 1e6, recent / orbis_disc::kDvd1x, busy);
 					OrbisNotifyPlain(msg);
 				}
 			},
