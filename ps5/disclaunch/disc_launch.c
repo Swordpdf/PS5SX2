@@ -1,7 +1,11 @@
-/* PS5SX2 disc-launch payload (vk-285-160b, AI-assisted):
+/* PS5SX2 disc-launch payload (vk-285-160c, AI-assisted):
  * Reads the PS2 serial from the disc in the drive, scans /data/PCSX2/games/
  * for a matching ISO, writes its path to /data/PCSX2/logs/disc-launch.txt,
- * and relaunches PS5SX2, which skips the shelf and starts that game directly.
+ * then writes disc-launch-exec.txt to signal PS5SX2 to self-exec and come to
+ * the foreground.  PS5SX2's disc watcher picks up disc-launch-exec.txt (within
+ * 3 s), calls sceSystemServiceLoadExec from within its own process (so the PS5
+ * shell brings it to the front), and the fresh boot reads disc-launch.txt and
+ * starts the game directly without the shelf.
  *
  * When the ISO is not found yet: notifies the user so they know to dump it
  * with PS5SX2 first. Send to the console's ELF loader (port 9021).
@@ -10,12 +14,14 @@
  * ELF has no hard libSceSystemService.sprx dependency (which the ELF loader
  * process may not have loaded). Privilege escalation via kernel_set_ucred_authid
  * ensures notifications and /dev/cd0 access work regardless of the loader's uid.
+ * vk-285-160c: instead of calling LoadExec from the ELF loader (which starts
+ * PS5SX2 in the background), write disc-launch-exec.txt and let PS5SX2 do the
+ * self-exec — that brings it to the foreground the way TryReForeground does.
  *
  * Copyright (C) 2026 swordpdf
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <ctype.h>
-#include <dlfcn.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -204,7 +210,7 @@ static int find_iso(const char *games_dir, const char *serial, char *out_path, s
 /* main                                                                  */
 /* ------------------------------------------------------------------ */
 int main(void) {
-    say("disc-launch v1 (vk-285-160b)");
+    say("disc-launch v1 (vk-285-160c)");
 
     /* 0. Privilege escalation: ensure we can open /dev/cd0, send notifications,
      *    and call sceSystemServiceLoadExec from any loader uid. */
@@ -257,39 +263,28 @@ int main(void) {
         say("wrote %s", launch_txt);
     }
 
-    /* 4. Relaunch PS5SX2. */
+    /* 4. Signal PS5SX2 to self-exec and come to the foreground.
+     *    Calling sceSystemServiceLoadExec from this ELF loader process starts
+     *    PS5SX2 but leaves it behind the PS5 shell.  Only a self-exec from within
+     *    PS5SX2's own process causes the shell to bring it to the front (the same
+     *    mechanism TryReForeground uses).  Write disc-launch-exec.txt; the disc
+     *    watcher picks it up within 3 s and does the exec from inside PS5SX2. */
+    const char *const exec_txt = "/data/PCSX2/logs/disc-launch-exec.txt";
+    {
+        FILE *f = fopen(exec_txt, "w");
+        if (!f) {
+            say("fopen(%s) failed: errno %d", exec_txt, errno);
+            notify("Disc launch: could not write disc-launch-exec.txt");
+            return 1;
+        }
+        fclose(f);
+        say("wrote %s", exec_txt);
+    }
     {
         char msg[220];
-        snprintf(msg, sizeof(msg), "PS5SX2: launching disc game (%s)...", serial);
+        snprintf(msg, sizeof(msg), "PS5SX2: disc game ready (%s) — switching to it now", serial);
         notify(msg);
     }
-
-    const char *eboot = "/data/homebrew/PPSA99203/eboot.bin";
-    {
-        struct stat st;
-        if (stat(eboot, &st) != 0) eboot = "/app0/eboot.bin";
-    }
-    say("sceSystemServiceLoadExec(%s)", eboot);
-    fflush(stdout);
-
-    /* Find sceSystemServiceLoadExec at runtime — the ELF loader process may not
-     * have libSceSystemService.sprx loaded, so a hard NEEDED entry prevents this
-     * ELF from loading at all.  dlopen avoids that dependency entirely. */
-    void *lib = dlopen("libSceSystemService.sprx", RTLD_NOW | RTLD_GLOBAL);
-    if (!lib) {
-        say("dlopen(libSceSystemService.sprx) failed: %s", dlerror());
-        notify("Disc launch: could not load libSceSystemService — relaunch PS5SX2 manually");
-        return 1;
-    }
-    typedef int (*LoadExec_t)(const char *, const char **);
-    LoadExec_t LoadExec = (LoadExec_t)(uintptr_t)dlsym(lib, "sceSystemServiceLoadExec");
-    if (!LoadExec) {
-        say("dlsym(sceSystemServiceLoadExec) failed: %s", dlerror());
-        notify("Disc launch: could not find sceSystemServiceLoadExec — relaunch PS5SX2 manually");
-        return 1;
-    }
-
-    const int rc = LoadExec(eboot, NULL);
-    say("LoadExec returned 0x%08x%s", (unsigned)rc, rc == 0 ? " (restarting)" : " (failed)");
-    return rc == 0 ? 0 : 1;
+    say("PS5SX2 will self-exec when its disc watcher picks up disc-launch-exec.txt");
+    return 0;
 }

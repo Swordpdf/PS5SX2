@@ -616,6 +616,28 @@ namespace
 			Log("%s was auto-started moments ago: if it's still in, its game isn't auto-started again (pick it from the shelf)", recent.c_str());
 		for (;;)
 		{
+			// vk-285-160c (AI-assisted): DiscLaunch.elf wrote disc-launch-exec.txt to ask us to self-exec and
+			// come to the foreground.  A self-exec from within our own process is what the PS5 shell needs to
+			// bring the app to the front; an exec from an external ELF loader does not.  disc-launch.txt
+			// (the ISO path) was already written by the ELF and will be picked up at the next boot.
+			{
+				const std::string exec_mark = OrbisLogPath("disc-launch-exec.txt");
+				struct stat est{};
+				if (stat(exec_mark.c_str(), &est) == 0)
+				{
+					unlink(exec_mark.c_str());
+					Log("disc-launch-exec.txt: self-exec to come to the foreground");
+					const char* path = "/data/homebrew/PPSA99203/eboot.bin";
+					struct stat st{};
+					if (stat(path, &st) != 0)
+						path = "/app0/eboot.bin";
+					fflush(stdout);
+					sceSystemServiceLoadExec(path, nullptr);
+					// LoadExec does not return on success; if it fails, carry on
+					Log("disc-launch-exec.txt: LoadExec returned (failed); carrying on");
+				}
+			}
+
 			const std::vector<std::string> nodes = Candidates(first);
 			bool any_ps2 = false;
 			for (const std::string& path : nodes)
