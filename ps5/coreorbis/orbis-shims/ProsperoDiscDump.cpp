@@ -500,10 +500,33 @@ namespace
 	std::string ReForegroundMarkPath() { return OrbisLogPath("disc-refg.txt"); }
 	void ClearReForegroundMark() { unlink(ReForegroundMarkPath().c_str()); }
 	// Returns true when LoadExec took (the process is being replaced, so we won't really return then).
+	// vk-285-160e (AI-assisted): heartbeats shared with the disc-auto daemon (ps5/disclaunch/disc_launch.c).
+	// Each side writes its own file with time(nullptr) every couple of seconds; the other side treats it as
+	// alive when the stamp is fresh. Content, not mtime, so both use the same clock source.
+	bool StampFresh(const std::string& path, int within)
+	{
+		FILE* f = fopen(path.c_str(), "r");
+		if (!f)
+			return false;
+		long long t = 0;
+		const int got = fscanf(f, "%lld", &t);
+		fclose(f);
+		const long long now = static_cast<long long>(time(nullptr));
+		return got == 1 && now >= t && now - t <= within;
+	}
+	bool DaemonAlive() { return StampFresh(OrbisLogPath("disc-auto-alive.txt"), 10); }
+
 	bool TryReForeground(const std::string& serial)
 	{
 		if (!OrbisFlag("disc_refg"))
 			return false;
+		// vk-285-160e: the disc-auto daemon does the bounce itself (after the shell settles, and only once it
+		// knows whether to launch or dump), so don't bounce a second time from here.
+		if (DaemonAlive())
+		{
+			Log("re-foreground: disc-auto daemon is running, leaving the bounce to it");
+			return false;
+		}
 		// Our own re-exec left this marker; on the fresh start the disc is still in, so don't bounce again.
 		if (FILE* f = fopen(ReForegroundMarkPath().c_str(), "r"))
 		{
@@ -627,6 +650,13 @@ namespace
 				{
 					unlink(exec_mark.c_str());
 					Log("disc-launch-exec.txt: self-exec to come to the foreground");
+					// vk-285-160e: a re-foreground mark too, so a disc_refg flag left on from 159 testing doesn't
+					// bounce the fresh boot a second time for the same disc.
+					if (FILE* rf = fopen(ReForegroundMarkPath().c_str(), "w"))
+					{
+						fprintf(rf, "disc-auto %lld\n", static_cast<long long>(time(nullptr)));
+						fclose(rf);
+					}
 					const char* path = "/data/homebrew/PPSA99203/eboot.bin";
 					struct stat st{};
 					if (stat(path, &st) != 0)
@@ -726,10 +756,38 @@ namespace
 	}
 } // namespace
 
+// vk-285-160e (AI-assisted): "PS5SX2 is running" for the disc-auto daemon. A thread of its own (the disc
+// watcher blocks for minutes inside a dump) that stamps logs/ps5sx2-alive.txt every 2 s. 159 showed the app's
+// threads keep running while the shell has the user at the home screen, so a stale stamp means not running.
+static void* AliveThread(void*)
+{
+	const std::string path = OrbisLogPath("ps5sx2-alive.txt");
+	for (;;)
+	{
+		if (FILE* f = fopen(path.c_str(), "w"))
+		{
+			fprintf(f, "%lld\n", static_cast<long long>(time(nullptr)));
+			fclose(f);
+		}
+		sleep(2);
+	}
+	return nullptr;
+}
+
 void OrbisDiscDumpStart()
 {
 	if (s_started.exchange(true))
 		return;
+	{
+		pthread_t at;
+		pthread_attr_t aattr;
+		pthread_attr_init(&aattr);
+		pthread_attr_setstacksize(&aattr, 64 * 1024);
+		pthread_attr_setdetachstate(&aattr, PTHREAD_CREATE_DETACHED);
+		if (pthread_create(&at, &aattr, AliveThread, nullptr) != 0)
+			Log("alive thread: pthread_create failed");
+		pthread_attr_destroy(&aattr);
+	}
 	if (OrbisFlag("nodiscdump"))
 	{
 		Log("off (flag nodiscdump)");

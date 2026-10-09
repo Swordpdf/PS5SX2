@@ -1,6 +1,6 @@
-# PS5SX2 disc-launch payload (vk-285-160b, AI-assisted). make -> DiscLaunch.elf
-# Send via the console's ELF loader (port 9021): reads the PS2 disc's serial,
-# finds its ISO in /data/PCSX2/games/, and relaunches PS5SX2 to start it directly.
+# PS5SX2 disc-auto daemon (vk-285-160e, AI-assisted). make -> DiscLaunch.elf
+# Send once via the console's ELF loader (port 9021) and leave it running: a PS2 DVD put in
+# starts its game in PS5SX2 (dumping it first when needed). See disc_launch.c.
 # libSceSystemService is NOT linked — it is dlopen'd at runtime to avoid a hard
 # NEEDED entry that the ELF loader process may not satisfy.
 PS5_PAYLOAD_SDK ?= /home/claude/ps5deps/sdk285

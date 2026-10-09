@@ -3032,19 +3032,21 @@ int main()
                       s_game_path = buf;
                       printf("[boot] disc-launch: starting %s\n", buf);
                       fflush(stdout);
-                      // vk-285-160d: write the autostart guard so the disc watcher (which starts
-                      // after us) doesn't try to launch the same game a second time.
-                      if (FILE* af = fopen(OrbisLogPath("disc-autostart.txt").c_str(), "w")) {
-                          // extract serial from ISO filename (first token before '.' or '-')
-                          const char* slash = strrchr(buf, '/');
-                          const char* base = slash ? slash + 1 : buf;
-                          char serial[64] = {};
-                          int si = 0;
-                          while (si < 63 && base[si] && base[si] != '.' && base[si] != '\0')
-                              serial[si] = base[si++];
-                          serial[si] = '\0';
-                          fprintf(af, "%s %lld\n", serial, static_cast<long long>(time(nullptr)));
-                          fclose(af);
+                      // vk-285-160d/e: write the autostart guard so the disc watcher (which starts
+                      // after us) doesn't queue the same game a second time. The daemon puts the
+                      // disc's serial on line 2 (dumps are named "Title (SERIAL).iso", so it can't
+                      // be read off the file name).
+                      char serial[64] = {};
+                      if (fgets(serial, sizeof(serial), f)) {
+                          size_t sn = strlen(serial);
+                          while (sn && (serial[sn - 1] == '\n' || serial[sn - 1] == '\r' || serial[sn - 1] == ' '))
+                              serial[--sn] = '\0';
+                      }
+                      if (serial[0]) {
+                          if (FILE* af = fopen(OrbisLogPath("disc-autostart.txt").c_str(), "w")) {
+                              fprintf(af, "%s %lld\n", serial, static_cast<long long>(time(nullptr)));
+                              fclose(af);
+                          }
                       }
                   } else {
                       printf("[boot] disc-launch: %s: stat failed (errno %d) — ignored\n", buf, errno);
