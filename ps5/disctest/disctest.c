@@ -1,14 +1,17 @@
-/* PS5SX2 disc speed test payload (vk-285-152 investigation, AI-assisted).
+/* PS5SX2 disc speed test payload (AI-assisted).
  *
- * PS5SX2 (a home-screen title, jailbroken by swordpdf's PS5SX2 Helper) reads a PS2 DVD at a flat 2.0x whatever way it
- * reads: pread on /dev/cd0, READ(10)/READ(12) through pass0, 64 KiB commands, two in flight (vk-285-151 on 13.60). The
- * drive (SONY PS-SYSTEM 503R) reports 3.2x..8.0x, and someone's payload copied a DVD at 10.4 MiB/s ("[Payload] [Dump]").
- * So: is it who reads? This payload, sent to the ELF loader like the Helper, times reading /dev/cd0 as itself, then
- * with its authid switched to the one the Helper gives PS5SX2 (0x4801000000000013), then to SceShellCore's kind
- * (0x4800000000010003), and puts its own back. If the payload is fast and slows down with PS5SX2's authid, the Helper
- * could give PS5SX2 a fast authid; if it stays fast, PS5SX2 needs a payload to copy discs.
+ * v1 (2026-10-09): /dev/cd0 timed from a payload: 2.00x (128 MiB in 48.6 s), the same as the PS5SX2 app. So who reads
+ * isn't it.
  *
- * It only reads the disc. Results: klog, /data/PCSX2/logs/disctest.log, and notifications.
+ * v2: Sony's own drive speed command, from SceShellCore 11.40's _AutoMounter::OpticalDisc::setSpeed(int) (0x376790):
+ * libcam on "cd0", CDB DB <rotation & 3> <speed hi> <speed lo> + 8 zeros, no data, 10 s, CAM_DIR_NONE |
+ * CAM_DEV_QFRZDIS | CAM_PASS_ERR_RECOVER, simple tag. Its table (0x1d823a0) has 0/0x20 "2.0" as the default (the 2x we
+ * get) and 1/0x80 "8.0", 1/0x100, 0/0xFFFF max, 1/0x60 "6.0" among the faster ones. This payload, sent to the ELF loader
+ * like the PS5SX2 Helper, finds the drive's pass device through /dev/cd0 (CAMGETPASSTHRU), times 32 MiB as the drive is,
+ * then sends each of those settings and times a fresh 32 MiB after each, and puts the drive back to 2.0 at the end.
+ * Only values from Sony's table are sent; the disc is only read.
+ *
+ * Results: klog ([PS5SX2 disctest]), /data/PCSX2/logs/disctest.log, and notifications.
  *
  * Copyright (C) 2026 swordpdf
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -23,14 +26,23 @@
 #include <sys/disk.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <cam/cam.h>
+#include <cam/cam_ccb.h>
+#include <cam/scsi/scsi_all.h>
+#include <cam/scsi/scsi_message.h>
+#include <cam/scsi/scsi_pass.h>
 
 #include <ps5/kernel.h>
 #include <ps5/klog.h>
 
+_Static_assert(sizeof(union ccb) == 0x4E0, "union ccb: SceShellCore's CAMIOCOMMAND (0xC4E01902) carries 1248 bytes");
+
 #define CHUNK (4u << 20)
-#define SPAN (128ull << 20)
+#define TIMED (32ull << 20)
 
 static FILE *g_log;
 
@@ -69,20 +81,72 @@ static double now_s(void) {
   return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
-/* MB/s over SPAN from `from` (4 MiB preads), or -1. */
+static const char *speed_text(uint16_t speed, char *b, size_t n) {
+  if (speed == 0xFFFF)
+    snprintf(b, n, "max");
+  else if (speed > 0xFF)
+    snprintf(b, n, "%#x", speed);
+  else
+    snprintf(b, n, "%u.%ux", (speed >> 4) & 15, speed & 15);
+  return b;
+}
+
+/* Sony's speed command through the pass device. 0 when the drive took it. */
+static int set_speed(int pass, uint8_t rot, uint16_t speed) {
+  union ccb ccb;
+  memset(&ccb, 0, sizeof(ccb));
+  cam_fill_csio(&ccb.csio, 1, NULL, CAM_DIR_NONE | CAM_DEV_QFRZDIS | CAM_PASS_ERR_RECOVER, MSG_SIMPLE_Q_TAG, NULL, 0,
+                SSD_FULL_SIZE, 12, 10000);
+  uint8_t *cdb = ccb.csio.cdb_io.cdb_bytes;
+  cdb[0] = 0xDB;
+  cdb[1] = rot & 3;
+  cdb[2] = (uint8_t)(speed >> 8);
+  cdb[3] = (uint8_t)speed;
+  char st[16];
+  if (ioctl(pass, CAMIOCOMMAND, &ccb) != 0) {
+    say("DB %02x %02x %02x (rotation %u, %s): CAMIOCOMMAND errno %d", rot, speed >> 8, speed & 0xff, rot,
+        speed_text(speed, st, sizeof(st)), errno);
+    return -1;
+  }
+  const uint32_t status = ccb.ccb_h.status & CAM_STATUS_MASK;
+  if (status == CAM_REQ_CMP) {
+    say("DB %02x %02x %02x (rotation %u, %s): ok", rot, speed >> 8, speed & 0xff, rot, speed_text(speed, st, sizeof(st)));
+    return 0;
+  }
+  const uint8_t *s = (const uint8_t *)&ccb.csio.sense_data;
+  int key = -1, asc = -1, ascq = -1;
+  if ((ccb.ccb_h.status & CAM_AUTOSNS_VALID) && ((s[0] & 0x7f) == 0x70 || (s[0] & 0x7f) == 0x71)) {
+    key = s[2] & 15;
+    asc = s[12];
+    ascq = s[13];
+  } else if ((ccb.ccb_h.status & CAM_AUTOSNS_VALID) && ((s[0] & 0x7f) == 0x72 || (s[0] & 0x7f) == 0x73)) {
+    key = s[1] & 15;
+    asc = s[2];
+    ascq = s[3];
+  }
+  say("DB %02x %02x %02x (rotation %u, %s): CAM status %#x, SCSI status %#x, sense key %d asc %#x ascq %#x", rot, speed >> 8,
+      speed & 0xff, rot, speed_text(speed, st, sizeof(st)), ccb.ccb_h.status, ccb.csio.scsi_status, key, asc, ascq);
+  return -1;
+}
+
+/* MB/s over TIMED from `from` after a 4 MiB warm-up (the drive settling at a new speed), or 0. */
 static double timed_read(int fd, uint64_t from, uint64_t size, const char *what) {
   static uint8_t *buf;
   if (!buf)
     buf = malloc(CHUNK);
   if (!buf)
-    return -1;
+    return 0;
   from &= ~(uint64_t)2047;
+  if (from + CHUNK + TIMED > size) {
+    say("%s: the disc is too small", what);
+    return 0;
+  }
+  pread(fd, buf, CHUNK, (off_t)from);
   const double t0 = now_s();
   uint64_t got = 0;
-  for (uint64_t off = from; off < from + SPAN && off + CHUNK <= size; off += CHUNK) {
-    const ssize_t n = pread(fd, buf, CHUNK, (off_t)off);
-    if (n != (ssize_t)CHUNK) {
-      say("%s: pread at %llu: %zd (errno %d)", what, (unsigned long long)off, n, errno);
+  for (uint64_t off = from + CHUNK; off < from + CHUNK + TIMED; off += CHUNK) {
+    if (pread(fd, buf, CHUNK, (off_t)off) != (ssize_t)CHUNK) {
+      say("%s: pread at %llu: errno %d", what, (unsigned long long)off, errno);
       break;
     }
     got += CHUNK;
@@ -90,14 +154,13 @@ static double timed_read(int fd, uint64_t from, uint64_t size, const char *what)
   const double s = now_s() - t0;
   const double mbs = s > 0 ? got / s / 1e6 : 0;
   say("%s: %llu MiB in %.1f s = %.2f MB/s = %.2fx DVD", what, (unsigned long long)(got >> 20), s, mbs, mbs / 1.385);
-  return mbs;
+  return got == TIMED ? mbs : 0;
 }
 
 static int open_cd(pid_t pid) {
   int fd = open("/dev/cd0", O_RDONLY);
   if (fd >= 0 || (errno != EPERM && errno != EACCES))
     return fd;
-  /* as RPCS3To5's ps3dumpd: once more with system credentials, then ours back */
   const uint64_t authid = kernel_get_ucred_authid(pid);
   uint8_t caps[16], all[16];
   memset(all, 0xff, sizeof(all));
@@ -116,9 +179,9 @@ int main(void) {
   mkdir("/data/PCSX2/logs", 0777);
   g_log = fopen("/data/PCSX2/logs/disctest.log", "w");
   const pid_t pid = getpid();
-  const uint64_t own = kernel_get_ucred_authid(pid);
-  say("pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(), (unsigned long long)own);
-  notify("PS5SX2 disc test: running (about 1 to 4 minutes)");
+  say("v2 (Sony speed command), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
+      (unsigned long long)kernel_get_ucred_authid(pid));
+  notify("PS5SX2 disc test v2: running (about 1 to 3 minutes)");
 
   const int fd = open_cd(pid);
   if (fd < 0) {
@@ -133,27 +196,73 @@ int main(void) {
     close(fd);
     return 1;
   }
-  say("/dev/cd0: %lld bytes", (long long)size);
-
   const uint64_t sz = (uint64_t)size;
-  const double a = timed_read(fd, 64ull << 20, sz, "payload, own authid, start of the disc");
-  const double b = timed_read(fd, sz - SPAN - (8ull << 20), sz, "payload, own authid, end of the disc");
+  say("/dev/cd0: %llu bytes", (unsigned long long)sz);
 
-  kernel_set_ucred_authid(pid, 0x4801000000000013ull);
-  say("authid now %#llx (what the Helper gives PS5SX2)", (unsigned long long)kernel_get_ucred_authid(pid));
-  const double c = timed_read(fd, 256ull << 20, sz, "payload, PS5SX2's authid");
+  union ccb ccb;
+  memset(&ccb, 0, sizeof(ccb));
+  ccb.ccb_h.func_code = XPT_GDEVLIST;
+  if (ioctl(fd, CAMGETPASSTHRU, &ccb) != 0) {
+    say("CAMGETPASSTHRU: errno %d", errno);
+    notify("PS5SX2 disc test: no pass device (errno %d)", errno);
+    close(fd);
+    return 1;
+  }
+  char path[64];
+  snprintf(path, sizeof(path), "/dev/%.*s%u", (int)sizeof(ccb.cgdl.periph_name), ccb.cgdl.periph_name, ccb.cgdl.unit_number);
+  const int pass = open(path, O_RDWR);
+  say("%s: %s%d", path, pass < 0 ? "open errno " : "fd ", pass < 0 ? errno : pass);
+  if (pass < 0) {
+    notify("PS5SX2 disc test: can't open %s", path);
+    close(fd);
+    return 1;
+  }
 
-  kernel_set_ucred_authid(pid, 0x4800000000010003ull);
-  say("authid now %#llx (SceShellCore's kind)", (unsigned long long)kernel_get_ucred_authid(pid));
-  const double d = timed_read(fd, 448ull << 20, sz, "payload, system authid");
+  static const struct {
+    uint8_t rot;
+    uint16_t speed;
+  } kTry[] = {{1, 0x0080}, {1, 0x0100}, {0, 0xFFFF}, {1, 0x0060}};
+  const int n = (int)(sizeof(kTry) / sizeof(kTry[0]));
+  double res[8] = {0};
+  const uint64_t step = 48ull << 20, first = 64ull << 20;
 
-  kernel_set_ucred_authid(pid, own);
-  say("authid back to %#llx", (unsigned long long)kernel_get_ucred_authid(pid));
+  const double base = timed_read(fd, first, sz, "as the drive is");
+  for (int i = 0; i < n; i++) {
+    char what[64], st[16];
+    snprintf(what, sizeof(what), "after DB rotation %u, %s", kTry[i].rot, speed_text(kTry[i].speed, st, sizeof(st)));
+    if (set_speed(pass, kTry[i].rot, kTry[i].speed) == 0)
+      res[i] = timed_read(fd, first + (uint64_t)(i + 1) * step, sz, what);
+    else
+      res[i] = -1;
+  }
+  /* the best one again, at the end of the disc (a drive spinning at a set rate reads the outer edge fastest) */
+  int best = -1;
+  for (int i = 0; i < n; i++)
+    if (res[i] > 0 && (best < 0 || res[i] > res[best]))
+      best = i;
+  double end = 0;
+  if (best >= 0 && set_speed(pass, kTry[best].rot, kTry[best].speed) == 0)
+    end = timed_read(fd, sz - TIMED - (16ull << 20), sz, "the fastest setting, at the end of the disc");
+
+  set_speed(pass, 0, 0x20); /* back to the drive's default, 2.0, as SceShellCore does */
+  close(pass);
   close(fd);
 
-  notify("PS5SX2 disc test: payload %.1f MB/s (%.1fx) start, %.1f (%.1fx) end; as PS5SX2 %.1f (%.1fx); as system %.1f (%.1fx)",
-         a, a / 1.385, b, b / 1.385, c, c / 1.385, d, d / 1.385);
-  say("done");
+  char line[3000];
+  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v2: as is %.1f MB/s (%.1fx)", base, base / 1.385);
+  for (int i = 0; i < n && at < (int)sizeof(line) - 80; i++) {
+    char st[16];
+    if (res[i] < 0)
+      at += snprintf(line + at, sizeof(line) - at, " | %s refused", speed_text(kTry[i].speed, st, sizeof(st)));
+    else
+      at += snprintf(line + at, sizeof(line) - at, " | %s: %.1f MB/s (%.1fx)", speed_text(kTry[i].speed, st, sizeof(st)), res[i],
+                     res[i] / 1.385);
+  }
+  if (best >= 0 && at < (int)sizeof(line) - 60)
+    snprintf(line + at, sizeof(line) - at, " | end of disc %.1f MB/s (%.1fx)", end, end / 1.385);
+  notify("%s", line);
+  say("%s", line);
+  say("done (drive back to 2.0)");
   if (g_log)
     fclose(g_log);
   return 0;
