@@ -62,6 +62,7 @@
 //
 // vk-285-152: Sony's own speed command from SceShellCore (DB <rotation> <speed>; ProsperoDiscSpeed.cpp): each copy times
 // the drive's faster settings from Sony's table, copies at the fastest, and puts the drive back to 2.0 afterwards.
+// vk-285-153: for a PS2 DVD the drive takes rotation 0 / 0x32 (3.2x, 4.43 MB/s) and refuses the BD speeds; that's tried.
 //
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later

@@ -27,8 +27,9 @@
 // 10 s, flags CAM_DIR_NONE | CAM_DEV_QFRZDIS | CAM_PASS_ERR_RECOVER, simple tag; the speed from a table of
 // rotation/speed pairs where 0/0x20 (2.0) is the default and 1/0x80 is 8.0 (OrbisDiscScsi.h).
 //
-// vk-285-152: so before each copy: time pread as the drive is, then each of Sony's own faster settings (1/0x80 8.0,
-// 1/0x100, 0/0xFFFF max, 1/0x60 6.0), 16 MiB each after a 4 MiB warm-up; copy at the fastest if it beats the drive as it
+// vk-285-152: so before each copy: time pread as the drive is, then each of Sony's own faster settings (152: 1/0x80 8.0,
+// 1/0x100, 0/0xFFFF max, 1/0x60 6.0; 153: rotation 0 0x40, 0x38, 0x32, after the payload tests), 16 MiB each after a 4 MiB
+// warm-up; copy at the fastest if it beats the drive as it
 // was by 15%; put the drive back to 2.0 (0/0x20) after the copy. Only values from Sony's table are sent. The 151 pass
 // read timing only with flag disc_passbench.
 //
@@ -366,7 +367,11 @@ void OrbisDiscSpeedUp(const char* cd_path, uint64_t bytes, OrbisDiscReadMethod* 
 			uint8_t rot;
 			uint16_t speed;
 		};
-		static const Setting kTry[] = {{1, 0x0080}, {1, 0x0100}, {0, 0xFFFF}, {1, 0x0060}};
+		// vk-285-153: PS5SX2DiscTest v2/v3 on swordpdf's drive (PS-SYSTEM 503R 2305, a PS2 DVD, profile 0x10): rotation 1
+		// (Sony's BD entries) and rotation 2/3 refused (asc 0x24); rotation 0 took 0x20, 0x32 and 0xFFFF and refused 0x50
+		// and 0x80; 0x32 read at 3.20x (4.43 MB/s) at both ends of the disc, against 2.0x, and 0xFFFF changed nothing.
+		// Higher rotation 0 values first in case another drive takes one (a refusal costs one command), then 3.2.
+		static const Setting kTry[] = {{0, 0x0040}, {0, 0x0038}, {0, 0x0032}};
 		constexpr uint64_t kStep = 24ull << 20, kFirst = 64ull << 20;
 		const double base = time_at(kFirst, "speed as the drive is");
 		double best = base;
