@@ -517,8 +517,25 @@ namespace
 				return false;
 			}
 		}
+		const long long seen = static_cast<long long>(time(nullptr));
+		// vk-285-159b: the console showed the bounce winning the race -- we re-foreground before the shell has finished taking
+		// the user to the home screen, so the shell's takeover lands last and we're back at the XMB. So wait first, let the
+		// shell put up its "not supported" dialog, then bounce so OUR app is the last thing on screen. Tunable without a
+		// rebuild: the number of seconds is the content of the flags/disc_refg file (e.g. echo 6 > .../flags/disc_refg);
+		// empty or unparsable means the default.
+		int delay = 6;
+		if (FILE* f = fopen(OrbisFlagPath("disc_refg").c_str(), "r"))
+		{
+			int v = 0;
+			if (fscanf(f, "%d", &v) == 1 && v >= 0 && v <= 60)
+				delay = v;
+			fclose(f);
+		}
+		Log("re-foreground: PS2 disc %s seen at %lld; waiting %d s for the shell, then re-executing our eboot to come back to the front (flag disc_refg)",
+			serial.c_str(), seen, delay);
+		for (int i = 0; i < delay; i++)
+			sleep(1);
 		const long long now = static_cast<long long>(time(nullptr));
-		Log("re-foreground: PS2 disc %s seen at %lld; re-executing our eboot to bring PS5SX2 to the front (flag disc_refg)", serial.c_str(), now);
 		if (FILE* f = fopen(ReForegroundMarkPath().c_str(), "w"))
 		{
 			fprintf(f, "%s %lld\n", serial.c_str(), now);
