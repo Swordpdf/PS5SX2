@@ -1,4 +1,4 @@
-/* PS5SX2 disc-auto daemon (vk-285-160e, AI-assisted).
+/* PS5SX2 disc-auto daemon (vk-285-160f, AI-assisted).
  * Send once to the console's ELF loader (port 9021) and leave it running.
  * Put a PS2 DVD in:
  *   - already dumped  -> PS5SX2 comes to the front and starts that game.
@@ -28,6 +28,11 @@
  * vk-285-160e: heartbeats instead of "exec.txt not consumed in 5 s" (that misread a PS5SX2
  *   busy dumping as not running and restarted it mid-dump); settle delay; serial on line 2;
  *   media-size check so the disc isn't re-read every loop during a dump; "(SERIAL)" names.
+ * vk-285-160f: 160e on the console (WRC, SCES-50139): dump, launch and self-exec all worked, but a self-exec
+ *   keeps the focus the app had. After the disc goes in the shell owns focus (home screen), so the game came
+ *   up behind it. Now, once PS5SX2 has re-executed, the daemon hands it focus (sceLncUtilSetAppFocus, then
+ *   sceLncUtilLaunchApp on the running title as clicking its tile does) at +2/+6/+12 s. A new daemon also
+ *   kills the previous one (logs/disc-auto.pid) so a resend doesn't leave two running.
  * Needs proper testing on a console with a disc drive.
  *
  * Copyright (C) 2026 swordpdf
@@ -47,6 +52,8 @@
 #include <sys/disk.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -62,8 +69,10 @@
 #define AUTO_TXT    LOGS_DIR "/disc-autostart.txt"
 #define EMU_ALIVE   LOGS_DIR "/ps5sx2-alive.txt"
 #define SELF_ALIVE  LOGS_DIR "/disc-auto-alive.txt"
+#define PID_FILE    LOGS_DIR "/disc-auto.pid"
+#define TITLE_ID    "PPSA99203"
 
-enum { kPollSec = 2, kSettleSec = 4, kAliveWithin = 8, kRestartAfter = 45 };
+enum { kPollSec = 1, kSettleSec = 4, kAliveWithin = 8, kRestartAfter = 45 };
 
 /* ------------------------------------------------------------------ */
 /* Notification / logging                                                */
@@ -266,10 +275,120 @@ static void start_emu(void) {
     say("LoadExec = 0x%08x", (unsigned)rc);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Focus: bring the running PS5SX2 to the front (vk-285-160f)            */
+/* ------------------------------------------------------------------ */
+typedef struct { uint32_t size; int user_id; uint32_t app_opt; uint64_t crash_report; uint64_t check_flag; } lnc_app_param_t;
+typedef uint32_t (*GetBigApp_t)(void);
+typedef int (*GetTitle_t)(uint32_t, char *);
+typedef int (*SetFocus_t)(uint32_t, int);
+typedef int (*LaunchApp_t)(const char *, const char **, lnc_app_param_t *);
+typedef int (*UsrInit_t)(void *);
+typedef int (*UsrFg_t)(int *);
+
+static GetBigApp_t p_bigapp;
+static GetTitle_t  p_title;
+static SetFocus_t  p_focus;
+static LaunchApp_t p_launch;
+static UsrFg_t     p_fguser;
+
+static void load_lnc(void) {
+    void *h = dlopen("libSceSystemService.sprx", RTLD_NOW | RTLD_GLOBAL);
+    if (h) {
+        p_bigapp = (GetBigApp_t)dlsym(h, "sceLncUtilGetAppIdOfRunningBigApp");
+        p_title  = (GetTitle_t)dlsym(h, "sceLncUtilGetAppTitleId");
+        p_focus  = (SetFocus_t)dlsym(h, "sceLncUtilSetAppFocus");
+        p_launch = (LaunchApp_t)dlsym(h, "sceLncUtilLaunchApp");
+    }
+    void *u = dlopen("libSceUserService.sprx", RTLD_NOW | RTLD_GLOBAL);
+    if (u) {
+        UsrInit_t init = (UsrInit_t)dlsym(u, "sceUserServiceInitialize");
+        p_fguser = (UsrFg_t)dlsym(u, "sceUserServiceGetForegroundUser");
+        if (init) { const int rc = init(NULL); say("sceUserServiceInitialize = 0x%08x", (unsigned)rc); }
+    }
+    say("lnc: bigapp %p title %p focus %p launch %p fguser %p", (void *)p_bigapp, (void *)p_title,
+        (void *)p_focus, (void *)p_launch, (void *)p_fguser);
+}
+
+/* PS5SX2's app id when it is the running big app, else 0. */
+static uint32_t emu_appid(void) {
+    if (!p_bigapp || !p_title) return 0;
+    const uint32_t id = p_bigapp();
+    if (id == 0 || id == 0xffffffffu) return 0;
+    char t[32] = {0};
+    if (p_title(id, t) != 0) return 0;
+    return strncmp(t, TITLE_ID, 9) == 0 ? id : 0;
+}
+
+static void give_focus(uint32_t id, int attempt) {
+    if (p_focus) {
+        const int rc = p_focus(id, 0);
+        say("focus #%d: sceLncUtilSetAppFocus(0x%x, 0) = 0x%08x", attempt, (unsigned)id, (unsigned)rc);
+        if (rc == 0) return;
+    }
+    if (p_launch) {
+        int user = -1;
+        if (p_fguser) p_fguser(&user);
+        lnc_app_param_t prm;
+        memset(&prm, 0, sizeof(prm));
+        prm.size = sizeof(prm);
+        prm.user_id = user;
+        const int rc = p_launch(TITLE_ID, NULL, &prm);
+        say("focus #%d: sceLncUtilLaunchApp(" TITLE_ID ", user %d) = 0x%08x", attempt, user, (unsigned)rc);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* One daemon at a time                                                  */
+/* ------------------------------------------------------------------ */
+static int proc_comm(pid_t pid, char *out, size_t max) {
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid };
+    struct kinfo_proc kp;
+    size_t len = sizeof(kp);
+    memset(&kp, 0, sizeof(kp));
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len < sizeof(kp) || kp.ki_pid != pid) return 0;
+    snprintf(out, max, "%s", kp.ki_comm);
+    return 1;
+}
+
+static void take_over(void) {
+    FILE *f = fopen(PID_FILE, "r");
+    if (f) {
+        int old = 0;
+        if (fscanf(f, "%d", &old) == 1 && old > 0 && old != (int)getpid()) {
+            char comm[32] = {0};
+            if (proc_comm((pid_t)old, comm, sizeof(comm))) {
+                if (strstr(comm, "payload") || strstr(comm, "disc") || strstr(comm, "Disc")) {
+                    const int rc = kill((pid_t)old, SIGKILL);
+                    say("previous daemon pid %d (%s): SIGKILL rc=%d", old, comm, rc);
+                } else {
+                    say("pid %d in " PID_FILE " is now '%s', not a daemon: left alone", old, comm);
+                }
+            }
+        }
+        fclose(f);
+    }
+    f = fopen(PID_FILE, "w");
+    if (f) { fprintf(f, "%d\n", (int)getpid()); fclose(f); }
+}
+
+/* Another daemon has taken over when the pid file no longer names us. */
+static int superseded(void) {
+    FILE *f = fopen(PID_FILE, "r");
+    if (!f) return 0;
+    int p = 0;
+    const int got = fscanf(f, "%d", &p);
+    fclose(f);
+    return got == 1 && p > 0 && p != (int)getpid();
+}
+
 /* ------------------------------------------------------------------ */
 /* Actions                                                               */
 /* ------------------------------------------------------------------ */
 static time_t g_last_start;
+static uint32_t g_focus_old;   /* PS5SX2's app id when we asked it to re-exec (0: wasn't running) */
+static time_t g_focus_armed;   /* when; 0 = no focus watch */
 
 static void launch(const char *serial, const char *iso) {
     FILE *f = fopen(LAUNCH_TXT, "w");
@@ -280,6 +399,8 @@ static void launch(const char *serial, const char *iso) {
     if (f) fclose(f);
     else say("fopen(" EXEC_TXT "): errno %d", errno);
     say("launch %s: %s", serial, iso);
+    g_focus_old = emu_appid();
+    g_focus_armed = time(NULL);
     notify("PS5SX2: starting %s", serial);
     /* Running: its watcher self-execs into the game (front). Not running: start it; main-boot
      * sees exec.txt, holds disc-launch.txt, the watcher self-execs, and that boot starts it. */
@@ -313,6 +434,8 @@ int main(void) {
         kernel_set_ucred_caps(getpid(), all);
     }
     signal(SIGCHLD, SIG_IGN); /* no zombies from start_emu's child */
+    take_over();
+    load_lnc();
 
     notify("PS5SX2 disc-auto running: put a PS2 DVD in");
     say("PS5SX2 %s", emu_alive() ? "is running" : "is not running");
@@ -323,8 +446,44 @@ int main(void) {
     enum state st = S_NONE;
     int startup = 1;
 
+    uint32_t focus_id = 0;
+    time_t focus_seen = 0;
+    int focus_done = 0;
+
     for (;;) {
+        if (superseded()) {
+            say("another daemon took over (" PID_FILE "): exiting");
+            return 0;
+        }
         stamp_self();
+
+        /* vk-285-160f: once PS5SX2 has re-executed after a launch (a new app id), hand it focus. */
+        if (g_focus_armed) {
+            const time_t now = time(NULL);
+            const uint32_t id = emu_appid();
+            if (!focus_id) {
+                if (id && id != g_focus_old) {
+                    focus_id = id;
+                    focus_seen = now;
+                    focus_done = 0;
+                    say("PS5SX2 re-executed: app id 0x%x (was 0x%x)", (unsigned)id, (unsigned)g_focus_old);
+                } else if (now - g_focus_armed > 60) {
+                    say("focus: PS5SX2 didn't come back with a new app id within 60 s (now 0x%x)", (unsigned)id);
+                    g_focus_armed = 0;
+                }
+            }
+            if (focus_id) {
+                static const int at[3] = { 2, 6, 12 };
+                if (id != focus_id) {
+                    say("focus: app id changed to 0x%x, stopping", (unsigned)id);
+                    g_focus_armed = 0; focus_id = 0;
+                } else if (focus_done < 3 && now - focus_seen >= at[focus_done]) {
+                    give_focus(focus_id, focus_done + 1);
+                    focus_done++;
+                    if (focus_done == 3) { g_focus_armed = 0; focus_id = 0; }
+                }
+            }
+        }
 
         /* Is a disc in, and is it the same one? DIOCGMEDIASIZE doesn't touch the disc, so a
          * dump in progress isn't slowed by us re-reading its directory every loop. */
