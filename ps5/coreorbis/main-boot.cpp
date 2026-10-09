@@ -3255,6 +3255,87 @@ int main()
       serial.empty() ? "unknown" : serial.c_str(), needs ? ", a game that needs one" : "");
     fflush(stdout);
   }
+  // live-7 (AI-assisted): swordpdf: a PAL disc's "PlayStation 2" logo came out scrambled on full boot with his only BIOS, a
+  // USA one; a European BIOS fixed it ("the fix was the region bios"; the logo on the disc is encrypted per region, as on a
+  // real PS2). When the BIOS folder holds BIOSes of several regions, the one matching the game's region (from its serial)
+  // is used for that game; the configured one (Filenames/BIOS, else the one PCSX2 would pick) when it already matches or
+  // there's no match. Its own .nvm keeps each BIOS's settings. PS5SX2/BiosByRegion=false turns it off.
+  {
+    MemorySettingsInterface peek = s_base_si;
+    orbis_apply_gs_ini(peek, true);
+    const bool on = peek.GetBoolValue("PS5SX2", "BiosByRegion", true);
+    const bool disc_game = !s_game_path.empty() &&
+      !(s_game_path.size() > 4 && strcasecmp(s_game_path.c_str() + s_game_path.size() - 4, ".elf") == 0);
+    const std::string serial = disc_game ? fe::ReadSerial(s_game_path) : std::string();
+    // the BIOS region (BiosTools' numbering: 0 Japan, 1 USA, 2 Europe, 4 Asia, 6 China) a serial's prefix asks for
+    int want = -1;
+    if (serial.size() >= 4)
+    {
+      const std::string p = serial.substr(0, 4);
+      if (p == "SLUS" || p == "SCUS" || p == "PBPX" || p == "LSP-")
+        want = 1;
+      else if (p == "SLES" || p == "SCES" || p == "SCED" || p == "SLED")
+        want = 2;
+      else if (p == "SLPM" || p == "SLPS" || p == "SCPS" || p == "SCPM" || p == "SCAJ" || p == "SLAJ")
+        want = (p == "SCAJ" || p == "SLAJ") ? 4 : 0;
+      else if (p == "SCKA" || p == "SLKA")
+        want = 4;
+      else if (p == "SCCS")
+        want = 6;
+    }
+    if (on && want >= 0)
+    {
+      struct Found { std::string rel; u32 region; std::string zone; };
+      std::vector<Found> found;
+      FileSystem::FindResultsArray results;
+      if (FileSystem::FindFiles(EmuFolders::Bios.c_str(), "*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_RECURSIVE, &results))
+      {
+        for (const FILESYSTEM_FIND_DATA& fd : results)
+        {
+          if (fd.Size < 4u * 1024 * 1024 || fd.Size > 8u * 1024 * 1024)
+            continue;
+          u32 version = 0, region = 0;
+          std::string description, zone;
+          if (!IsBIOS(fd.FileName.c_str(), version, description, region, zone))
+            continue;
+          std::string rel = fd.FileName;
+          if (rel.compare(0, EmuFolders::Bios.size() + 1, EmuFolders::Bios + "/") == 0)
+            rel = rel.substr(EmuFolders::Bios.size() + 1);
+          found.push_back({rel, region, zone});
+        }
+      }
+      const std::string configured = peek.GetStringValue("Filenames", "BIOS", "");
+      const Found* current = nullptr;
+      for (const Found& f : found)
+        if (!configured.empty() && f.rel == configured)
+          current = &f;
+      if (!current && !found.empty())
+        current = &found.front(); // roughly what PCSX2 picks with none configured
+      const Found* match = nullptr;
+      if (current && static_cast<int>(current->region) == want)
+        match = current;
+      for (const Found& f : found)
+        if (!match && static_cast<int>(f.region) == want)
+          match = &f;
+      if (match && (!current || match != current))
+      {
+        s_base_si.SetStringValue("Filenames", "BIOS", match->rel.c_str());
+        printf("[boot] BIOS by region: %s is a %s game, using %s (%s) instead of %s\n", serial.c_str(), match->zone.c_str(),
+          match->rel.c_str(), match->zone.c_str(), current ? (current->rel + " (" + current->zone + ")").c_str() : "none");
+      }
+      else
+      {
+        printf("[boot] BIOS by region: %s wants region %d; %s (%zu BIOS file%s in %s)\n", serial.c_str(), want,
+          match ? ("already using " + match->rel).c_str() : "no BIOS of that region, keeping the configured one",
+          found.size(), found.size() == 1 ? "" : "s", EmuFolders::Bios.c_str());
+      }
+    }
+    else
+    {
+      printf("[boot] BIOS by region: %s\n", !on ? "off (PS5SX2/BiosByRegion)" : serial.empty() ? "no disc serial" : "region unknown for this serial");
+    }
+    fflush(stdout);
+  }
   // 2026-10-05 (AI-assisted; swordpdf: the network adapter on for every game, after a tester went online in Resident Evil
   // Outbreak with SOCOM II's lines): the PS2's network adapter as SOCOM II's file sets it (claude/socom2-online.md):
   // PCSX2's sockets backend on the console's own connection, its DHCP server giving the game an address, and the DNS the
