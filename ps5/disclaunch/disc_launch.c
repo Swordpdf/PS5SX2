@@ -1,4 +1,4 @@
-/* PS5SX2 disc-auto daemon (vk-285-160j, AI-assisted).
+/* PS5SX2 disc-auto daemon (vk-285-160k, AI-assisted).
  * Send once to the console's ELF loader (port 9021) and leave it running.
  * Put a PS2 DVD in:
  *   - already dumped  -> PS5SX2 comes to the front and starts that game.
@@ -50,6 +50,10 @@
  *   sceLncUtilLaunchApp (the call that already brought it to the front, the launcher's way): for a launch it
  *   gets disc-launch.txt only (no exec signal, nothing to re-exec), so its first boot starts the game; LaunchApp
  *   again at +6/+11 s keeps it in front. For a dump it is simply launched.
+ * vk-285-160k: 160j passed all four cases on swordpdf's phat (dump, cold start, running, disc out -> shelf).
+ *   Each extra LaunchApp on an app already in front replays its splash for a moment, so one follow-up only
+ *   (+3 s after the exec signal is consumed; +6 s after a cold launch, in case the shell's disc screen lands
+ *   last), and the settle after insert is 2 s (was 4) to shorten the home-screen detour.
  * Needs proper testing on a console with a disc drive.
  *
  * Copyright (C) 2026 swordpdf
@@ -89,7 +93,7 @@
 #define PID_FILE    LOGS_DIR "/disc-auto.pid"
 #define TITLE_ID    "PPSA99203"
 
-enum { kPollSec = 1, kSettleSec = 4, kAliveWithin = 8, kRestartAfter = 45 };
+enum { kPollSec = 1, kSettleSec = 2, kAliveWithin = 8, kRestartAfter = 45 };
 
 /* ------------------------------------------------------------------ */
 /* Notification / logging                                                */
@@ -410,7 +414,7 @@ static void launch(const char *serial, const char *iso) {
         launch_title("start PS5SX2 into the game");
         g_last_start = time(NULL);
         g_focus_armed = time(NULL);
-        g_focus_seen = time(NULL) + 3; /* LaunchApp again at +6/+11 s */
+        g_focus_seen = time(NULL) + 3; /* LaunchApp once more at +6 s */
     }
 }
 
@@ -427,7 +431,7 @@ static void cleanup(const char *serial) {
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (vk-285-160j) pid %d", (int)getpid());
+    say("disc-auto daemon (vk-285-160k) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
@@ -473,14 +477,14 @@ int main(void) {
                     g_focus_armed = 0;
                 }
             } else {
-                static const int at[2] = { 3, 8 };
-                if (focus_done < 2 && now - g_focus_seen >= at[focus_done]) {
+                static const int at[1] = { 3 };
+                if (focus_done < 1 && now - g_focus_seen >= at[focus_done]) {
                     const uint32_t id = emu_appid();
                     if (id) give_focus(id, focus_done + 1);
                     else say("focus #%d: PS5SX2 not the running big app yet", focus_done + 1);
                     focus_done++;
                 }
-                if (focus_done >= 2) { g_focus_armed = 0; g_focus_seen = 0; }
+                if (focus_done >= 1) { g_focus_armed = 0; g_focus_seen = 0; }
             }
         }
 
