@@ -2840,6 +2840,14 @@ static void cdvdWrite16(u8 rt) // SCOMMAND
 
 			case 0x43: // CdCloseConfig (0:1)
 				SetSCMDResultSize(1);
+#ifdef __PROSPERO__
+				// PS5 port (live-6, AI-assisted): swordpdf: with fast boot off "my settings dont get saved, i have to select
+				// the timezone and language every time". The BIOS's settings live in the NVM, which PCSX2 writes to the .nvm
+				// file only at VM shutdown -- and on the PS5 the app is left by a re-exec or the PS button, so that never
+				// runs. Write it when the BIOS closes a config write instead (the file is only rewritten if it changed).
+				if (cdvd.CReadWrite == 1)
+					cdvdSaveNVRAM();
+#endif
 				cdvd.CReadWrite = 0;
 				cdvd.COffset = 0;
 				cdvd.CNumBlocks = 0;
