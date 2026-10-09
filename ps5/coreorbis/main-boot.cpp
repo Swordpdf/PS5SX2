@@ -272,6 +272,72 @@ static void orbis_boot_log_release(const char* when)
   fflush(stdout);
 }
 
+// live-15 (AI-assisted): the Lapy owned-root daemon rejects a target with more
+// than one thread and consumes the request marker either way, so the elevation
+// request must be sent before any other thread exists. On a console whose /data
+// is visible at boot, boot.log is opened directly (no thread) and this is moot.
+// On a console whose /data shows only after elevation, orbis_boot_log_hold()
+// would start the pipe-drain pump thread -- so it is deferred to AFTER elevation
+// (orbis_boot_log_begin_deferred below). In that window the eboot's own early
+// lines (the build and pid lines the installer's report parses, and the Lapy
+// step lines) are kept in memory here -- a plain string written by this sink, no
+// thread -- and flushed into boot.log once the log is live. Third-party stdout in
+// that window is not captured; it goes to the klog only, which is acceptable.
+namespace
+{
+std::string g_boot_early;          // the eboot's own early lines, deferred path only
+bool g_boot_defer_hold = false;    // /data not visible at boot: the pump is deferred past elevation
+bool g_boot_early_active = false;  // the early sink also keeps lines in memory
+} // namespace
+
+extern "C" void orbis_boot_early_log(const char* line)
+{
+  // Normal boot: stdout is boot.log, so this lands there as usual. Deferred boot:
+  // stdout is not the log yet, so also keep the line in memory for the flush below.
+  printf("%s\n", line);
+  fflush(stdout);
+  if (g_boot_early_active)
+  {
+    g_boot_early.append(line);
+    g_boot_early.push_back('\n');
+  }
+}
+
+// After elevation (deferred path only): now that /data should be writable, open
+// boot.log and write the held early lines at its top; if /data still is not
+// writable, fall back to the pipe+pump hold, seeded with those early lines so
+// orbis_boot_log_release writes them when the folder finally appears.
+static void orbis_boot_log_begin_deferred()
+{
+  if (!g_boot_defer_hold)
+    return;
+  g_boot_defer_hold = false;
+  g_boot_early_active = false;
+  if (orbis_boot_log_open(true))
+  {
+    setvbuf(stdout, nullptr, _IOFBF, 1 << 20);
+    if (!g_boot_early.empty())
+    {
+      printf("[boot] the %zu bytes below were kept in memory before the boot log was live "
+             "(deferred so the Lapy elevation request stayed single-threaded)\n",
+             g_boot_early.size());
+      fwrite(g_boot_early.data(), 1, g_boot_early.size(), stdout);
+      printf("[boot] end of the held early lines; boot.log goes on directly from here\n");
+    }
+    fflush(stdout);
+  }
+  else
+  {
+    orbis_boot_log_hold();
+    if (g_boot_held.load(std::memory_order_acquire) && g_boot_hold && !g_boot_early.empty())
+    {
+      std::lock_guard<std::mutex> lock(g_boot_hold->mutex);
+      g_boot_hold->text.insert(0, g_boot_early); // the early lines first, then the captured stream
+    }
+  }
+  g_boot_early.clear();
+}
+
 // vk-285-113: signals. The crash printer (orbis-shims/ProsperoCrash.cpp) covered SIGABRT, SIGILL and SIGFPE (SIGSEGV is the
 // page-fault handler's, which hands what it can't map to the printer). Many of v112's sessions ended with no closing
 // line at all; they could have died of any of the others: SIGBUS (a file mapped past its end, a misaligned access),
@@ -2704,9 +2770,13 @@ int main()
   // vk-285-113: a broken pipe (a network peer that went away) is an error return, not the end of the app.
   signal(SIGPIPE, SIG_IGN);
   // stdout and stderr go to boot.log; when /data isn't visible yet (a console whose Helper's mount hook didn't take),
-  // into memory until it is (orbis_boot_log_release, after the jailbreak).
+  // into memory until it is. live-15: the pipe+pump hold is deferred to after elevation (the Lapy daemon needs a
+  // single-threaded target); until then the eboot's own early lines are kept in memory by orbis_boot_early_log.
   if (!orbis_boot_log_open(true))
-    orbis_boot_log_hold();
+  {
+    g_boot_defer_hold = true;
+    g_boot_early_active = true;
+  }
   // Orbis: fresh fault history per run (pf.log otherwise appends forever).
   {
     snprintf(g_orbis_pf_log, sizeof(g_orbis_pf_log), "%s", OrbisLogPath("pf.log").c_str()); // vk-285-33
@@ -2723,7 +2793,7 @@ int main()
   setvbuf(stdout, nullptr, _IOFBF, 1 << 20);
   fprintf(stderr, "[boot] stderr-ok\n");
   printf("[boot] main=%p\n", (void*)&main);
-  printf("[boot] build=" ORBIS_BUILD_TAG "\n");
+  orbis_boot_early_log("[boot] build=" ORBIS_BUILD_TAG); // live-15: kept in memory on the deferred-log path
   {
     // vk-285-91: what VZEROUPPER costs on this CPU. The GS thread's profiles (vk-285-89/90) had 5-7% of
     // their samples on the instruction right after one, so the eboot is now built with -mno-vzeroupper
@@ -2782,7 +2852,9 @@ int main()
   {
     FILE* f = fopen("/data/PCSX2/pid.txt", "w");
     if (f) { fprintf(f, "%d", (int)getpid()); fclose(f); }
-    printf("[boot] pid=%d\n", (int)getpid());
+    char line[32];
+    snprintf(line, sizeof(line), "[boot] pid=%d", (int)getpid());
+    orbis_boot_early_log(line); // live-15: kept in memory on the deferred-log path (the report parses it)
     fflush(stdout);
   }
 
@@ -2820,16 +2892,24 @@ int main()
     orbis_frontend_prefetch_covers(orbis_frontend_paths(true), 30.0, sys_notify);
 #endif
 
-  // Primary: etaHEN/OnionHEN download0 file-broker jailbreak (needs PPSA99203
-  // in the HEN app_jailbreak allowlist). Falls back to the legacy CMD ports.
-  extern bool orbis_hen_jailbreak();
+  // Primary: the Lapy owned-root daemon cooperative elevation (live-15; see
+  // orbis-shims/ProsperoHenJailbreak.cpp). This runs here, after the single-
+  // threaded cover prefetch and BEFORE the deferred boot-log pump below, so the
+  // request is sent with only the main thread alive -- the daemon rejects a
+  // multi-threaded target and consumes the marker either way. On failure it
+  // takes the existing no-jailbreak fallback (orbis_try_jailbreak), unchanged.
+  extern bool orbis_lapy_jailbreak();
   extern bool orbis_probe_jit();
   extern void orbis_log_hen_config();
   orbis_log_hen_config();
-  if (orbis_hen_jailbreak())
+  if (orbis_lapy_jailbreak())
     g_jailbreak_ok = 1;
   else
     orbis_try_jailbreak();
+  // live-15: elevation is done (the request window is over), so it is safe to
+  // start the boot-log pump thread on the console where /data showed only now;
+  // the early lines kept in memory are flushed into boot.log here.
+  orbis_boot_log_begin_deferred();
 #ifdef ORBIS_VULKAN
   orbis_log_flag_access("after the jailbreak");
 #endif
