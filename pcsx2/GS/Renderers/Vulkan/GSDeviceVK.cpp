@@ -65,7 +65,37 @@ unsigned long long g_orbis_readback_n, g_orbis_readback_bytes, g_orbis_readback_
 // buffers of one vkQueueSubmit into a 2 MiB stream and refuses more than 523,503 words (ps5vk_queue.c); a draw is ~50-90 words (a feedback
 // barrier adds 17), so 3500 draws x 90 = 315k words leaves room for uploads, clears and the present pass. RenderHW submits before a draw
 // that would pass it, SendHWDraw between the groups of one full-barrier draw that is bigger than the whole budget by itself.
-static constexpr u32 ORBIS_SUBMIT_DRAW_BUDGET = 3500;
+// live-8 (AI-assisted): 3500 -> 4400, and live-tunable. R&C1 on the base PS5 (fw 4.03, swordpdf, 2026-10-09): looking at one spot the
+// frame held just over 3500 draws ("3500 draws in this submission and 2 more coming, submitting early"), so every frame became two
+// submissions; on that firmware the second waits for the next vblank, so the game sat at 30 fps / 50% speed while it ran 60 everywhere
+// else (8x or 6x made no difference). 4400 x 107 words (a 90-word draw plus a 17-word feedback barrier, the worst case) is 471k of the
+// 523,503 the driver takes, ~52k left for uploads, clears and the present pass; the typical feedback draw is ~67 words (~295k).
+// flags/vk_drawbudget holding a number (1000..4800) overrides it, read live. Needs proper testing on a console.
+static u32 OrbisSubmitDrawBudget()
+{
+	static std::chrono::steady_clock::time_point s_checked;
+	static u32 s_budget = 4400;
+	const auto now = std::chrono::steady_clock::now();
+	if (now - s_checked >= std::chrono::seconds(1))
+	{
+		s_checked = now;
+		u32 budget = 4400;
+		std::string text;
+		if (OrbisCachedRead(OrbisFlagPath("vk_drawbudget").c_str(), text))
+		{
+			const unsigned long v = std::strtoul(text.c_str(), nullptr, 10);
+			if (v >= 1000 && v <= 4800)
+				budget = static_cast<u32>(v);
+		}
+		if (budget != s_budget)
+		{
+			Console.WriteLn("VK: submission draw budget %u (was %u)", budget, s_budget);
+			s_budget = budget;
+		}
+	}
+	return s_budget;
+}
+#define ORBIS_SUBMIT_DRAW_BUDGET (OrbisSubmitDrawBudget())
 
 namespace
 {
