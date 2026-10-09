@@ -977,12 +977,36 @@ static void OrbisLiveTune()
 		if (OrbisCachedRead("/data/PCSX2/live.ini", b))
 			cur.assign(b, 0, std::min<size_t>(b.size(), 1024));
 	}
+	// live-9 (AI-assisted): a game's own thread layout (main-boot.cpp's PS5SX2_PIN_LAYOUT, "ee gs vu rec queue" CPUs: R&C1 gets
+	// pin=3's 2 6 4 8 10, the layout swordpdf's base PS5 held 60 fps at R&C1's heavy spot with, 2026-10-10) when live.ini names no
+	// pin key of its own; any pin key in live.ini replaces it.
+	static int s_pin_default = -1; // -1 not looked at yet, 0 none, 1 in use
+	if (s_pin_default < 0)
+	{
+		s_pin_default = 0;
+		int c[ORBIS_PIN_COUNT];
+		const char* layout = getenv("PS5SX2_PIN_LAYOUT");
+		if (layout && cur.find("pin") == std::string::npos &&
+			sscanf(layout, "%d %d %d %d %d", &c[ORBIS_PIN_EE], &c[ORBIS_PIN_GS], &c[ORBIS_PIN_VU], &c[ORBIS_PIN_REC], &c[ORBIS_PIN_QUEUE]) == 5)
+		{
+			for (int i = 0; i < ORBIS_PIN_COUNT; i++)
+				s_orbis_pin_cpu[i].store(c[i], std::memory_order_release);
+			s_pin_default = 1;
+			g_orbis_pin_request.store(3, std::memory_order_release);
+			printf("[present] the game's thread layout (no pin key in live.ini): EE %d GS %d VU %d recorder %d queue %d\n",
+				c[ORBIS_PIN_EE], c[ORBIS_PIN_GS], c[ORBIS_PIN_VU], c[ORBIS_PIN_REC], c[ORBIS_PIN_QUEUE]);
+		}
+	}
 	const bool changed = cur != s_last;
 	if (!changed && !reapply)
 		return;
 	s_last = cur;
 	int mode = -1;
 	int pin_request = -1; // vk-285-87: issued once every key is read
+	if (s_pin_default == 1 && cur.find("pin") == std::string::npos)
+		pin_request = 3; // live-9: the game's layout again (gs.ini re-applied, or live.ini changed without pin keys)
+	else if (cur.find("pin") != std::string::npos)
+		s_pin_default = 0; // live-9: live.ini's own pinning from now on
 	size_t pos = 0;
 	while (pos < cur.size())
 	{

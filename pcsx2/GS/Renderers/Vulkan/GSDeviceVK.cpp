@@ -71,15 +71,26 @@ unsigned long long g_orbis_readback_n, g_orbis_readback_bytes, g_orbis_readback_
 // else (8x or 6x made no difference). 4400 x 107 words (a 90-word draw plus a 17-word feedback barrier, the worst case) is 471k of the
 // 523,503 the driver takes, ~52k left for uploads, clears and the present pass; the typical feedback draw is ~67 words (~295k).
 // flags/vk_drawbudget holding a number (1000..4800) overrides it, read live. Needs proper testing on a console.
+// live-9 (AI-assisted): the game's own default from PS5SX2_DRAW_BUDGET (main-boot.cpp sets 4800 for R&C1, where swordpdf's base PS5 held
+// 60 fps at the heavy spot with it, 2026-10-10); the flag still wins.
+static u32 OrbisDefaultDrawBudget()
+{
+	static const u32 s_default = [] {
+		const char* e = getenv("PS5SX2_DRAW_BUDGET");
+		const unsigned long v = e ? std::strtoul(e, nullptr, 10) : 0;
+		return (v >= 1000 && v <= 4800) ? static_cast<u32>(v) : 4400u;
+	}();
+	return s_default;
+}
 static u32 OrbisSubmitDrawBudget()
 {
 	static std::chrono::steady_clock::time_point s_checked;
-	static u32 s_budget = 4400;
+	static u32 s_budget = OrbisDefaultDrawBudget();
 	const auto now = std::chrono::steady_clock::now();
 	if (now - s_checked >= std::chrono::seconds(1))
 	{
 		s_checked = now;
-		u32 budget = 4400;
+		u32 budget = OrbisDefaultDrawBudget();
 		std::string text;
 		if (OrbisCachedRead(OrbisFlagPath("vk_drawbudget").c_str(), text))
 		{

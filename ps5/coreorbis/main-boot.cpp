@@ -3336,6 +3336,60 @@ int main()
     }
     fflush(stdout);
   }
+#ifdef ORBIS_VULKAN
+  // live-9 (AI-assisted; swordpdf: "just have this setting be the standard for rac1 for everyone"): Ratchet & Clank (1) gets the
+  // setup that held 60 fps / 100% at its heavy spot on his base PS5 (fw 4.03, 2026-10-10; claude/rac1-base-ps5.md), where the
+  // frame passed 4400 draws and became two submissions (the second waits for a vblank on that firmware): a 4800-draw
+  // submission budget (GSDeviceVK.cpp; flags/vk_drawbudget still wins), the driver's recorder thread (PS5VK_RECORD_THREAD, as
+  // the flag file vk_recordthread) with its batched hand-off (the driver's live flag file vk_recbatch), and pin=3's thread
+  // layout EE 2, GS 6, VU 4, recorder 8, queue 10 (GSRenderer.cpp; any pin key in live.ini replaces it). Resolution, frame
+  // generation and the rest stay the user's. The vk_recbatch file is made for the game and removed again at the next start of
+  // another game (the marker logs/auto-vk_recbatch.txt says it was made here); one the user made stays. PS5SX2/GameTuning=false
+  // (gs.ini or the game's file) turns it off.
+  {
+    MemorySettingsInterface peek = s_base_si;
+    orbis_apply_gs_ini(peek, true);
+    const bool on = peek.GetBoolValue("PS5SX2", "GameTuning", true);
+    const bool disc_game = !s_game_path.empty() &&
+      !(s_game_path.size() > 4 && strcasecmp(s_game_path.c_str() + s_game_path.size() - 4, ".elf") == 0);
+    const std::string serial = disc_game ? fe::ReadSerial(s_game_path) : std::string();
+    static const char* const rac1[] = {"SCUS-97199", "SCES-50916", "SCAJ-20001", "SCPS-15037",  // the releases
+                                       "SCED-50916", "SCED-51075", "SCUS-97209", "SCUS-97240"}; // their demos
+    bool is_rac1 = false;
+    for (const char* s : rac1)
+      is_rac1 = is_rac1 || serial == s;
+    const std::string recbatch = OrbisDir("flags") + "/vk_recbatch";
+    const std::string marker = OrbisLogPath("auto-vk_recbatch.txt");
+    const bool tune = on && is_rac1 && !g_sw_renderer && !OrbisDriverIsRADV();
+    struct stat st;
+    if (tune)
+    {
+      setenv("PS5SX2_DRAW_BUDGET", "4800", 0);
+      setenv("PS5VK_RECORD_THREAD", "1", 0);
+      setenv("PS5SX2_PIN_LAYOUT", "2 6 4 8 10", 0);
+      if (stat(recbatch.c_str(), &st) != 0)
+      {
+        if (FILE* f = fopen(recbatch.c_str(), "w"))
+        {
+          fclose(f);
+          if (FILE* m = fopen(marker.c_str(), "w"))
+          {
+            fprintf(m, "flags/vk_recbatch made for %s at start; removed at the next start of another game\n", serial.c_str());
+            fclose(m);
+          }
+        }
+      }
+    }
+    else if (stat(marker.c_str(), &st) == 0)
+    {
+      unlink(recbatch.c_str());
+      unlink(marker.c_str());
+    }
+    printf("[boot] game tuning: %s\n", tune ? "Ratchet & Clank (draw budget 4800, recorder thread + vk_recbatch, thread layout 2 6 4 8 10)" :
+      !on ? "off (PS5SX2/GameTuning)" : "none for this game");
+    fflush(stdout);
+  }
+#endif
   // 2026-10-05 (AI-assisted; swordpdf: the network adapter on for every game, after a tester went online in Resident Evil
   // Outbreak with SOCOM II's lines): the PS2's network adapter as SOCOM II's file sets it (claude/socom2-online.md):
   // PCSX2's sockets backend on the console's own connection, its DHCP server giving the game an address, and the DNS the
