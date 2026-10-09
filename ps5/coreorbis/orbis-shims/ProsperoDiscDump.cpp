@@ -179,9 +179,14 @@ namespace
 		if (!iso)
 			return false;
 		out.path = path;
+		// vk-285-155 (AI-assisted): copy the media's real size when the drive gives it (on the PS5's drive DIOCGMEDIASIZE
+		// is the exact disc size: NFSU2 read 2874605568, its ISO to the byte). The old code clamped down to the ISO 9660
+		// volume size, but on a dual-layer PS2 DVD that volume can describe layer 0 only, so the copy stopped at the layer
+		// break and the short .iso hung its game reading past it -- a black screen. The volume size is only a fallback now.
 		out.bytes = (r1 == 0 && media > 0) ? static_cast<uint64_t>(media) : vol;
-		if (vol && out.bytes > vol)
-			out.bytes = vol; // the volume's own size: a drive may report the whole disc's capacity
+		if (log && vol && out.bytes != vol)
+			Log("%s: media size %llu, ISO 9660 volume %llu: copying the media size", path.c_str(),
+				static_cast<unsigned long long>(out.bytes), static_cast<unsigned long long>(vol));
 		return out.bytes > 0;
 	}
 
@@ -300,9 +305,11 @@ namespace
 		s_busy.store(false);
 	}
 
-	// Copies the disc unless games/ has it. The copy's path when it's there in full at the end, else empty.
-	std::string Dump(const Node& node, const std::string& serial)
+	// Copies the disc unless games/ has it. The copy's path when it's there in full at the end, else empty. vk-285-155:
+	// `clean` is set false when the copy had unreadable sectors (the caller then doesn't auto-start it).
+	std::string Dump(const Node& node, const std::string& serial, bool& clean)
 	{
+		clean = true;
 		fe::GameInfo gi;
 		gi.serial = serial;
 		gi.title = serial;
@@ -312,14 +319,18 @@ namespace
 		mkdir(games.c_str(), 0777);
 		const std::string name = Clean(title + " (" + serial + ")");
 		const std::string iso = games + "/" + name + ".iso", part = iso + ".part";
+		// vk-285-155: an ".incomplete" marker beside a copy that was made with unreadable sectors, so it stays off auto-start
+		// across sessions (the caller's `clean` goes false), not only in the session that made it.
+		auto has_holes = [](const std::string& image) { struct stat s; return stat((image + ".incomplete").c_str(), &s) == 0; };
 		struct stat st;
 		if (stat(iso.c_str(), &st) == 0 && static_cast<uint64_t>(st.st_size) == node.bytes)
 		{
+			clean = !has_holes(iso);
 			static std::string s_said;
 			if (s_said != iso)
 			{
 				s_said = iso;
-				Log("%s is already copied (%s)", serial.c_str(), iso.c_str());
+				Log("%s is already copied (%s)%s", serial.c_str(), iso.c_str(), clean ? "" : " (with unreadable sectors: not auto-started)");
 				ReadTestOnce(node, serial);
 			}
 			return iso;
@@ -327,11 +338,13 @@ namespace
 		const std::string existing = FindExisting(games, serial, node.bytes);
 		if (!existing.empty())
 		{
+			clean = !has_holes(existing);
 			static std::string s_said;
 			if (s_said != existing)
 			{
 				s_said = existing;
-				Log("%s is already in games/ as %s: not copied again", serial.c_str(), existing.c_str());
+				Log("%s is already in games/ as %s: not copied again%s", serial.c_str(), existing.c_str(),
+					clean ? "" : " (with unreadable sectors: not auto-started)");
 				ReadTestOnce(node, serial);
 			}
 			return existing;
@@ -462,6 +475,16 @@ namespace
 		snprintf(msg, sizeof(msg), bad_sectors ? "Copied %s, but %llu sectors couldn't be read: the game may not work" :
 		                                         "Copied %s", title.c_str(), static_cast<unsigned long long>(bad_sectors));
 		OrbisNotifyPlain(msg);
+		clean = bad_sectors == 0; // vk-285-155: a copy with holes isn't auto-started
+		// vk-285-155: remember the holes beside the file, so it stays off auto-start on later opens too.
+		const std::string mark = iso + ".incomplete";
+		if (clean)
+			unlink(mark.c_str());
+		else if (FILE* f = fopen(mark.c_str(), "w"))
+		{
+			fprintf(f, "%llu unreadable sectors\n", static_cast<unsigned long long>(bad_sectors));
+			fclose(f);
+		}
 		return iso;
 	}
 
@@ -476,17 +499,51 @@ namespace
 		return time(nullptr) - st.st_mtime < 300;
 	}
 
+	// vk-285-155 (AI-assisted): the serial of the disc whose game was auto-started last, and when. If the app is opened
+	// again with the same disc still in before kAutoStartGuardSeconds have passed, its game is not auto-started again: the
+	// last launch most likely failed (a bad dump, a black screen), and a force-off then a full reboot and reopen would
+	// otherwise loop. The window is wide enough to cover a cold power-cycle and re-jailbreak. The user can still pick the
+	// game from the shelf; after that long it auto-starts again.
+	constexpr int kAutoStartGuardSeconds = 900;
+	std::string AutoStartMarkPath() { return OrbisLogPath("disc-autostart.txt"); }
+	void WriteAutoStartMark(const std::string& serial)
+	{
+		if (FILE* f = fopen(AutoStartMarkPath().c_str(), "w"))
+		{
+			fprintf(f, "%s %lld\n", serial.c_str(), static_cast<long long>(time(nullptr)));
+			fclose(f);
+		}
+	}
+	// The serial auto-started in the last `within` seconds, or empty.
+	std::string RecentAutoStart(int within)
+	{
+		FILE* f = fopen(AutoStartMarkPath().c_str(), "r");
+		if (!f)
+			return {};
+		char serial[64] = {};
+		long long when = 0;
+		const int got = fscanf(f, "%63s %lld", serial, &when);
+		fclose(f);
+		if (got != 2 || time(nullptr) - static_cast<time_t>(when) >= within || time(nullptr) < static_cast<time_t>(when))
+			return {};
+		return serial;
+	}
+
 	void* Thread(void*)
 	{
 		bool first = true;
 		std::vector<std::string> logged; // nodes already described
 		// The disc whose game was started (or that was in the drive at a re-exec): not started again until it leaves.
 		std::string handled;
+		std::string failed;  // vk-285-155: a disc that didn't copy; not tried again until it leaves (no 3 s retry loop)
 		std::string pending; // a copy whose game waits for the shelf
 		const bool relaunch = TakeRelaunchMark();
+		const std::string recent = RecentAutoStart(kAutoStartGuardSeconds); // vk-285-155: a disc auto-started recently (a likely failed launch)
 		sleep(5); // vk-285-145: well after the app's start
 		if (relaunch)
 			Log("a re-exec into the shelf: a disc in the drive now doesn't start its game");
+		if (!recent.empty())
+			Log("%s was auto-started moments ago: if it's still in, its game isn't auto-started again (pick it from the shelf)", recent.c_str());
 		for (;;)
 		{
 			const std::vector<std::string> nodes = Candidates(first);
@@ -512,14 +569,31 @@ namespace
 					continue;
 				}
 				any_ps2 = true;
-				if (first && relaunch)
+				// vk-285-155: at the first look, a re-exec or a just-auto-started disc counts as handled (don't auto-start).
+				if (first && (relaunch || serial == recent))
 					handled = serial;
+				if (serial == failed)
+					continue; // vk-285-155: already tried and it didn't copy; wait for the disc to be taken out
+				bool clean = true;
 				s_busy.store(true);
-				const std::string copy = Dump(node, serial);
+				const std::string copy = Dump(node, serial, clean);
 				s_busy.store(false);
-				if (copy.empty() || handled == serial)
+				if (copy.empty())
+				{
+					// vk-285-155: don't re-read the disc and rewrite gigabytes every 3 s; wait for it to leave.
+					failed = serial;
+					Log("%s: not copied; left until the disc is taken out and put back", serial.c_str());
+					continue;
+				}
+				if (handled == serial)
 					continue;
 				handled = serial;
+				if (!clean)
+				{
+					// vk-285-155: a copy with unreadable sectors may hang its game, so don't auto-start it; it's on the shelf.
+					Log("%s: copied with unreadable sectors; not auto-started (pick it from the shelf to try it)", serial.c_str());
+					continue;
+				}
 				pending = copy; // started when the shelf takes it (it may not be up yet)
 				Log("%s: its game starts when the shelf is up (%s)", serial.c_str(), copy.c_str());
 			}
@@ -527,12 +601,15 @@ namespace
 			{
 				Log("starting %s", pending.c_str());
 				OrbisNotifyPlain("PS2 disc: starting the game");
+				WriteAutoStartMark(handled); // vk-285-155: so a force-off then reopen doesn't loop this game
 				pending.clear();
 			}
-			if (!any_ps2 && !handled.empty())
+			if (!any_ps2 && (!handled.empty() || !failed.empty()))
 			{
-				Log("the disc is out: %s starts again when it's put back", handled.c_str());
+				if (!handled.empty())
+					Log("the disc is out: %s starts again when it's put back", handled.c_str());
 				handled.clear();
+				failed.clear(); // vk-285-155: a disc that failed is tried again once it's reinserted
 				pending.clear();
 			}
 			// a node that went away and came back (a disc swapped) is described again
