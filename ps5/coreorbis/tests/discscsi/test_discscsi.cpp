@@ -68,6 +68,14 @@ int main()
 		uint8_t n[4] = {0x00};
 		Check(!ParseSense(n, sizeof(n)).valid && SenseText(ParseSense(n, 4)) == "no sense data", "no sense data");
 	}
+	{
+		const auto r = Read10(0x00123456, 64);
+		Check(r == std::vector<uint8_t>({0x28, 0, 0x00, 0x12, 0x34, 0x56, 0, 0, 64, 0}), "READ(10): LBA and 64 sectors");
+		const auto s = Read12(1403000, 512, true);
+		Check(s.size() == 12 && s[0] == 0xA8 && Get32(&s[2]) == 1403000 && Get32(&s[6]) == 512 && s[10] == 0x80 && s[11] == 0,
+			"READ(12): LBA, 512 sectors, Streaming bit");
+		Check(Read12(1, 1, false)[10] == 0, "READ(12) without Streaming");
+	}
 	std::printf(fails ? "%d FAILED\n" : "all passed\n", fails);
 	return fails ? 1 : 0;
 }

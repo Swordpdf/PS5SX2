@@ -127,6 +127,26 @@ namespace orbis_mmc
 		return c;
 	}
 
+	// vk-285-151: READ(10) and READ(12) of `count` 2048-byte sectors from `lba`. READ(12)'s Streaming bit (byte 10,
+	// bit 7) asks for the drive's streaming read (less error recovery, steady speed).
+	inline std::vector<uint8_t> Read10(uint32_t lba, uint16_t count)
+	{
+		std::vector<uint8_t> c(10, 0);
+		c[0] = 0x28;
+		Be32(&c[2], lba);
+		Be16(&c[7], count);
+		return c;
+	}
+	inline std::vector<uint8_t> Read12(uint32_t lba, uint32_t count, bool streaming)
+	{
+		std::vector<uint8_t> c(12, 0);
+		c[0] = 0xA8;
+		Be32(&c[2], lba);
+		Be32(&c[6], count);
+		c[10] = streaming ? 0x80 : 0x00;
+		return c;
+	}
+
 	// Sense data, fixed (0x70/0x71) or descriptor (0x72/0x73) format: "key/asc/ascq".
 	struct Sense
 	{

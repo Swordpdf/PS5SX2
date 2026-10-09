@@ -55,6 +55,11 @@
 // STREAMING, the DVD way, after what Sony's SceShellCore does with libcam). Flag disc_readtest: a disc already copied is
 // read for a speed test (256 MB at its start and its end). Flag nodiscspeed: no drive commands.
 //
+// vk-285-151: 150 on the console: pass0 works and the drive (SONY PS-SYSTEM 503R, firmware 2305) reports 3.2x..8.0x, but
+// takes neither SET CD SPEED nor SET STREAMING (invalid command), and the copy stays at 2.0x, below its own 3.2x: so each
+// copy now first times ways of reading (pread on cd0, READ(10)/READ(12) through pass0, sizes, two lanes) on 16 MiB each
+// and copies with the fastest (ProsperoDiscSpeed.cpp).
+//
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -274,8 +279,18 @@ namespace
 		Log("%s: read test (flag disc_readtest)", serial.c_str());
 		OrbisNotifyPlain("Disc read test: about 3 minutes at 2x");
 		s_busy.store(true);
-		OrbisDiscSpeedUp(node.path.c_str(), node.bytes);
-		OrbisDiscReadTest(node.path.c_str(), node.bytes);
+		const int fd = open(node.path.c_str(), O_RDONLY);
+		if (fd < 0)
+		{
+			s_busy.store(false);
+			return;
+		}
+		OrbisDiscReadMethod rm;
+		rm.cd = fd;
+		OrbisDiscSpeedUp(node.path.c_str(), node.bytes, &rm);
+		OrbisDiscReadTest(rm, node.bytes);
+		OrbisDiscReadMethodClose(rm);
+		close(fd);
 		s_busy.store(false);
 	}
 
@@ -349,7 +364,11 @@ namespace
 		}
 		// vk-285-150: the drive asked for its fastest read through its pass device (SET STREAMING; ProsperoDiscSpeed.cpp).
 		// vk-285-147/148's CDRIOCREADSPEED came back EINVAL on the console: it sends SET CD SPEED, a CD command.
-		OrbisDiscSpeedUp(node.path.c_str(), node.bytes);
+		// vk-285-151: and the fastest way to read it (pread on cd0, or READ commands through pass0; ProsperoDiscSpeed.cpp)
+		OrbisDiscReadMethod rm;
+		rm.cd = in;
+		OrbisDiscSpeedUp(node.path.c_str(), node.bytes, &rm);
+		Log("reading with %s", rm.name.c_str());
 		const size_t chunk = static_cast<size_t>(OrbisFlag("disc_1m") ? 1 : 4) << 20;
 		const int depth = 4;
 		int last_pct = -1, last_note = 0;
@@ -370,7 +389,7 @@ namespace
 			node.bytes, chunk, depth, 3, 4096,
 			[&](uint64_t off, void* buf, size_t len) {
 				const auto a = std::chrono::steady_clock::now();
-				const ssize_t r = pread(in, buf, len, static_cast<off_t>(off));
+				const ssize_t r = OrbisDiscRead(rm, off, buf, len);
 				read_us.fetch_add(static_cast<uint64_t>(
 					std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - a).count()));
 				read_n.fetch_add(1);
@@ -416,6 +435,7 @@ namespace
 		const bool failed = res.failed;
 		if (failed)
 			Log("copy stopped: %s (errno %d)", res.why.c_str(), errno);
+		OrbisDiscReadMethodClose(rm);
 		close(in);
 		fsync(out);
 		close(out);
