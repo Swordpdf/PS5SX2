@@ -27,6 +27,18 @@
  * and rotations 1-3 with the low values 0x20/0x32 (is the rotation or the speed what's refused?). Each value the drive
  * takes is timed on 16 MiB.
  *
+ * v4: rotation 0 takes only 0x20, 0x32 and 0xFFFF (0x26, 0x30, 0x33..0x4F, 0x60, 0x100, 0x15A4, 0x2076, 0x2B48 all
+ * refused, asc 0x24, no field pointer); rotations 1-3 refused even at 0x20/0x32. So DB's DVD settings are a fixed set,
+ * 3.2x at most.
+ *
+ * v5: looking for what else sets the speed, reading only:
+ *   - GET CONFIGURATION, all features (which the drive reports: Real-Time Streaming 0x0107 and others)
+ *   - MODE SENSE(10) of every page (0x3F), current values and the changeable mask (a vendor page with a speed field?)
+ *   - INQUIRY VPD page list
+ *   - DB with CDB byte 1's upper bits set (SceShellCore masks the rotation to 2 bits; the rest may be flags) and with
+ *     bytes 4/5 set, at speed 0x80 (8.0) and 0x32; each the drive takes is timed on 16 MiB, and the drive goes back to
+ *     2.0 at the end. No MODE SELECT, nothing written.
+ *
  * Results: klog ([PS5SX2 disctest]), /data/PCSX2/logs/disctest.log, and notifications.
  *
  * Copyright (C) 2026 swordpdf
@@ -149,6 +161,99 @@ static int set_speed(int pass, uint8_t rot, uint16_t speed) {
   return -1;
 }
 
+/* Any read-type command: 0 when done, *got = bytes the drive returned. */
+static int cmd_in(int pass, const uint8_t *cdb, int cdb_len, uint8_t *data, uint32_t len, uint32_t *got, const char *what) {
+  union ccb ccb;
+  memset(&ccb, 0, sizeof(ccb));
+  cam_fill_csio(&ccb.csio, 1, NULL, CAM_DIR_IN | CAM_DEV_QFRZDIS, MSG_SIMPLE_Q_TAG, data, len, SSD_FULL_SIZE, (uint8_t)cdb_len, 10000);
+  memcpy(ccb.csio.cdb_io.cdb_bytes, cdb, (size_t)cdb_len);
+  if (ioctl(pass, CAMIOCOMMAND, &ccb) != 0) {
+    say("%s: CAMIOCOMMAND errno %d", what, errno);
+    return -1;
+  }
+  if ((ccb.ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
+    const uint8_t *s = (const uint8_t *)&ccb.csio.sense_data;
+    say("%s: CAM status %#x, sense key %d asc %#x ascq %#x", what, ccb.ccb_h.status, s[2] & 15, s[12], s[13]);
+    return -1;
+  }
+  if (got)
+    *got = len - ccb.csio.resid;
+  return 0;
+}
+
+static void hexdump(const char *what, const uint8_t *p, uint32_t n) {
+  char line[200];
+  for (uint32_t at = 0; at < n; at += 32) {
+    int k = 0;
+    for (uint32_t i = at; i < n && i < at + 32; i++)
+      k += snprintf(line + k, sizeof(line) - k, "%02x%s", p[i], ((i - at) & 3) == 3 ? " " : "");
+    say("%s +%03x: %s", what, at, line);
+  }
+}
+
+static void describe_drive(int pass) {
+  static uint8_t buf[8192];
+  uint32_t got = 0;
+  /* GET CONFIGURATION, all features: header 8 bytes, then descriptors {code u16, flags, len, data} */
+  uint8_t gc[10] = {0x46, 0x00, 0, 0, 0, 0, 0, (uint8_t)(sizeof(buf) >> 8), (uint8_t)sizeof(buf), 0};
+  if (cmd_in(pass, gc, 10, buf, sizeof(buf), &got, "GET CONFIGURATION (all)") == 0 && got >= 8) {
+    const uint32_t len = ((uint32_t)buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3]) + 4;
+    const uint32_t end = len < got ? len : got;
+    char list[2000];
+    int k = 0;
+    for (uint32_t at = 8; at + 4 <= end && k < (int)sizeof(list) - 32; at += 4 + buf[at + 3]) {
+      const unsigned code = buf[at] << 8 | buf[at + 1];
+      k += snprintf(list + k, sizeof(list) - k, " %04x%s", code, (buf[at + 2] & 1) ? "*" : "");
+      if (code == 0x0107 || code == 0x0108 || code >= 0xff00)
+        hexdump(code == 0x0107 ? "  feature 0107 (real-time streaming)" : "  feature", buf + at, 4 + buf[at + 3]);
+    }
+    say("features (* = current):%s", list);
+  }
+  /* MODE SENSE(10) all pages: current values (PC 00), then the changeable mask (PC 01) */
+  for (int pc = 0; pc < 2; pc++) {
+    uint8_t ms[10] = {0x5A, 0x08, (uint8_t)((pc << 6) | 0x3F), 0, 0, 0, 0, (uint8_t)(sizeof(buf) >> 8), (uint8_t)sizeof(buf), 0};
+    memset(buf, 0, sizeof(buf));
+    if (cmd_in(pass, ms, 10, buf, sizeof(buf), &got, pc ? "MODE SENSE all pages, changeable" : "MODE SENSE all pages, current") == 0 && got >= 8) {
+      const uint32_t len = (uint32_t)(buf[0] << 8 | buf[1]) + 2;
+      const uint32_t end = len < got ? len : got;
+      for (uint32_t at = 8 + (uint32_t)(buf[6] << 8 | buf[7]); at + 2 <= end; at += 2 + buf[at + 1]) {
+        char what[64];
+        snprintf(what, sizeof(what), "  page %02x %s", buf[at] & 0x3f, pc ? "changeable" : "current");
+        hexdump(what, buf + at, 2 + buf[at + 1] < end - at ? 2 + buf[at + 1] : end - at);
+      }
+    }
+  }
+  /* INQUIRY VPD page 00: the supported VPD pages */
+  uint8_t vpd[6] = {0x12, 0x01, 0x00, 0, 255, 0};
+  if (cmd_in(pass, vpd, 6, buf, 255, &got, "INQUIRY VPD 00") == 0 && got >= 4)
+    hexdump("  VPD pages", buf, got < 4u + buf[3] ? got : 4u + buf[3]);
+}
+
+/* DB with any CDB bytes 1, 4, 5 (SceShellCore sends only rotation & 3 in byte 1). 0 when taken. */
+static int set_speed_raw(int pass, uint8_t b1, uint16_t speed, uint8_t b4, uint8_t b5) {
+  union ccb ccb;
+  memset(&ccb, 0, sizeof(ccb));
+  cam_fill_csio(&ccb.csio, 1, NULL, CAM_DIR_NONE | CAM_DEV_QFRZDIS | CAM_PASS_ERR_RECOVER, MSG_SIMPLE_Q_TAG, NULL, 0,
+                SSD_FULL_SIZE, 12, 10000);
+  uint8_t *cdb = ccb.csio.cdb_io.cdb_bytes;
+  cdb[0] = 0xDB;
+  cdb[1] = b1;
+  cdb[2] = (uint8_t)(speed >> 8);
+  cdb[3] = (uint8_t)speed;
+  cdb[4] = b4;
+  cdb[5] = b5;
+  if (ioctl(pass, CAMIOCOMMAND, &ccb) != 0) {
+    say("DB %02x %02x %02x %02x %02x: CAMIOCOMMAND errno %d", b1, speed >> 8, speed & 0xff, b4, b5, errno);
+    return -1;
+  }
+  const int ok = (ccb.ccb_h.status & CAM_STATUS_MASK) == CAM_REQ_CMP;
+  const uint8_t *s = (const uint8_t *)&ccb.csio.sense_data;
+  say("DB %02x %02x %02x %02x %02x: %s", b1, speed >> 8, speed & 0xff, b4, b5, ok ? "ok" : "refused");
+  if (!ok)
+    say("  sense key %d asc %#x ascq %#x", s[2] & 15, s[12], s[13]);
+  return ok ? 0 : -1;
+}
+
 /* GET CONFIGURATION (0x46), the current profile (0x10 DVD-ROM, 0x40 BD-ROM, Sony's own above 0xFF00), or -1. */
 static int current_profile(int pass) {
   union ccb ccb;
@@ -216,9 +321,9 @@ int main(void) {
   mkdir("/data/PCSX2/logs", 0777);
   g_log = fopen("/data/PCSX2/logs/disctest.log", "w");
   const pid_t pid = getpid();
-  say("v4 (Sony speed command, sweep), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
+  say("v5 (drive features, mode pages, DB flags), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
       (unsigned long long)kernel_get_ucred_authid(pid));
-  notify("PS5SX2 disc test v4: running (about 1 to 3 minutes)");
+  notify("PS5SX2 disc test v5: running (about 1 minute)");
 
   const int fd = open_cd(pid);
   if (fd < 0) {
@@ -255,50 +360,47 @@ int main(void) {
     return 1;
   }
 
+  say("current profile: %#x", current_profile(pass));
+  describe_drive(pass);
+
   static const struct {
-    uint8_t rot;
+    uint8_t b1;
     uint16_t speed;
-  } kTry[] = {{0, 0x0026}, {0, 0x0030}, {0, 0x0033}, {0, 0x0035}, {0, 0x0038}, {0, 0x003C}, {0, 0x003F}, {0, 0x0040},
-               {0, 0x0048}, {0, 0x004F}, {0, 0x0060}, {0, 0x0100}, {0, 0x15A4}, {0, 0x2076}, {0, 0x2B48}, {1, 0x0020},
-               {1, 0x0032}, {2, 0x0020}, {2, 0x0032}, {3, 0x0032}};
+    uint8_t b4, b5;
+  } kTry[] = {{0x04, 0x0080, 0, 0}, {0x08, 0x0080, 0, 0}, {0x10, 0x0080, 0, 0}, {0x20, 0x0080, 0, 0}, {0x40, 0x0080, 0, 0},
+               {0x80, 0x0080, 0, 0}, {0x81, 0x0080, 0, 0}, {0x05, 0x0080, 0, 0}, {0x00, 0x0080, 0x01, 0}, {0x00, 0x0080, 0x02, 0},
+               {0x00, 0x0080, 0x10, 0}, {0x00, 0x0080, 0, 0x01}, {0x01, 0x0080, 0x01, 0}, {0x80, 0x0032, 0, 0},
+               {0x00, 0x0032, 0x01, 0}};
   const int n = (int)(sizeof(kTry) / sizeof(kTry[0]));
   double res[32] = {0};
   const uint64_t step = 24ull << 20, first = 64ull << 20;
-  say("current profile: %#x", current_profile(pass));
-
   const double base = timed_read(fd, first, sz, "as the drive is");
   for (int i = 0; i < n; i++) {
-    char what[64], st[16];
-    snprintf(what, sizeof(what), "after DB rotation %u, %s", kTry[i].rot, speed_text(kTry[i].speed, st, sizeof(st)));
-    if (set_speed(pass, kTry[i].rot, kTry[i].speed) == 0)
+    char what[80];
+    snprintf(what, sizeof(what), "after DB %02x %02x %02x %02x %02x", kTry[i].b1, kTry[i].speed >> 8, kTry[i].speed & 0xff,
+             kTry[i].b4, kTry[i].b5);
+    if (set_speed_raw(pass, kTry[i].b1, kTry[i].speed, kTry[i].b4, kTry[i].b5) == 0) {
       res[i] = timed_read(fd, first + (uint64_t)(i + 1) * step, sz, what);
-    else
+      set_speed(pass, 0, 0x20);
+    } else
       res[i] = -1;
   }
-  /* the best one again, at the end of the disc (a drive spinning at a set rate reads the outer edge fastest) */
-  int best = -1;
-  for (int i = 0; i < n; i++)
-    if (res[i] > 0 && (best < 0 || res[i] > res[best]))
-      best = i;
-  double end = 0;
-  if (best >= 0 && set_speed(pass, kTry[best].rot, kTry[best].speed) == 0)
-    end = timed_read(fd, sz - TIMED - (16ull << 20), sz, "the fastest setting, at the end of the disc");
-
+  char line[3000];
+  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v5: as is %.1f MB/s (%.1fx)", base, base / 1.385);
+  int taken = 0;
+  for (int i = 0; i < n && at < (int)sizeof(line) - 80; i++)
+    if (res[i] >= 0) {
+      taken++;
+      at += snprintf(line + at, sizeof(line) - at, " | DB %02x %04x %02x %02x: %.1f MB/s (%.1fx)", kTry[i].b1, kTry[i].speed,
+                     kTry[i].b4, kTry[i].b5, res[i], res[i] / 1.385);
+    }
+  if (!taken)
+    at += snprintf(line + at, sizeof(line) - at, " | no DB variant taken");
+  snprintf(line + at, sizeof(line) - at, " | drive details in disctest.log");
   set_speed(pass, 0, 0x20); /* back to the drive's default, 2.0, as SceShellCore does */
   close(pass);
   close(fd);
 
-  char line[3000];
-  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v4: as is %.1f MB/s (%.1fx)", base, base / 1.385);
-  for (int i = 0; i < n && at < (int)sizeof(line) - 80; i++)
-    if (res[i] >= 0)
-      at += snprintf(line + at, sizeof(line) - at, " | r%u %04x: %.1f MB/s (%.1fx)", kTry[i].rot, kTry[i].speed, res[i], res[i] / 1.385);
-  at += snprintf(line + at, sizeof(line) - at, " | refused:");
-  for (int i = 0; i < n && at < (int)sizeof(line) - 20; i++)
-    if (res[i] < 0)
-      at += snprintf(line + at, sizeof(line) - at, " r%u/%04x", kTry[i].rot, kTry[i].speed);
-  if (best >= 0 && at < (int)sizeof(line) - 60)
-    snprintf(line + at, sizeof(line) - at, " | end of disc %.1f MB/s (%.1fx)", end, end / 1.385);
   notify("%s", line);
   say("%s", line);
   say("done (drive back to 2.0)");
