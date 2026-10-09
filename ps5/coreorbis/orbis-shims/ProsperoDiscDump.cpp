@@ -523,7 +523,7 @@ namespace
 		// shell put up its "not supported" dialog, then bounce so OUR app is the last thing on screen. Tunable without a
 		// rebuild: the number of seconds is the content of the flags/disc_refg file (e.g. echo 6 > .../flags/disc_refg);
 		// empty or unparsable means the default.
-		int delay = 3; // vk-285-159c: console testing landed on ~3 s as the sweet spot
+		int delay = 5; // vk-285-159d: 3 s cut it close on the console, so +2 s headroom (still tunable via the flag file)
 		if (FILE* f = fopen(OrbisFlagPath("disc_refg").c_str(), "r"))
 		{
 			int v = 0;
