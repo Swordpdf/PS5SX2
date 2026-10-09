@@ -1,4 +1,4 @@
-# PS5SX2 disc-auto daemon (live-5, AI-assisted). make -> DiscLaunch.elf
+# PS5SX2 disc-auto daemon (live-12, AI-assisted). make -> DiscLaunch.elf
 # Send once via the console's ELF loader (port 9021) and leave it running: a PS2 DVD put in
 # starts its game in PS5SX2 (dumping it first when needed). See disc_launch.c.
 # libSceSystemService is NOT linked — it is dlopen'd at runtime to avoid a hard
@@ -6,8 +6,8 @@
 PS5_PAYLOAD_SDK ?= /home/claude/ps5deps/sdk285
 CC  := $(PS5_PAYLOAD_SDK)/bin/prospero-clang
 LIB := $(PS5_PAYLOAD_SDK)/target/lib
-DiscLaunch.elf: disc_launch.c
-	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror -o $@ $< \
+DiscLaunch.elf: disc_launch.c disc_hash.c disc_hash.h
+	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror -o $@ disc_launch.c disc_hash.c \
 	    -L$(LIB)
 clean:
 	rm -f DiscLaunch.elf

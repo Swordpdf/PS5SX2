@@ -54,6 +54,14 @@
  *   Each extra LaunchApp on an app already in front replays its splash for a moment, so one follow-up only
  *   (+3 s after the exec signal is consumed; +6 s after a cold launch, in case the shell's disc screen lands
  *   last), and the settle after insert is 2 s (was 4) to shorten the home-screen detour.
+ * live-12: the start of a disc dumper for PS1, PS2 and PS3 discs, PS2 for now, after the disc_detect payload its author
+ *   sent swordpdf on 2026-10-10 (written anew here; what it showed: the drive's GET CONFIGURATION profile tells Sony's own
+ *   disc kinds apart, 0xFF50 PS1 CD, 0xFF60 PS2 CD, 0xFF61 PS2 DVD, 0xFF70/0xFF71 PS3; a CD is read raw with READ CD,
+ *   2352-byte sectors, into a .bin with a .cue; CRC-32, MD5 and SHA-1 as Redump lists them). Each disc put in logs its
+ *   profile. A PS2 DVD goes the way it went (PS5SX2 dumps it). A PS2 CD, which /dev/cd0 can't give as a PS2 disc, is
+ *   dumped by this daemon through the drive's pass device to games/<Title> (<SERIAL>).bin + .cue, its checksums in
+ *   <Title> (<SERIAL>).hashes.txt, then started like a DVD. PS1 and PS3 discs are only named in the log for now.
+ *   Needs proper testing on a console with a PS2 CD.
  * live-5: USB probe: which standard read commands return data (READ 6/10/12/16, READ CD, capacities, TOC, ...).
  * live-4: USB diagnostics: raw CCB status / SCSI status / resid, GET CONFIGURATION, and the device queue's freeze
  *   count, released (only as many as it reads) in case the cd driver's failed attach left it frozen.
@@ -95,6 +103,8 @@
 
 #include <ps5/kernel.h>
 #include <ps5/klog.h>
+
+#include "disc_hash.h"
 
 #define LOGS_DIR    "/data/PCSX2/logs"
 #define GAMES_DIR   "/data/PCSX2/games"
@@ -210,9 +220,24 @@ static int read_serial(int fd, char *out) { return read_serial_with(fd_sector, &
 /* ------------------------------------------------------------------ */
 /* games/ scanner                                                        */
 /* ------------------------------------------------------------------ */
+/* live-12: .bin too (a PS2 CD's raw copy). */
 static int has_iso_ext(const char *n) {
     const size_t l = strlen(n);
-    return l >= 5 && strcasecmp(n + l - 4, ".iso") == 0;
+    return l >= 5 && (strcasecmp(n + l - 4, ".iso") == 0 || strcasecmp(n + l - 4, ".bin") == 0);
+}
+
+/* live-12: a raw CD image's sectors as 2048-byte ones: 2352-byte sectors with the data 24 bytes in (mode 2, the PS2's
+ * CDs) or 16 (mode 1); a file without the CD sync pattern at its start is read as a plain ISO. */
+typedef struct { int fd; uint32_t size, off; } image_ctx;
+static const uint8_t k_cd_sync[12] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
+static void image_open(image_ctx *c, int fd) {
+    uint8_t h[16] = {0};
+    c->fd = fd; c->size = 2048; c->off = 0;
+    if (pread(fd, h, 16, 0) == 16 && memcmp(h, k_cd_sync, 12) == 0) { c->size = 2352; c->off = h[15] == 1 ? 16 : 24; }
+}
+static int image_sector(void *ctx, uint32_t lba, uint8_t *out) {
+    const image_ctx *c = ctx;
+    return pread(c->fd, out, 2048, (off_t)lba * c->size + c->off) == 2048;
 }
 
 /* "SLUS-21351.whatever.iso" or "Title (SLUS-21351).iso" (PS5SX2's own dump names). */
@@ -247,7 +272,9 @@ static int find_iso(const char *serial, char *out, size_t max, int deep) {
             const int fd = open(path, O_RDONLY);
             if (fd < 0) continue;
             char found[17] = {0};
-            const int ok = read_serial(fd, found);
+            image_ctx ic;
+            image_open(&ic, fd);
+            const int ok = read_serial_with(image_sector, &ic, found);
             close(fd);
             if (ok && strcasecmp(found, serial) == 0) {
                 snprintf(out, max, "%s", path);
@@ -460,6 +487,7 @@ static void cleanup(const char *serial) {
 
 static uint32_t g_raw_status, g_raw_resid; /* live-4: what the last command really returned */
 static uint8_t g_raw_scsi;
+static uint32_t g_raw_sense; /* live-12: key << 16 | ASC << 8 | ASCQ of the last failed command, 0 when none came */
 
 static int scsi(int pass, const uint8_t *cdb, int cdb_len, uint32_t dir, uint8_t *data, uint32_t len, uint32_t timeout_ms,
                 char *why, size_t whylen) {
@@ -468,13 +496,17 @@ static int scsi(int pass, const uint8_t *cdb, int cdb_len, uint32_t dir, uint8_t
     cam_fill_csio(&ccb.csio, 1, NULL, dir | CAM_DEV_QFRZDIS, MSG_SIMPLE_Q_TAG, data, len, SSD_FULL_SIZE,
                   (uint8_t)cdb_len, timeout_ms);
     memcpy(ccb.csio.cdb_io.cdb_bytes, cdb, (size_t)cdb_len);
-    g_raw_status = 0xffffffffu; g_raw_scsi = 0xff; g_raw_resid = 0xffffffffu;
+    g_raw_status = 0xffffffffu; g_raw_scsi = 0xff; g_raw_resid = 0xffffffffu; g_raw_sense = 0;
     if (ioctl(pass, CAMIOCOMMAND, &ccb) != 0) {
         if (why) snprintf(why, whylen, "errno %d", errno);
         return -1;
     }
     g_raw_status = ccb.ccb_h.status; g_raw_scsi = ccb.csio.scsi_status; g_raw_resid = ccb.csio.resid;
     if ((ccb.ccb_h.status & CAM_STATUS_MASK) == CAM_REQ_CMP) return 0;
+    if (ccb.ccb_h.status & CAM_AUTOSNS_VALID) {
+        const uint8_t *sd = (const uint8_t *)&ccb.csio.sense_data;
+        g_raw_sense = (uint32_t)(sd[2] & 15) << 16 | (uint32_t)sd[12] << 8 | sd[13];
+    }
     if (why) {
         const uint8_t *sd = (const uint8_t *)&ccb.csio.sense_data;
         snprintf(why, whylen, "sense %X/%02X/%02X (cam %#x)", sd[2] & 15, sd[12], sd[13], ccb.ccb_h.status & CAM_STATUS_MASK);
@@ -690,10 +722,292 @@ static int usb_dump(int pass, const char *serial, uint32_t sectors) {
     return 1;
 }
 
+/* ------------------------------------------------------------------ */
+/* live-12: the PS5's own drive through its pass device: Sony's disc    */
+/* profiles, and PS2 CDs read raw                                       */
+/* ------------------------------------------------------------------ */
+enum {
+    PROFILE_PS1_CD = 0xFF50, PROFILE_PS2_CD = 0xFF60, PROFILE_PS2_DVD = 0xFF61,
+    PROFILE_PS3_DVD = 0xFF70, PROFILE_PS3_BD = 0xFF71, PROFILE_PS4_BD = 0xFF80, PROFILE_PS5_BD = 0xFF90,
+    PROFILE_NONE = -1,     /* sense 02/3A: no disc */
+    PROFILE_UNKNOWN = -2,  /* not ready, or the command failed */
+};
+#define CD_RAW        2352u
+#define CD_CHUNK      16u      /* sectors a READ CD asks for (37,632 bytes) */
+#define CD_MAX_BAD    2000u
+#define CD_MAX_TRACKS 99
+
+static const char *profile_name(int p) {
+    switch (p) {
+    case PROFILE_PS1_CD: return "PS1 CD";
+    case PROFILE_PS2_CD: return "PS2 CD";
+    case PROFILE_PS2_DVD: return "PS2 DVD";
+    case PROFILE_PS3_DVD: return "PS3 DVD";
+    case PROFILE_PS3_BD: return "PS3 BD";
+    case PROFILE_PS4_BD: return "PS4 BD";
+    case PROFILE_PS5_BD: return "PS5 BD";
+    case 0x0008: return "CD-ROM";
+    case 0x0009: return "CD-R";
+    case 0x000A: return "CD-RW";
+    case 0x0010: return "DVD-ROM";
+    case 0x0040: return "BD-ROM";
+    case 0x0000: return "no current profile";
+    case PROFILE_NONE: return "no disc";
+    case 0xFFFF: return "incompatible disc";
+    default: return "other";
+    }
+}
+
+/* The internal drive's pass device: the pass node whose INQUIRY says PS-SYSTEM (SONY PS-SYSTEM 503R on swordpdf's
+ * phat). Opened once and kept. */
+static int g_drive = -1;
+static int drive_pass(void) {
+    if (g_drive >= 0) return g_drive;
+    DIR *d = opendir("/dev");
+    if (!d) return -1;
+    struct dirent *e;
+    while (g_drive < 0 && (e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "pass", 4) != 0) continue;
+        char p[64];
+        snprintf(p, sizeof(p), "/dev/%s", e->d_name);
+        const int fd = open(p, O_RDWR);
+        if (fd < 0) continue;
+        uint8_t inq[36] = {0};
+        const uint8_t c[6] = {0x12, 0, 0, 0, sizeof(inq), 0};
+        char id[25] = {0}; /* vendor + product, as text (no memmem in the payload's libc) */
+        if (scsi(fd, c, 6, CAM_DIR_IN, inq, sizeof(inq), 5000, NULL, 0) == 0 && (inq[0] & 0x1f) == 5 &&
+            (memcpy(id, inq + 8, 24), strstr(id, "PS-SYSTEM") != NULL)) {
+            g_drive = fd;
+            say("drive: %s is the PS5's own drive (%.8s %.16s %.4s)", p, inq + 8, inq + 16, inq + 32);
+        } else {
+            close(fd);
+        }
+    }
+    closedir(d);
+    return g_drive;
+}
+
+/* GET CONFIGURATION's current profile. A PS disc reports Sony's own profile (0xFF50 ... 0xFF90). */
+static int drive_profile(void) {
+    const int pass = drive_pass();
+    if (pass < 0) return PROFILE_UNKNOWN;
+    uint8_t h[8] = {0};
+    const uint8_t c[10] = {0x46, 0x00, 0, 0, 0, 0, 0, 0, sizeof(h), 0};
+    if (scsi(pass, c, 10, CAM_DIR_IN, h, sizeof(h), 10000, NULL, 0) != 0)
+        return (g_raw_sense & 0xFFFF00u) == 0x023A00u ? PROFILE_NONE : PROFILE_UNKNOWN;
+    return h[6] << 8 | h[7];
+}
+
+/* READ CD: raw (sync, header, data, EDC/ECC: 2352 bytes) for data tracks, the 2352 samples for audio, or the user
+ * data only (2048 bytes of a mode 1 or mode 2 form 1 sector). */
+enum { CD_USER, CD_RAW_DATA, CD_RAW_AUDIO };
+static int cd_read(int pass, uint32_t lba, uint32_t count, int how, uint8_t *buf, char *why, size_t wmax) {
+    const uint8_t c[12] = {0xBE, 0x00, (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+                           (uint8_t)(count >> 16), (uint8_t)(count >> 8), (uint8_t)count,
+                           (uint8_t)(how == CD_RAW_DATA ? 0xF8 : 0x10), 0, 0};
+    const uint32_t each = how == CD_USER ? 2048u : CD_RAW;
+    return scsi(pass, c, 12, CAM_DIR_IN, buf, count * each, 30000, why, wmax) == 0;
+}
+static int cd_user_sector(void *ctx, uint32_t lba, uint8_t *out) { return cd_read(*(int *)ctx, lba, 1, CD_USER, out, NULL, 0); }
+
+typedef struct { uint8_t number, data, mode; uint32_t lba; } cd_track;
+typedef struct { cd_track t[CD_MAX_TRACKS]; unsigned count; uint32_t leadout; } cd_toc;
+
+/* READ TOC/PMA/ATIP, format 0, LBA addresses. */
+static int cd_read_toc(int pass, cd_toc *toc, char *why, size_t wmax) {
+    static uint8_t d[2048];
+    const uint8_t c[10] = {0x43, 0x00, 0, 0, 0, 0, 0, (uint8_t)(sizeof(d) >> 8), (uint8_t)sizeof(d), 0};
+    memset(toc, 0, sizeof(*toc));
+    memset(d, 0, sizeof(d));
+    if (scsi(pass, c, 10, CAM_DIR_IN, d, sizeof(d), 10000, why, wmax) != 0) return 0;
+    unsigned total = ((unsigned)d[0] << 8 | d[1]) + 2;
+    if (total > sizeof(d)) total = sizeof(d);
+    int leadout = 0;
+    for (unsigned i = 4; i + 8 <= total; i += 8) {
+        const uint8_t num = d[i + 2];
+        const uint32_t lba = be32(d + i + 4);
+        if (num == 0xAA) { toc->leadout = lba; leadout = 1; break; }
+        if (num == 0 || toc->count >= CD_MAX_TRACKS) continue;
+        cd_track *t = &toc->t[toc->count++];
+        t->number = num; t->lba = lba; t->data = (d[i + 1] & 0x04) != 0; t->mode = 2;
+    }
+    if (!leadout || !toc->count) { if (why) snprintf(why, wmax, "no lead-out or no track in the TOC"); return 0; }
+    for (unsigned i = 0; i < toc->count; i++) {
+        const uint32_t next = i + 1 < toc->count ? toc->t[i + 1].lba : toc->leadout;
+        if (next <= toc->t[i].lba) { if (why) snprintf(why, wmax, "track %u ends before it starts", toc->t[i].number); return 0; }
+    }
+    return 1;
+}
+
+/* Clean a game's name for a file name the way PS5SX2's dumper does (": " -> " - ", no / \ : * ? " < > |). */
+static void clean_name(const char *in, char *out, size_t max) {
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 4 < max; i++) {
+        if (in[i] == ':' && in[i + 1] == ' ') { out[o++] = ' '; out[o++] = '-'; continue; }
+        const char ch = in[i];
+        out[o++] = (strchr("/\\:*?\"<>|", ch) || (unsigned char)ch < 0x20) ? ' ' : ch;
+    }
+    out[o] = '\0';
+    /* squeeze double spaces, trim trailing spaces and dots */
+    size_t w = 0;
+    for (size_t r = 0; out[r]; r++)
+        if (!(out[r] == ' ' && w > 0 && out[w - 1] == ' ')) out[w++] = out[r];
+    while (w > 0 && (out[w - 1] == ' ' || out[w - 1] == '.')) w--;
+    out[w] = '\0';
+}
+
+/* The game's name from PCSX2's GameIndex.yaml (name-en when it has one), for the dump's file name. */
+static int gameindex_title(const char *serial, char *out, size_t max) {
+    FILE *f = fopen("/data/PCSX2/resources/GameIndex.yaml", "r");
+    if (!f) return 0;
+    static char line[4096];
+    char name[256] = "", name_en[256] = "";
+    const size_t sl = strlen(serial);
+    int in = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] != ' ' && line[0] != '\n' && line[0] != '#') {
+            if (in) break;
+            in = strncasecmp(line, serial, sl) == 0 && line[sl] == ':';
+            continue;
+        }
+        if (!in) continue;
+        char *v = NULL, *dst = NULL;
+        if (strncmp(line, "  name: ", 8) == 0) { v = line + 8; dst = name; }
+        else if (strncmp(line, "  name-en: ", 11) == 0) { v = line + 11; dst = name_en; }
+        if (!v) continue;
+        while (*v == ' ') v++;
+        if (*v == '"') v++;
+        size_t n = strcspn(v, "\"\r\n");
+        if (n > 255) n = 255;
+        memcpy(dst, v, n);
+        dst[n] = '\0';
+    }
+    fclose(f);
+    const char *t = name_en[0] ? name_en : name;
+    if (!t[0]) return 0;
+    clean_name(t, out, max);
+    return out[0] != '\0';
+}
+
+/* Copies the PS2 CD in the drive to games/<stem>.bin (+ .cue, + .hashes.txt). 1 when the .bin is there in full
+ * (unreadable sectors, if any, written as zeros and marked with <bin>.incomplete), 0 when it stopped. */
+static int cd_dump(int pass, const char *serial) {
+    char why[96] = "";
+    cd_toc toc;
+    if (!cd_read_toc(pass, &toc, why, sizeof(why))) { say("cd: READ TOC failed: %s", why); notify("PS2 CD %s: can't read its table of contents", serial); return 0; }
+    /* each data track's mode from its first sector's header */
+    for (unsigned i = 0; i < toc.count; i++) {
+        static uint8_t s1[CD_RAW];
+        if (toc.t[i].data && cd_read(pass, toc.t[i].lba, 1, CD_RAW_DATA, s1, NULL, 0) && memcmp(s1, k_cd_sync, 12) == 0)
+            toc.t[i].mode = s1[15] == 1 ? 1 : 2;
+        say("cd: track %u at %u, %s", toc.t[i].number, toc.t[i].lba, toc.t[i].data ? (toc.t[i].mode == 1 ? "data, mode 1" : "data, mode 2") : "audio");
+    }
+    const uint32_t first = toc.t[0].lba, sectors = toc.leadout - first;
+    const uint64_t total = (uint64_t)sectors * CD_RAW;
+
+    char title[200] = "", stem[300], bin[512], part[520], cue[512], sums[512];
+    if (gameindex_title(serial, title, sizeof(title))) snprintf(stem, sizeof(stem), "%s (%s)", title, serial);
+    else snprintf(stem, sizeof(stem), "%s", serial);
+    snprintf(bin, sizeof(bin), GAMES_DIR "/%s.bin", stem);
+    snprintf(part, sizeof(part), "%s.part", bin);
+    snprintf(cue, sizeof(cue), GAMES_DIR "/%s.cue", stem);
+    snprintf(sums, sizeof(sums), GAMES_DIR "/%s.hashes.txt", stem);
+    mkdir(GAMES_DIR, 0777);
+
+    /* the standard speed request (SET CD SPEED to the drive's maximum); logged whether it takes it */
+    const uint8_t c_bb[12] = {0xBB, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0};
+    if (scsi(pass, c_bb, 12, CAM_DIR_NONE, NULL, 0, 10000, why, sizeof(why)) == 0) say("cd: SET CD SPEED max: ok");
+    else say("cd: SET CD SPEED max: %s", why);
+
+    const int out = open(part, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (out < 0) { say("cd: open %s: errno %d", part, errno); notify("PS2 CD: can't write to " GAMES_DIR); return 0; }
+    static uint8_t buf[CD_CHUNK * CD_RAW];
+    disc_hash_ctx hc;
+    disc_hash_init(&hc);
+    const double t0 = mono_s();
+    double tlast = t0;
+    uint32_t done = 0, done_last = 0, bad = 0, next_pct = 5;
+    notify("PS2 CD: copying %s (%u MB)", serial, (unsigned)(total / 1000000));
+    say("cd: copying %s: %u sectors from %u (%llu bytes) to %s", serial, sectors, first, (unsigned long long)total, part);
+
+    for (unsigned ti = 0; ti < toc.count; ti++) {
+        const uint32_t end = ti + 1 < toc.count ? toc.t[ti + 1].lba : toc.leadout;
+        const int how = toc.t[ti].data ? CD_RAW_DATA : CD_RAW_AUDIO;
+        for (uint32_t lba = toc.t[ti].lba; lba < end;) {
+            const uint32_t n = end - lba < CD_CHUNK ? end - lba : CD_CHUNK;
+            int ok = 0;
+            for (int tries = 0; tries < 3 && !ok; tries++) ok = cd_read(pass, lba, n, how, buf, why, sizeof(why));
+            if (!ok) {
+                if (drive_profile() != PROFILE_PS2_CD) { say("cd: the disc went at sector %u (%s): stopping", lba, why); close(out); unlink(part); return 0; }
+                for (uint32_t i = 0; i < n; i++) {
+                    int one = 0;
+                    for (int tries = 0; tries < 2 && !one; tries++) one = cd_read(pass, lba + i, 1, how, buf + i * CD_RAW, NULL, 0);
+                    if (!one) { memset(buf + i * CD_RAW, 0, CD_RAW); bad++; }
+                }
+                say("cd: sectors %u..%u: %s; read one by one, %u unreadable so far", lba, lba + n - 1, why, bad);
+                if (bad > CD_MAX_BAD) { say("cd: too many unreadable sectors: stopping"); notify("PS2 CD: too many read errors, stopped"); close(out); unlink(part); return 0; }
+            }
+            const size_t bytes = (size_t)n * CD_RAW;
+            if (pwrite(out, buf, bytes, (off_t)done * CD_RAW) != (ssize_t)bytes) {
+                say("cd: write errno %d at sector %u", errno, lba); notify("PS2 CD: write failed (disk full?)"); close(out); unlink(part); return 0;
+            }
+            disc_hash_update(&hc, buf, bytes);
+            lba += n;
+            done += n;
+            const uint32_t pct = (uint32_t)((uint64_t)done * 100 / sectors);
+            if (pct >= next_pct || done == sectors) {
+                const double t = mono_s();
+                const double now_kb = (double)(done - done_last) * CD_RAW / (t - tlast > 0.001 ? t - tlast : 0.001) / 1000.0;
+                say("cd: %u%% (%llu MB, %.0f kB/s = %.1fx CD; %u unreadable)", pct, (unsigned long long)((uint64_t)done * CD_RAW / 1000000),
+                    now_kb, now_kb / 176.4, bad);
+                notify("PS2 CD %s: %u%% | %.1fx", serial, pct, now_kb / 176.4);
+                tlast = t; done_last = done;
+                while (next_pct <= pct) next_pct += 5;
+                stamp_self();
+            }
+        }
+    }
+    fsync(out);
+    close(out);
+    if (rename(part, bin) != 0) { say("cd: rename errno %d", errno); return 0; }
+
+    /* the cue sheet: one .bin, each track's start relative to the first track (the .bin's start) */
+    FILE *cf = fopen(cue, "w");
+    if (cf) {
+        fprintf(cf, "FILE \"%s.bin\" BINARY\n", stem);
+        for (unsigned i = 0; i < toc.count; i++) {
+            const uint32_t rel = toc.t[i].lba - first;
+            if (toc.t[i].data) fprintf(cf, "  TRACK %02u MODE%u/2352\n", toc.t[i].number, toc.t[i].mode);
+            else fprintf(cf, "  TRACK %02u AUDIO\n", toc.t[i].number);
+            fprintf(cf, "    INDEX 01 %02u:%02u:%02u\n", rel / 4500, (rel / 75) % 60, rel % 75);
+        }
+        fclose(cf);
+    } else {
+        say("cd: can't write %s: errno %d", cue, errno);
+    }
+
+    char crc[9], md5[33], sha1[41];
+    disc_hash_final(&hc, crc, md5, sha1);
+    FILE *hf = fopen(sums, "w");
+    if (hf) {
+        fprintf(hf, "%s.bin\nsize %llu\ncrc32 %s\nmd5 %s\nsha1 %s\nsectors %u, tracks %u, unreadable %u\n", stem, (unsigned long long)total, crc, md5,
+                sha1, sectors, toc.count, bad);
+        fclose(hf);
+    }
+    char inc[540];
+    snprintf(inc, sizeof(inc), "%s.incomplete", bin);
+    if (bad) { FILE *f = fopen(inc, "w"); if (f) { fprintf(f, "%u unreadable sectors\n", bad); fclose(f); } }
+    else unlink(inc);
+    const double secs = mono_s() - t0;
+    say("cd: %s copied in %.0f s (%.0f kB/s = %.1fx CD), %u unreadable; crc32 %s md5 %s sha1 %s", bin, secs, total / secs / 1000.0,
+        total / secs / 1000.0 / 176.4, bad, crc, md5, sha1);
+    return 1;
+}
+
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (live-5) pid %d", (int)getpid());
+    say("disc-auto daemon (live-12) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
@@ -716,6 +1030,10 @@ int main(void) {
     int startup = 1;
 
     int focus_done = 0;
+
+    /* live-12: a PS2 CD (dumped here, not by PS5SX2), seen through /dev/cd0 or only through the pass device */
+    int is_cd = 0, cd_only = 0, cd_serial_tries = 0, last_prof = PROFILE_UNKNOWN;
+    time_t prof_poll = 0;
 
     /* live-2: USB drive state */
     char usb_path[64] = {0}, usb_what[64] = {0}, usb_serial[17] = {0};
@@ -764,26 +1082,94 @@ int main(void) {
 
         if (fd < 0 || size <= 0) {
             if (fd >= 0) close(fd);
-            if (serial[0]) cleanup(serial);
-            serial[0] = '\0';
-            media = 0;
-            st = S_NONE;
+            if (cd_only) {
+                /* live-12: a PS2 CD /dev/cd0 doesn't show: out when the drive's profile says so */
+                if (time(NULL) - prof_poll >= 3) {
+                    prof_poll = time(NULL);
+                    const int p = drive_profile();
+                    if (p != PROFILE_PS2_CD && p != PROFILE_UNKNOWN) {
+                        cleanup(serial);
+                        serial[0] = '\0';
+                        cd_only = is_cd = 0;
+                        st = S_NONE;
+                        last_prof = p;
+                    }
+                }
+            } else {
+                if (serial[0]) cleanup(serial);
+                serial[0] = '\0';
+                media = 0;
+                st = S_NONE;
+                is_cd = 0;
+                /* live-12: no media on /dev/cd0; the drive's own profile every 3 s (GET CONFIGURATION doesn't spin the
+                 * disc), for a disc cd0 doesn't give: a PS2 CD is read through the pass device */
+                if (time(NULL) - prof_poll >= 3) {
+                    prof_poll = time(NULL);
+                    const int p = drive_profile();
+                    if (p != last_prof) {
+                        last_prof = p;
+                        cd_serial_tries = 0;
+                        if (p != PROFILE_NONE && p != PROFILE_UNKNOWN)
+                            say("disc profile %#06x (%s), /dev/cd0 without media", (unsigned)p, profile_name(p));
+                        if (p == PROFILE_PS1_CD || p == PROFILE_PS3_DVD || p == PROFILE_PS3_BD)
+                            say("%s: not handled yet (PS2 discs only for now)", profile_name(p));
+                    }
+                    if (p == PROFILE_PS2_CD && cd_serial_tries < 5) {
+                        char s2[17] = {0};
+                        int pass = drive_pass();
+                        cd_serial_tries++;
+                        if (pass >= 0 && read_serial_with(cd_user_sector, &pass, s2)) {
+                            memcpy(serial, s2, sizeof(serial));
+                            cd_only = is_cd = 1;
+                            seen = time(NULL);
+                            if (startup) seen -= kSettleSec;
+                            st = S_SETTLE;
+                            say("PS2 CD %s (through the pass device)%s", serial, startup ? ", already in at start" : "");
+                        } else {
+                            say("PS2 CD: no PS2 SYSTEM.CNF read yet (try %d of 5)", cd_serial_tries);
+                        }
+                    }
+                }
+            }
         } else {
             if (size != media) {
                 char s[17] = {0};
                 const int ok = read_serial(fd, s);
                 if (serial[0] && (!ok || strcmp(s, serial) != 0)) cleanup(serial);
                 media = size;
+                const int prof = drive_profile(); /* live-12: Sony's disc kind, logged */
+                last_prof = prof;
+                is_cd = cd_only = 0;
                 if (ok) {
                     memcpy(serial, s, sizeof(serial));
                     seen = time(NULL);
                     st = S_SETTLE;
-                    say("PS2 disc %s (%lld bytes)%s", serial, (long long)size, startup ? ", already in at start" : "");
+                    say("PS2 disc %s (%lld bytes, profile %#06x %s)%s", serial, (long long)size, (unsigned)prof, profile_name(prof),
+                        startup ? ", already in at start" : "");
                     if (startup) seen -= kSettleSec; /* no shell takeover to wait out */
+                } else if (prof == PROFILE_PS2_CD) {
+                    /* live-12: /dev/cd0 gives no PS2 volume for a CD (mode 2 sectors); the pass device's READ CD does */
+                    char s2[17] = {0};
+                    int pass = drive_pass();
+                    if (pass >= 0 && read_serial_with(cd_user_sector, &pass, s2)) {
+                        memcpy(serial, s2, sizeof(serial));
+                        is_cd = 1;
+                        seen = time(NULL);
+                        if (startup) seen -= kSettleSec;
+                        st = S_SETTLE;
+                        say("PS2 CD %s (%lld bytes on cd0, read through the pass device)%s", serial, (long long)size,
+                            startup ? ", already in at start" : "");
+                    } else {
+                        serial[0] = '\0';
+                        st = S_NONE;
+                        say("PS2 CD in (%lld bytes) but no PS2 SYSTEM.CNF through the pass device either", (long long)size);
+                    }
                 } else {
                     serial[0] = '\0';
                     st = S_NONE;
-                    say("disc in (%lld bytes) but no PS2 SYSTEM.CNF: ignoring (PS2 CD games can't be read by this drive)", (long long)size);
+                    say("disc in (%lld bytes, profile %#06x %s) but no PS2 SYSTEM.CNF: ignoring%s", (long long)size, (unsigned)prof,
+                        profile_name(prof), (prof == PROFILE_PS1_CD || prof == PROFILE_PS3_DVD || prof == PROFILE_PS3_BD) ?
+                        " (not handled yet: PS2 discs only for now)" : "");
                 }
             }
             close(fd);
@@ -887,6 +1273,18 @@ int main(void) {
                     notify("PS5SX2: %s was dumped with read errors; pick it from the shelf to try it", serial);
                 } else {
                     launch(serial, iso);
+                }
+                st = S_DONE;
+            } else if (is_cd) {
+                /* live-12: a PS2 CD is dumped here (PS5SX2's dumper reads /dev/cd0, which doesn't give it) */
+                const int pass = drive_pass();
+                say("%s: no image in " GAMES_DIR " yet: dumping the CD here", serial);
+                if (pass >= 0 && cd_dump(pass, serial) && find_iso(serial, iso, sizeof(iso), 0)) {
+                    char inc[1100];
+                    snprintf(inc, sizeof(inc), "%s.incomplete", iso);
+                    struct stat ist;
+                    if (stat(inc, &ist) == 0) notify("PS5SX2: %s was dumped with read errors; pick it from the shelf to try it", serial);
+                    else launch(serial, iso);
                 }
                 st = S_DONE;
             } else {
