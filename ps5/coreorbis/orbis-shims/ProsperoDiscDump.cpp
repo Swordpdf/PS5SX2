@@ -712,6 +712,9 @@ namespace
 				pending.clear();
 				ClearReForegroundMark(); // vk-285-159: a re-inserted disc bounces us to the front again (flag disc_refg)
 				refg_done = false;
+				// vk-285-160d (AI-assisted): remove the autostart guard so a reinserted disc
+				// auto-starts again and the user can browse the shelf without a stale guard.
+				unlink(AutoStartMarkPath().c_str());
 			}
 			// a node that went away and came back (a disc swapped) is described again
 			if (logged.size() > 32)

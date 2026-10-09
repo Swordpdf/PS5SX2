@@ -3002,12 +3002,24 @@ int main()
   // HTTPS failed there on vk-285-41/42, with etaHEN's jailbreak; with the PS5SX2 Helper's it hasn't been
   // tried, and boot.log's "[frontend] cover ..." lines will show it. When it fails, the next start's
   // prefetch fetches them from cache/usb-games.txt, as before.
-  // vk-285-160 (AI-assisted): the disc-launch payload ELF (ps5/disclaunch/disc_launch.c) found the ISO
-  // for the disc in the drive and wrote its full path here before restarting the eboot.  Read and
-  // delete the file immediately (it is always transient) so the next normal start uses the shelf.
+  // vk-285-160 (AI-assisted): the disc-auto daemon ELF (ps5/disclaunch/disc_launch.c) found the ISO
+  // for the disc in the drive and wrote its full path here.  Read and delete the file immediately
+  // (it is always transient) so the next normal start uses the shelf.
+  //
+  // vk-285-160d: if disc-launch-exec.txt is also present the daemon wrote both files because
+  // PS5SX2 was not already running when the disc was inserted; the disc watcher will soon consume
+  // exec.txt and self-exec so PS5SX2 comes to the foreground.  Skip disc-launch.txt now to avoid
+  // starting the game twice (once here in the background and again on the foreground boot).
+  // Leave disc-launch.txt on disk; the disc watcher's self-exec boot will pick it up cleanly.
   {
       const std::string dlp = OrbisLogPath("disc-launch.txt");
-      if (FILE* f = fopen(dlp.c_str(), "r")) {
+      const std::string dep = OrbisLogPath("disc-launch-exec.txt");
+      struct stat exec_st{};
+      const bool exec_pending = stat(dep.c_str(), &exec_st) == 0;
+      if (exec_pending) {
+          printf("[boot] disc-launch: exec.txt present — self-exec imminent; deferring disc-launch.txt\n");
+          fflush(stdout);
+      } else if (FILE* f = fopen(dlp.c_str(), "r")) {
           char buf[1024] = {};
           if (fgets(buf, sizeof(buf), f)) {
               // strip trailing newline / whitespace
@@ -3020,6 +3032,20 @@ int main()
                       s_game_path = buf;
                       printf("[boot] disc-launch: starting %s\n", buf);
                       fflush(stdout);
+                      // vk-285-160d: write the autostart guard so the disc watcher (which starts
+                      // after us) doesn't try to launch the same game a second time.
+                      if (FILE* af = fopen(OrbisLogPath("disc-autostart.txt").c_str(), "w")) {
+                          // extract serial from ISO filename (first token before '.' or '-')
+                          const char* slash = strrchr(buf, '/');
+                          const char* base = slash ? slash + 1 : buf;
+                          char serial[64] = {};
+                          int si = 0;
+                          while (si < 63 && base[si] && base[si] != '.' && base[si] != '\0')
+                              serial[si] = base[si++];
+                          serial[si] = '\0';
+                          fprintf(af, "%s %lld\n", serial, static_cast<long long>(time(nullptr)));
+                          fclose(af);
+                      }
                   } else {
                       printf("[boot] disc-launch: %s: stat failed (errno %d) — ignored\n", buf, errno);
                   }

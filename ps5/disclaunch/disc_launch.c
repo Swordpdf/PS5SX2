@@ -1,28 +1,34 @@
-/* PS5SX2 disc-launch payload (vk-285-160c, AI-assisted):
- * Reads the PS2 serial from the disc in the drive, scans /data/PCSX2/games/
- * for a matching ISO, writes its path to /data/PCSX2/logs/disc-launch.txt,
- * then writes disc-launch-exec.txt to signal PS5SX2 to self-exec and come to
- * the foreground.  PS5SX2's disc watcher picks up disc-launch-exec.txt (within
- * 3 s), calls sceSystemServiceLoadExec from within its own process (so the PS5
- * shell brings it to the front), and the fresh boot reads disc-launch.txt and
- * starts the game directly without the shelf.
+/* PS5SX2 disc-auto daemon (vk-285-160d, AI-assisted):
+ * Polls /dev/cd0 every 3 s.  When a PS2 disc is inserted:
+ *   – ISO already in /data/PCSX2/games/: writes disc-launch.txt (ISO path) and
+ *     disc-launch-exec.txt so PS5SX2 self-execs, comes to the foreground, and
+ *     starts the game directly (skipping the shelf).
+ *   – ISO not yet dumped: writes disc-launch-exec.txt only so PS5SX2 self-execs
+ *     to the front; its disc watcher dumps the disc and then starts the game.
+ *   In either case, if PS5SX2 is not already running (disc-launch-exec.txt is
+ *   still present after 5 s because the disc watcher didn't pick it up),
+ *   sceSystemServiceLoadExec is called from a child process (fork) so the
+ *   daemon keeps running.
+ * When the disc is removed: deletes disc-autostart.txt (so a reinserted disc
+ * auto-starts again and the user can reach the shelf freely) and cleans up any
+ * unconsumed signal files.
  *
- * When the ISO is not found yet: notifies the user so they know to dump it
- * with PS5SX2 first. Send to the console's ELF loader (port 9021).
+ * Send to the console's ELF loader (port 9021).  The ELF keeps running until
+ * the loader process is killed.
  *
- * vk-285-160b: sceSystemServiceLoadExec is found at runtime via dlopen so the
- * ELF has no hard libSceSystemService.sprx dependency (which the ELF loader
- * process may not have loaded). Privilege escalation via kernel_set_ucred_authid
- * ensures notifications and /dev/cd0 access work regardless of the loader's uid.
- * vk-285-160c: instead of calling LoadExec from the ELF loader (which starts
- * PS5SX2 in the background), write disc-launch-exec.txt and let PS5SX2 do the
- * self-exec — that brings it to the foreground the way TryReForeground does.
+ * vk-285-160b: dlopen sceSystemServiceLoadExec; privilege escalation via
+ *   kernel_set_ucred_authid so notifications and /dev/cd0 work from any loader.
+ * vk-285-160c: foreground fix — write disc-launch-exec.txt; PS5SX2's disc
+ *   watcher self-execs from within its own process (same as TryReForeground).
+ * vk-285-160d: daemon loop; auto-dump path; disc-removal cleanup;
+ *   fork() + LoadExec fallback to wake PS5SX2 when not running.
  *
  * Copyright (C) 2026 swordpdf
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <ctype.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -33,6 +39,8 @@
 #include <sys/disk.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <ps5/kernel.h>
@@ -60,8 +68,8 @@ static void say(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    klog_printf("[disc-launch] %s\n", buf);
-    printf("[disc-launch] %s\n", buf);
+    klog_printf("[disc-auto] %s\n", buf);
+    printf("[disc-auto] %s\n", buf);
     fflush(stdout);
 }
 
@@ -73,16 +81,10 @@ static uint32_t le32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-/* Read exactly 2048 bytes at sector `lba` from `fd`.
- * For the drive (/dev/cd0) pread must be 2048-byte aligned and sized.
- * For a plain ISO file this is the same — always 2048-byte sectors. */
 static int read_lba(int fd, uint32_t lba, uint8_t *out) {
     return pread(fd, out, 2048, (off_t)lba * 2048) == 2048;
 }
 
-/* Extract the PS2 serial from `fd` (which may be /dev/cd0 or a .iso file).
- * Fills `out` (17 bytes) with e.g. "SLUS-21351" and returns 1, or 0 on failure.
- * Normalization matches fe_games SerialFromDisc: '_' → '-', dots removed, uppercase. */
 static int read_serial(int fd, char *out) {
     uint8_t pvd[2048];
     if (!read_lba(fd, 16, pvd)) return 0;
@@ -100,12 +102,10 @@ static int read_serial(int fd, char *out) {
             if (rlen == 0) { off = (off / 2048 + 1) * 2048; continue; }
             if (off + rlen > 2048 || rlen < 34) break;
             const int nlen = dir[off + 32];
-            /* match SYSTEM.CNF (with or without ";1" version) */
             if (nlen >= 10 && strncasecmp((char *)(dir + off + 33), "SYSTEM.CNF", 10) == 0) {
                 const uint32_t clba = le32(dir + off + 2);
                 uint32_t csz = le32(dir + off + 10);
                 if (csz > 4096) csz = 4096;
-                /* read in full 2048-byte sectors (drive requirement) */
                 char cnf[4096 + 1];
                 memset(cnf, 0, sizeof(cnf));
                 const uint32_t nsecs = (csz + 2047) / 2048;
@@ -118,13 +118,11 @@ static int read_serial(int fd, char *out) {
                     memcpy(cnf + got, sec, take);
                     got += take;
                 }
-                /* BOOT2 = cdrom0:\SLUS_213.51;1 */
                 const char *b2 = strstr(cnf, "BOOT2");
                 if (!b2) break;
                 const char *bs = strchr(b2, '\\');
                 if (!bs) break;
                 bs++;
-                /* copy raw name up to ';', newline, or end */
                 char raw[17];
                 int ri = 0;
                 while (ri < 16 && bs[ri] && bs[ri] != ';' && bs[ri] != '\r' && bs[ri] != '\n' && bs[ri] != ' ') {
@@ -132,7 +130,6 @@ static int read_serial(int fd, char *out) {
                     ri++;
                 }
                 raw[ri] = '\0';
-                /* normalise: SLUS_213.51 → SLUS-21351 (match fe_games SerialFromDisc) */
                 int ni = 0;
                 for (int i = 0; raw[i] && ni < 16; i++) {
                     if (raw[i] == '_')      out[ni++] = '-';
@@ -140,7 +137,6 @@ static int read_serial(int fd, char *out) {
                     else                    out[ni++] = (char)toupper((unsigned char)raw[i]);
                 }
                 out[ni] = '\0';
-                /* must be 9-12 characters (e.g. SLUS-21351 = 10, SCES-51235 = 9) */
                 return ni >= 9 && ni <= 12;
             }
             off += rlen;
@@ -153,23 +149,16 @@ static int read_serial(int fd, char *out) {
 /* games/ scanner                                                        */
 /* ------------------------------------------------------------------ */
 
-/* Does the filename start with `serial` (case-insensitive) followed by
- * '.', '-', '_', or end? (Matches "SLUS-21351.Game Title.iso") */
 static int name_starts_with_serial(const char *name, const char *serial) {
     const size_t slen = strlen(serial);
     if (strncasecmp(name, serial, slen) != 0) return 0;
     return name[slen] == '\0' || name[slen] == '.' || name[slen] == '-' || name[slen] == '_';
 }
 
-/* Scan `games_dir` for an .iso whose serial matches `serial`.
- * Pass 1: filename prefix (fast, covers all PS5SX2-dumped ISOs).
- * Pass 2: read SYSTEM.CNF from each remaining .iso (covers user-renamed files).
- * Fills `out_path` and returns 1 when found. */
 static int find_iso(const char *games_dir, const char *serial, char *out_path, size_t max) {
     DIR *d = opendir(games_dir);
     if (!d) { say("opendir(%s) failed: errno %d", games_dir, errno); return 0; }
 
-    /* pass 1: filename prefix */
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         const char *n = e->d_name;
@@ -182,13 +171,12 @@ static int find_iso(const char *games_dir, const char *serial, char *out_path, s
         }
     }
 
-    /* pass 2: SYSTEM.CNF for unmatched .iso files */
     rewinddir(d);
     while ((e = readdir(d)) != NULL) {
         const char *n = e->d_name;
         const size_t nlen = strlen(n);
         if (nlen < 5 || strcasecmp(n + nlen - 4, ".iso") != 0) continue;
-        if (name_starts_with_serial(n, serial)) continue; /* already tried */
+        if (name_starts_with_serial(n, serial)) continue;
         char path[1024];
         snprintf(path, sizeof(path), "%s/%s", games_dir, n);
         const int fd = open(path, O_RDONLY);
@@ -207,84 +195,170 @@ static int find_iso(const char *games_dir, const char *serial, char *out_path, s
 }
 
 /* ------------------------------------------------------------------ */
+/* Signal file paths                                                     */
+/* ------------------------------------------------------------------ */
+#define LOGS_DIR  "/data/PCSX2/logs"
+#define GAMES_DIR "/data/PCSX2/games"
+#define LAUNCH_TXT LOGS_DIR "/disc-launch.txt"
+#define EXEC_TXT   LOGS_DIR "/disc-launch-exec.txt"
+#define AUTO_TXT   LOGS_DIR "/disc-autostart.txt"
+
+/* ------------------------------------------------------------------ */
+/* sceSystemServiceLoadExec via dlopen (no hard NEEDED entry)           */
+/* ------------------------------------------------------------------ */
+typedef int (*LoadExec_t)(const char *, const char **);
+
+static LoadExec_t find_load_exec(void) {
+    void *h = dlopen("libSceSystemService.sprx", RTLD_NOW | RTLD_GLOBAL);
+    if (!h) { say("dlopen(libSceSystemService.sprx) failed: %s", dlerror()); return NULL; }
+    LoadExec_t fn = (LoadExec_t)dlsym(h, "sceSystemServiceLoadExec");
+    if (!fn) { say("dlsym(sceSystemServiceLoadExec) failed"); }
+    return fn;
+}
+
+static const char *eboot_path(void) {
+    struct stat st;
+    const char *p = "/data/homebrew/PPSA99203/eboot.bin";
+    return (stat(p, &st) == 0) ? p : "/app0/eboot.bin";
+}
+
+/* ------------------------------------------------------------------ */
+/* trigger: write signal files; fallback-start PS5SX2 if not running   */
+/* ------------------------------------------------------------------ */
+
+/* Write exec.txt (and disc-launch.txt when iso != NULL).
+ * Sleep 5 s so a running PS5SX2's disc watcher can consume exec.txt.
+ * If exec.txt is still present afterwards, PS5SX2 wasn't running —
+ * fork() and have the child call LoadExec (child is replaced by PS5SX2;
+ * parent daemon keeps running). */
+static void trigger(const char *serial, const char *iso) {
+    /* disc-launch.txt (ISO path) — only when the ISO already exists */
+    if (iso) {
+        FILE *f = fopen(LAUNCH_TXT, "w");
+        if (!f) { say("fopen(" LAUNCH_TXT "): errno %d", errno); }
+        else { fprintf(f, "%s\n", iso); fclose(f); say("wrote " LAUNCH_TXT); }
+    }
+
+    /* disc-launch-exec.txt (self-exec signal) */
+    {
+        FILE *f = fopen(EXEC_TXT, "w");
+        if (!f) { say("fopen(" EXEC_TXT "): errno %d", errno); return; }
+        fclose(f);
+        say("wrote " EXEC_TXT);
+    }
+
+    /* notify user */
+    {
+        char msg[220];
+        if (iso)
+            snprintf(msg, sizeof(msg), "PS5SX2: disc game ready (%s) — switching to it now", serial);
+        else
+            snprintf(msg, sizeof(msg), "PS5SX2: dumping disc (%s) — starting PS5SX2", serial);
+        notify(msg);
+    }
+
+    /* Give the disc watcher up to 5 s to consume exec.txt. */
+    sleep(5);
+
+    struct stat est;
+    if (stat(EXEC_TXT, &est) != 0) {
+        /* exec.txt gone — the disc watcher picked it up; PS5SX2 was running */
+        say("exec.txt consumed by disc watcher; PS5SX2 is self-exec-ing");
+        return;
+    }
+
+    /* exec.txt still present: PS5SX2 was not running.
+     * Fork so the daemon survives; child calls LoadExec (its process is
+     * replaced by PS5SX2, which will cold-boot, see exec.txt, self-exec
+     * to the foreground, then read disc-launch.txt if present). */
+    say("exec.txt still present — PS5SX2 not running; forking to call LoadExec");
+    LoadExec_t le = find_load_exec();
+    if (!le) return;
+
+    const pid_t child = fork();
+    if (child == 0) {
+        /* child: call LoadExec — replaces this child process with PS5SX2 */
+        le(eboot_path(), NULL);
+        _exit(1);
+    }
+    if (child < 0)
+        say("fork: errno %d", errno);
+    else
+        say("forked pid %d to call LoadExec(%s)", (int)child, eboot_path());
+    /* parent continues the polling loop */
+}
+
+/* ------------------------------------------------------------------ */
+/* cleanup: remove signal files and autostart mark on disc removal      */
+/* ------------------------------------------------------------------ */
+static void cleanup(const char *serial) {
+    say("disc out (%s): clearing autostart + signal files", serial);
+    unlink(EXEC_TXT);
+    unlink(LAUNCH_TXT);
+    unlink(AUTO_TXT);
+    /* reap any child that finished */
+    int status;
+    while (waitpid(-1, &status, WNOHANG) > 0)
+        ;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                  */
 /* ------------------------------------------------------------------ */
 int main(void) {
-    say("disc-launch v1 (vk-285-160c)");
+    say("disc-auto daemon v1 (vk-285-160d)");
 
-    /* 0. Privilege escalation: ensure we can open /dev/cd0, send notifications,
-     *    and call sceSystemServiceLoadExec from any loader uid. */
+    /* Privilege escalation: /dev/cd0 access + notifications from any loader uid */
     {
         const pid_t pid = getpid();
-        uint8_t caps[16], all[16];
+        uint8_t all[16];
         memset(all, 0xff, sizeof(all));
-        kernel_get_ucred_caps(pid, caps);
         kernel_set_ucred_authid(pid, 0x4800000000010003ull);
         kernel_set_ucred_caps(pid, all);
     }
 
-    /* 1. Read the serial from the disc in the drive. */
-    const int fd = open("/dev/cd0", O_RDONLY);
-    if (fd < 0) {
-        say("/dev/cd0: open errno %d (is a PS2 disc inserted?)", errno);
-        notify("Disc launch: no disc detected (/dev/cd0 unavailable)");
-        return 1;
-    }
-    char serial[17] = {};
-    const int ok = read_serial(fd, serial);
-    close(fd);
-    if (!ok) {
-        say("no PS2 serial on disc (not a PS2 DVD, or a CD game not supported by the drive)");
-        notify("Disc launch: no PS2 serial found (must be a PS2 DVD)");
-        return 1;
-    }
-    say("disc serial: %s", serial);
+    char last_serial[17] = {};
 
-    /* 2. Find the matching ISO in /data/PCSX2/games/. */
-    char iso[1024] = {};
-    if (!find_iso("/data/PCSX2/games", serial, iso, sizeof(iso))) {
-        say("no ISO found for %s in /data/PCSX2/games", serial);
-        notify("Disc launch: no ISO for this game yet — let PS5SX2 dump it first");
-        return 1;
-    }
-    say("ISO found: %s", iso);
+    for (;;) {
+        const int fd = open("/dev/cd0", O_RDONLY);
+        if (fd >= 0) {
+            char serial[17] = {};
+            const int ok = read_serial(fd, serial);
+            close(fd);
 
-    /* 3. Write disc-launch.txt for the eboot to pick up on its next start. */
-    const char *const launch_txt = "/data/PCSX2/logs/disc-launch.txt";
-    {
-        FILE *f = fopen(launch_txt, "w");
-        if (!f) {
-            say("fopen(%s) failed: errno %d", launch_txt, errno);
-            notify("Disc launch: could not write disc-launch.txt");
-            return 1;
+            if (ok) {
+                /* Valid PS2 disc */
+                if (strcmp(serial, last_serial) != 0) {
+                    /* New disc (or first detection) */
+                    memcpy(last_serial, serial, sizeof(last_serial));
+                    say("disc: %s", serial);
+
+                    char iso[1024] = {};
+                    if (find_iso(GAMES_DIR, serial, iso, sizeof(iso))) {
+                        say("ISO found: %s — signalling launch", iso);
+                        trigger(serial, iso);
+                    } else {
+                        say("no ISO for %s — signalling PS5SX2 to dump", serial);
+                        trigger(serial, NULL);
+                    }
+                }
+                /* else: same disc still in — nothing to do this iteration */
+            } else {
+                /* /dev/cd0 opened but not a PS2 disc (e.g. BD movie, or non-PS2 DVD) */
+                if (last_serial[0]) {
+                    cleanup(last_serial);
+                    last_serial[0] = '\0';
+                }
+            }
+        } else {
+            /* /dev/cd0 not available: no disc in drive */
+            if (last_serial[0]) {
+                cleanup(last_serial);
+                last_serial[0] = '\0';
+            }
         }
-        fprintf(f, "%s\n", iso);
-        fclose(f);
-        say("wrote %s", launch_txt);
-    }
 
-    /* 4. Signal PS5SX2 to self-exec and come to the foreground.
-     *    Calling sceSystemServiceLoadExec from this ELF loader process starts
-     *    PS5SX2 but leaves it behind the PS5 shell.  Only a self-exec from within
-     *    PS5SX2's own process causes the shell to bring it to the front (the same
-     *    mechanism TryReForeground uses).  Write disc-launch-exec.txt; the disc
-     *    watcher picks it up within 3 s and does the exec from inside PS5SX2. */
-    const char *const exec_txt = "/data/PCSX2/logs/disc-launch-exec.txt";
-    {
-        FILE *f = fopen(exec_txt, "w");
-        if (!f) {
-            say("fopen(%s) failed: errno %d", exec_txt, errno);
-            notify("Disc launch: could not write disc-launch-exec.txt");
-            return 1;
-        }
-        fclose(f);
-        say("wrote %s", exec_txt);
+        sleep(3);
     }
-    {
-        char msg[220];
-        snprintf(msg, sizeof(msg), "PS5SX2: disc game ready (%s) — switching to it now", serial);
-        notify(msg);
-    }
-    say("PS5SX2 will self-exec when its disc watcher picks up disc-launch-exec.txt");
     return 0;
 }
