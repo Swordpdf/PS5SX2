@@ -60,6 +60,9 @@
 // copy now first times ways of reading (pread on cd0, READ(10)/READ(12) through pass0, sizes, two lanes) on 16 MiB each
 // and copies with the fastest (ProsperoDiscSpeed.cpp).
 //
+// vk-285-152: Sony's own speed command from SceShellCore (DB <rotation> <speed>; ProsperoDiscSpeed.cpp): each copy times
+// the drive's faster settings from Sony's table, copies at the fastest, and puts the drive back to 2.0 afterwards.
+//
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -289,6 +292,7 @@ namespace
 		rm.cd = fd;
 		OrbisDiscSpeedUp(node.path.c_str(), node.bytes, &rm);
 		OrbisDiscReadTest(rm, node.bytes);
+		OrbisDiscSpeedRestore(node.path.c_str(), rm);
 		OrbisDiscReadMethodClose(rm);
 		close(fd);
 		s_busy.store(false);
@@ -435,6 +439,7 @@ namespace
 		const bool failed = res.failed;
 		if (failed)
 			Log("copy stopped: %s (errno %d)", res.why.c_str(), errno);
+		OrbisDiscSpeedRestore(node.path.c_str(), rm);
 		OrbisDiscReadMethodClose(rm);
 		close(in);
 		fsync(out);

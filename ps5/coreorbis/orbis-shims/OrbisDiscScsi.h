@@ -147,6 +147,31 @@ namespace orbis_mmc
 		return c;
 	}
 
+	// vk-285-152: Sony's own read-speed command, as SceShellCore's _AutoMounter::OpticalDisc::setSpeed(int) builds it
+	// (11.40, at 0x376865): a 12-byte CDB DB <rotation & 3> <speed hi> <speed lo> 00..., no data, 10 s, simple tag. The
+	// speed is two nibbles "x.y" in its log ("set speed [speed:%d.%d kbyte/sec][rotation:%d]": (speed >> 4) & 15 and
+	// speed & 15). Its table (0x1d823a0) holds rotation/speed pairs 0/0x20 (2.0, the default), 0/0x32, 0/0x26,
+	// 1/0x50, 1/0x60, 1/0x80 (8.0), 2/0x40, 2/0x50, 1/0x100, 0/0xFFFF.
+	inline std::vector<uint8_t> SieSetReadSpeed(uint8_t rotation, uint16_t speed)
+	{
+		std::vector<uint8_t> c(12, 0);
+		c[0] = 0xDB;
+		c[1] = rotation & 3;
+		Be16(&c[2], speed);
+		return c;
+	}
+	inline std::string SieSpeedText(uint16_t speed)
+	{
+		if (speed == 0xFFFF)
+			return "max";
+		char b[24];
+		if (speed > 0xFF)
+			std::snprintf(b, sizeof(b), "%#x", speed);
+		else
+			std::snprintf(b, sizeof(b), "%u.%ux", (speed >> 4) & 15, speed & 15);
+		return b;
+	}
+
 	// Sense data, fixed (0x70/0x71) or descriptor (0x72/0x73) format: "key/asc/ascq".
 	struct Sense
 	{

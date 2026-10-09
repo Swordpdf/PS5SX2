@@ -19,6 +19,19 @@
 // two threads, two commands in flight). Each method's first read is checked against pread's bytes; the copy then uses
 // the fastest that matches, if it beats pread by 15%. Needs proper testing on a console.
 //
+// vk-285-151 on the console: all 2.0x (pread 2.72 MB/s, READ(10) 64 KiB 2.75, READ(12) Streaming 2.76, two lanes 1.10;
+// over 64 KiB E2BIG). A payload (PS5SX2DiscTest.elf) read at 2.00x too. swordpdf: "can you look at the libs again":
+// SceShellCore (11.40) has _AutoMounter::OpticalDisc::setSpeed(int), "exec_sie_set_read_speed", "drive is idle and
+// drive speed is set to %#x during disc key update", "drive speed is restored to %#x". setSpeed (0x376790) opens
+// "cd0" with libcam and sends a Sony vendor command: CDB DB <rotation & 3> <speed hi> <speed lo>, 12 bytes, no data,
+// 10 s, flags CAM_DIR_NONE | CAM_DEV_QFRZDIS | CAM_PASS_ERR_RECOVER, simple tag; the speed from a table of
+// rotation/speed pairs where 0/0x20 (2.0) is the default and 1/0x80 is 8.0 (OrbisDiscScsi.h).
+//
+// vk-285-152: so before each copy: time pread as the drive is, then each of Sony's own faster settings (1/0x80 8.0,
+// 1/0x100, 0/0xFFFF max, 1/0x60 6.0), 16 MiB each after a 4 MiB warm-up; copy at the fastest if it beats the drive as it
+// was by 15%; put the drive back to 2.0 (0/0x20) after the copy. Only values from Sony's table are sent. The 151 pass
+// read timing only with flag disc_passbench.
+//
 // Every command's CAM status and sense data is logged when it fails. Nothing is written to the disc or the drive's
 // firmware. All through libkernel's ioctl (no system call from our own code). Flag nodiscspeed: nothing is sent.
 //
@@ -83,7 +96,7 @@ namespace
 	}
 
 	// The pass device for the drive (e.g. "/dev/pass0"), or empty.
-	std::string PassDevice(int cd)
+	std::string PassDevice(int cd, bool quiet = false)
 	{
 		union ccb ccb;
 		memset(&ccb, 0, sizeof(ccb));
@@ -95,8 +108,9 @@ namespace
 		}
 		char name[DEV_IDLEN + 1] = {};
 		memcpy(name, ccb.cgdl.periph_name, DEV_IDLEN);
-		Log("CAMGETPASSTHRU: status %d, %s%u (path %u, target %u, lun %u)", static_cast<int>(ccb.cgdl.status), name,
-			ccb.cgdl.unit_number, ccb.ccb_h.path_id, ccb.ccb_h.target_id, static_cast<unsigned>(ccb.ccb_h.target_lun));
+		if (!quiet)
+			Log("CAMGETPASSTHRU: status %d, %s%u (path %u, target %u, lun %u)", static_cast<int>(ccb.cgdl.status), name,
+				ccb.cgdl.unit_number, ccb.ccb_h.path_id, ccb.ccb_h.target_id, static_cast<unsigned>(ccb.ccb_h.target_lun));
 		if (ccb.cgdl.status == CAM_GDEVLIST_ERROR || !name[0])
 			return {};
 		return std::string("/dev/") + name + std::to_string(ccb.cgdl.unit_number);
@@ -222,6 +236,27 @@ ssize_t OrbisDiscRead(const OrbisDiscReadMethod& m, uint64_t off, void* buf, siz
 	return pread(m.cd, buf, len, static_cast<off_t>(off)); // what the pass read couldn't do, the plain way
 }
 
+void OrbisDiscSpeedRestore(const char* cd_path, OrbisDiscReadMethod& m)
+{
+	if (m.set_speed == 0)
+		return;
+	const int cd = m.cd >= 0 ? m.cd : open(cd_path, O_RDONLY);
+	if (cd < 0)
+		return;
+	const std::string pass_path = PassDevice(cd, true);
+	if (m.cd < 0)
+		close(cd);
+	const int pass = pass_path.empty() ? -1 : open(pass_path.c_str(), O_RDWR);
+	if (pass < 0)
+	{
+		Log("speed back to 2.0: no pass device (errno %d)", errno);
+		return;
+	}
+	Command(pass, orbis_mmc::SieSetReadSpeed(0, 0x20), CAM_DIR_NONE | CAM_PASS_ERR_RECOVER, nullptr, 0, "Sony speed command: rotation 0, speed 2.0 (default, after the copy)");
+	close(pass);
+	m.set_speed = 0;
+}
+
 void OrbisDiscReadMethodClose(OrbisDiscReadMethod& m)
 {
 	for (int& p : m.pass)
@@ -293,6 +328,83 @@ void OrbisDiscSpeedUp(const char* cd_path, uint64_t bytes, OrbisDiscReadMethod* 
 	}
 
 	if (!out || out->cd < 0)
+	{
+		close(pass);
+		return;
+	}
+
+	// vk-285-152: Sony's speed settings, timed with pread on cd0 (16 MiB each after a 4 MiB warm-up, fresh parts of the disc)
+	{
+		std::vector<uint8_t> sbuf(4u << 20);
+		auto time_at = [&](uint64_t from, const char* what) {
+			from &= ~static_cast<uint64_t>(2047);
+			constexpr uint64_t kTimed = 16ull << 20;
+			if (from + (4ull << 20) + kTimed > bytes)
+			{
+				Log("%s: the disc is too small to time", what);
+				return 0.0;
+			}
+			pread(cd, sbuf.data(), sbuf.size(), static_cast<off_t>(from)); // warm-up: the drive settling at its new speed
+			const auto t0 = std::chrono::steady_clock::now();
+			uint64_t got = 0;
+			for (uint64_t off = from + sbuf.size(); off < from + sbuf.size() + kTimed; off += sbuf.size())
+			{
+				if (pread(cd, sbuf.data(), sbuf.size(), static_cast<off_t>(off)) != static_cast<ssize_t>(sbuf.size()))
+				{
+					Log("%s: pread errno %d", what, errno);
+					break;
+				}
+				got += sbuf.size();
+			}
+			const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+			const double mbs = sec > 0 ? got / sec / 1e6 : 0;
+			Log("%s: %.2f MB/s = %.2fx DVD (%llu MiB in %.2f s)", what, mbs, mbs * 1e6 / 1385000.0, static_cast<unsigned long long>(got >> 20), sec);
+			return got == kTimed ? mbs : 0.0;
+		};
+		struct Setting
+		{
+			uint8_t rot;
+			uint16_t speed;
+		};
+		static const Setting kTry[] = {{1, 0x0080}, {1, 0x0100}, {0, 0xFFFF}, {1, 0x0060}};
+		constexpr uint64_t kStep = 24ull << 20, kFirst = 64ull << 20;
+		const double base = time_at(kFirst, "speed as the drive is");
+		double best = base;
+		int best_i = -1;
+		for (int i = 0; i < static_cast<int>(sizeof(kTry) / sizeof(kTry[0])); i++)
+		{
+			char what[96];
+			snprintf(what, sizeof(what), "Sony speed command: rotation %u, speed %s (DB %02x %02x %02x)", kTry[i].rot,
+				orbis_mmc::SieSpeedText(kTry[i].speed).c_str(), kTry[i].rot, kTry[i].speed >> 8, kTry[i].speed & 0xFF);
+			if (Command(pass, orbis_mmc::SieSetReadSpeed(kTry[i].rot, kTry[i].speed), CAM_DIR_NONE | CAM_PASS_ERR_RECOVER, nullptr, 0, what).code)
+				continue;
+			const double mbs = time_at(kFirst + (i + 1) * kStep, what);
+			if (mbs > best)
+			{
+				best = mbs;
+				best_i = i;
+			}
+		}
+		if (best_i >= 0 && best > base * 1.15)
+		{
+			const Setting& k = kTry[best_i];
+			char what[96];
+			snprintf(what, sizeof(what), "Sony speed command for the copy: rotation %u, speed %s", k.rot, orbis_mmc::SieSpeedText(k.speed).c_str());
+			if (!Command(pass, orbis_mmc::SieSetReadSpeed(k.rot, k.speed), CAM_DIR_NONE | CAM_PASS_ERR_RECOVER, nullptr, 0, what).code)
+			{
+				out->set_rotation = k.rot;
+				out->set_speed = k.speed;
+				out->name = "pread on /dev/cd0 at " + orbis_mmc::SieSpeedText(k.speed) + " (rotation " + std::to_string(k.rot) + ")";
+				Log("the copy reads at %.2f MB/s = %.2fx (the drive as it was: %.2f MB/s)", best, best * 1e6 / 1385000.0, base);
+			}
+		}
+		else
+		{
+			Log("no faster speed setting (best %.2f MB/s, the drive as it was %.2f MB/s): the drive back to 2.0", best, base);
+			Command(pass, orbis_mmc::SieSetReadSpeed(0, 0x20), CAM_DIR_NONE | CAM_PASS_ERR_RECOVER, nullptr, 0, "Sony speed command: rotation 0, speed 2.0 (default)");
+		}
+	}
+	if (!OrbisFlag("disc_passbench"))
 	{
 		close(pass);
 		return;

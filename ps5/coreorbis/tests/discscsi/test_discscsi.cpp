@@ -76,6 +76,14 @@ int main()
 			"READ(12): LBA, 512 sectors, Streaming bit");
 		Check(Read12(1, 1, false)[10] == 0, "READ(12) without Streaming");
 	}
+	{
+		const auto c = SieSetReadSpeed(1, 0x0080);
+		Check(c == std::vector<uint8_t>({0xDB, 0x01, 0x00, 0x80, 0, 0, 0, 0, 0, 0, 0, 0}), "Sony's speed command: DB 01 00 80 (8.0, rotation 1), 12 bytes");
+		Check(SieSetReadSpeed(5, 0x20)[1] == 1, "rotation keeps its low 2 bits, as SceShellCore's 'and $0x3'");
+		Check(SieSetReadSpeed(0, 0xFFFF)[2] == 0xFF && SieSetReadSpeed(0, 0xFFFF)[3] == 0xFF, "max: FF FF");
+		Check(SieSpeedText(0x20) == "2.0x" && SieSpeedText(0x80) == "8.0x" && SieSpeedText(0x32) == "3.2x" && SieSpeedText(0xFFFF) == "max",
+			"speed text as SceShellCore logs it");
+	}
 	std::printf(fails ? "%d FAILED\n" : "all passed\n", fails);
 	return fails ? 1 : 0;
 }
