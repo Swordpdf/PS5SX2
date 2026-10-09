@@ -1,4 +1,4 @@
-/* PS5SX2 disc-auto daemon (vk-285-160f, AI-assisted).
+/* PS5SX2 disc-auto daemon (vk-285-160g, AI-assisted).
  * Send once to the console's ELF loader (port 9021) and leave it running.
  * Put a PS2 DVD in:
  *   - already dumped  -> PS5SX2 comes to the front and starts that game.
@@ -33,6 +33,10 @@
  *   up behind it. Now, once PS5SX2 has re-executed, the daemon hands it focus (sceLncUtilSetAppFocus, then
  *   sceLncUtilLaunchApp on the running title as clicking its tile does) at +2/+6/+12 s. A new daemon also
  *   kills the previous one (logs/disc-auto.pid) so a resend doesn't leave two running.
+ * vk-285-160g: a self-exec keeps PS5SX2's app id (0x8017 before and after on the console), so 160f's "new app
+ *   id" trigger never fired. Focus is now timed from the moment PS5SX2 consumes disc-launch-exec.txt. The
+ *   pid-file lookup no longer insists on the full kinfo_proc size (it failed silently and left 160e running),
+ *   and the file may list several pids.
  * Needs proper testing on a console with a disc drive.
  *
  * Copyright (C) 2026 swordpdf
@@ -347,7 +351,9 @@ static int proc_comm(pid_t pid, char *out, size_t max) {
     struct kinfo_proc kp;
     size_t len = sizeof(kp);
     memset(&kp, 0, sizeof(kp));
-    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len < sizeof(kp) || kp.ki_pid != pid) return 0;
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0) { say("sysctl(proc %d): errno %d", (int)pid, errno); return 0; }
+    if (len == 0) return 0; /* no such process */
+    if (kp.ki_pid != pid) { say("sysctl(proc %d): len %zu (struct %zu), ki_pid %d", (int)pid, len, sizeof(kp), (int)kp.ki_pid); return 0; }
     snprintf(out, max, "%s", kp.ki_comm);
     return 1;
 }
@@ -356,15 +362,15 @@ static void take_over(void) {
     FILE *f = fopen(PID_FILE, "r");
     if (f) {
         int old = 0;
-        if (fscanf(f, "%d", &old) == 1 && old > 0 && old != (int)getpid()) {
+        while (fscanf(f, "%d", &old) == 1) {
+            if (old <= 0 || old == (int)getpid()) continue;
             char comm[32] = {0};
-            if (proc_comm((pid_t)old, comm, sizeof(comm))) {
-                if (strstr(comm, "payload") || strstr(comm, "disc") || strstr(comm, "Disc")) {
-                    const int rc = kill((pid_t)old, SIGKILL);
-                    say("previous daemon pid %d (%s): SIGKILL rc=%d", old, comm, rc);
-                } else {
-                    say("pid %d in " PID_FILE " is now '%s', not a daemon: left alone", old, comm);
-                }
+            if (!proc_comm((pid_t)old, comm, sizeof(comm))) { say("previous daemon pid %d: not running", old); continue; }
+            if (strstr(comm, "payload") || strstr(comm, "disc") || strstr(comm, "Disc")) {
+                const int rc = kill((pid_t)old, SIGKILL);
+                say("previous daemon pid %d (%s): SIGKILL rc=%d", old, comm, rc);
+            } else {
+                say("pid %d in " PID_FILE " is now '%s', not a daemon: left alone", old, comm);
             }
         }
         fclose(f);
@@ -387,7 +393,6 @@ static int superseded(void) {
 /* Actions                                                               */
 /* ------------------------------------------------------------------ */
 static time_t g_last_start;
-static uint32_t g_focus_old;   /* PS5SX2's app id when we asked it to re-exec (0: wasn't running) */
 static time_t g_focus_armed;   /* when; 0 = no focus watch */
 
 static void launch(const char *serial, const char *iso) {
@@ -399,7 +404,6 @@ static void launch(const char *serial, const char *iso) {
     if (f) fclose(f);
     else say("fopen(" EXEC_TXT "): errno %d", errno);
     say("launch %s: %s", serial, iso);
-    g_focus_old = emu_appid();
     g_focus_armed = time(NULL);
     notify("PS5SX2: starting %s", serial);
     /* Running: its watcher self-execs into the game (front). Not running: start it; main-boot
@@ -424,7 +428,7 @@ static void cleanup(const char *serial) {
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (vk-285-160e) pid %d", (int)getpid());
+    say("disc-auto daemon (vk-285-160g) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
@@ -446,7 +450,6 @@ int main(void) {
     enum state st = S_NONE;
     int startup = 1;
 
-    uint32_t focus_id = 0;
     time_t focus_seen = 0;
     int focus_done = 0;
 
@@ -457,31 +460,29 @@ int main(void) {
         }
         stamp_self();
 
-        /* vk-285-160f: once PS5SX2 has re-executed after a launch (a new app id), hand it focus. */
+        /* vk-285-160g: PS5SX2 consumes disc-launch-exec.txt right before it re-execs (keeping its app id).
+         * From then, hand the running PS5SX2 focus at +3/+7/+13 s. */
         if (g_focus_armed) {
             const time_t now = time(NULL);
-            const uint32_t id = emu_appid();
-            if (!focus_id) {
-                if (id && id != g_focus_old) {
-                    focus_id = id;
+            struct stat est;
+            if (!focus_seen) {
+                if (stat(EXEC_TXT, &est) != 0) {
                     focus_seen = now;
                     focus_done = 0;
-                    say("PS5SX2 re-executed: app id 0x%x (was 0x%x)", (unsigned)id, (unsigned)g_focus_old);
-                } else if (now - g_focus_armed > 60) {
-                    say("focus: PS5SX2 didn't come back with a new app id within 60 s (now 0x%x)", (unsigned)id);
+                    say("exec signal consumed: PS5SX2 is re-executing");
+                } else if (now - g_focus_armed > 90) {
+                    say("focus: exec signal still not consumed after 90 s");
                     g_focus_armed = 0;
                 }
-            }
-            if (focus_id) {
-                static const int at[3] = { 2, 6, 12 };
-                if (id != focus_id) {
-                    say("focus: app id changed to 0x%x, stopping", (unsigned)id);
-                    g_focus_armed = 0; focus_id = 0;
-                } else if (focus_done < 3 && now - focus_seen >= at[focus_done]) {
-                    give_focus(focus_id, focus_done + 1);
+            } else {
+                static const int at[3] = { 3, 7, 13 };
+                if (focus_done < 3 && now - focus_seen >= at[focus_done]) {
+                    const uint32_t id = emu_appid();
+                    if (id) give_focus(id, focus_done + 1);
+                    else say("focus #%d: PS5SX2 not the running big app yet", focus_done + 1);
                     focus_done++;
-                    if (focus_done == 3) { g_focus_armed = 0; focus_id = 0; }
                 }
+                if (focus_done >= 3) { g_focus_armed = 0; focus_seen = 0; }
             }
         }
 

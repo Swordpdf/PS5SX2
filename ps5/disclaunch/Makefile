@@ -1,4 +1,4 @@
-# PS5SX2 disc-auto daemon (vk-285-160f, AI-assisted). make -> DiscLaunch.elf
+# PS5SX2 disc-auto daemon (vk-285-160g, AI-assisted). make -> DiscLaunch.elf
 # Send once via the console's ELF loader (port 9021) and leave it running: a PS2 DVD put in
 # starts its game in PS5SX2 (dumping it first when needed). See disc_launch.c.
 # libSceSystemService is NOT linked — it is dlopen'd at runtime to avoid a hard
