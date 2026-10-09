@@ -40,6 +40,12 @@
 // (OrbisDiscCopy.h), and the log gives the speed as a DVD multiple ("now" over the last 5%, and the average). Flag disc_1m:
 // 1 MiB reads, to compare.
 //
+// vk-285-148: the 146 copy (NFS Underground 2, 2741 MB in 1037 s) ran at 2.00x from the first 5% to the last: a drive
+// left to itself speeds up toward the edge, so the drive is held at 2x (likely the speed Sony sets for films). 147's
+// request for its top speed is what can change that. Logged now: ms per read and how much of the time a read was running
+// ("drive busy"), so a held drive shows as busy near 100% at a flat speed; an 8x request in kB/s when "max" is refused; the
+// /dev list in pieces (one log line stops at 1024 characters, so 146's list lost its end). File names: ": " becomes " - ".
+//
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -180,7 +186,19 @@ namespace
 		// vk-285-145: no getmntinfo here (a system call from the app's own code: the PS5 kills the app).
 		if (log)
 		{
-			Log("/dev:%s", all.c_str());
+			// vk-285-148: in pieces (one line stops at 1024 characters: the 146 log lost the end of the list)
+			for (size_t at = 0; at < all.size();)
+			{
+				size_t end = std::min(all.size(), at + 900);
+				if (end < all.size())
+				{
+					const size_t sp = all.rfind(' ', end);
+					if (sp != std::string::npos && sp > at)
+						end = sp;
+				}
+				Log("/dev:%s", all.substr(at, end - at).c_str());
+				at = end;
+			}
 			std::string c;
 			for (const std::string& p : out)
 				c += " " + p;
@@ -191,9 +209,14 @@ namespace
 
 	std::string Clean(std::string s)
 	{
+		// vk-285-148: "Need for Speed: Underground 2" was "Need for Speed  Underground 2"; now "... - Underground 2"
+		for (size_t at; (at = s.find(": ")) != std::string::npos;)
+			s.replace(at, 2, " - ");
 		for (char& ch : s)
 			if (strchr("/\\:*?\"<>|", ch) || static_cast<unsigned char>(ch) < 0x20)
 				ch = ' ';
+		for (size_t at; (at = s.find("  ")) != std::string::npos;)
+			s.erase(at, 1);
 		while (!s.empty() && (s.back() == ' ' || s.back() == '.'))
 			s.pop_back();
 		return s;
@@ -304,8 +327,15 @@ namespace
 		// take it: the log says. Then reads run ahead of the writes (OrbisDiscCopy.h).
 		{
 			int speed = CDR_MAX_SPEED;
-			const int rc = ioctl(in, CDRIOCREADSPEED, &speed);
+			int rc = ioctl(in, CDRIOCREADSPEED, &speed);
 			Log("read speed: CDRIOCREADSPEED max -> %s%d", rc ? "errno " : "rc ", rc ? errno : rc);
+			if (rc)
+			{
+				// vk-285-148: 8x DVD in kB/s, the unit cd(4) takes, for a driver that wants a real number
+				speed = 11080;
+				rc = ioctl(in, CDRIOCREADSPEED, &speed);
+				Log("read speed: CDRIOCREADSPEED 11080 kB/s (8x) -> %s%d", rc ? "errno " : "rc ", rc ? errno : rc);
+			}
 		}
 		const size_t chunk = static_cast<size_t>(OrbisFlag("disc_1m") ? 1 : 4) << 20;
 		const int depth = 4;
@@ -318,10 +348,21 @@ namespace
 		// the speed over the last 5% (a CAV drive speeds up toward the disc's edge)
 		uint64_t mark_done = 0;
 		auto mark_time = t0;
+		// vk-285-148: how long the drive takes per read, and how much of the time a read was running ("drive busy"):
+		// busy near 100% at a steady speed is the drive's own limit; well under it, the copy loop is waiting on something.
+		std::atomic<uint64_t> read_us{0}, read_n{0};
+		uint64_t mark_read_us = 0, mark_read_n = 0;
 		Log("reading %zu MiB at a time, %d ahead", chunk >> 20, depth);
 		const orbis_disc::CopyResult res = orbis_disc::Copy(
 			node.bytes, chunk, depth, 3, 4096,
-			[&](uint64_t off, void* buf, size_t len) { return pread(in, buf, len, static_cast<off_t>(off)); },
+			[&](uint64_t off, void* buf, size_t len) {
+				const auto a = std::chrono::steady_clock::now();
+				const ssize_t r = pread(in, buf, len, static_cast<off_t>(off));
+				read_us.fetch_add(static_cast<uint64_t>(
+					std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - a).count()));
+				read_n.fetch_add(1);
+				return r;
+			},
 			[&](const void* buf, size_t len) { return write(out, buf, len) == static_cast<ssize_t>(len); },
 			[&](uint64_t done, uint64_t bad) {
 				const int pct = static_cast<int>(done * 100 / node.bytes);
@@ -333,10 +374,15 @@ namespace
 				const double recent = span > 0 ? (done - mark_done) / span : 0.0;
 				mark_done = done;
 				mark_time = now;
+				const uint64_t rus = read_us.load(), rn = read_n.load();
+				const double busy = span > 0 ? (rus - mark_read_us) / 1e6 / span * 100.0 : 0.0;
+				const double per = rn > mark_read_n ? (rus - mark_read_us) / 1000.0 / (rn - mark_read_n) : 0.0;
+				mark_read_us = rus;
+				mark_read_n = rn;
 				const double avg = rate(done);
-				Log("%d%% (%llu of %llu MB, %.1f MB/s = %.1fx now, %.1fx average, %llu unreadable sectors)", pct,
-					static_cast<unsigned long long>(done >> 20), static_cast<unsigned long long>(node.bytes >> 20), recent / 1e6,
-					recent / orbis_disc::kDvd1x, avg / orbis_disc::kDvd1x, static_cast<unsigned long long>(bad));
+				Log("%d%% (%llu of %llu MB, %.1f MB/s = %.1fx now, %.1fx average; %.0f ms per read, drive busy %.0f%%; %llu unreadable sectors)",
+					pct, static_cast<unsigned long long>(done >> 20), static_cast<unsigned long long>(node.bytes >> 20), recent / 1e6,
+					recent / orbis_disc::kDvd1x, avg / orbis_disc::kDvd1x, per, busy, static_cast<unsigned long long>(bad));
 				if (pct >= last_note + 25 && pct < 100)
 				{
 					last_note = pct - pct % 25;
