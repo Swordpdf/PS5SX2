@@ -3214,6 +3214,7 @@ int main()
   printf("[boot] PS2 network adapter %s\n", orbis_flag("nonetwork") ? "off (flag nonetwork)" : "on by default (sockets, DHCP)");
   // vk-285-140 (AI-assisted): USB guitars and pads the PS5 doesn't take as controllers (orbis-shims/ProsperoUsbPad.cpp). Started
   // here so that a guitar plugged in before the game can make PS2 port 1 a Guitar below (up to a second's wait for it).
+  bool guitar_game = false;
   {
     // vk-285-142: in a Guitar Hero / Rock Band game a USB device known only by its reports' shape is taken as a guitar.
     fe::GameInfo gi;
@@ -3225,8 +3226,8 @@ int main()
     std::string low = gi.title + " " + s_game_path;
     for (char &ch : low)
       ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
-    const bool guitar_game = low.find("guitar hero") != std::string::npos || low.find("rock band") != std::string::npos ||
-                             low.find("band hero") != std::string::npos;
+    guitar_game = low.find("guitar hero") != std::string::npos || low.find("rock band") != std::string::npos ||
+                  low.find("band hero") != std::string::npos;
     OrbisUsbPadSetGuitarHint(guitar_game);
     printf("[boot] USB pads: %s (\"%s\")\n", guitar_game ? "a Guitar Hero or Rock Band game" : "not a guitar game", gi.title.c_str());
   }
@@ -3285,14 +3286,22 @@ int main()
     orbis_apply_gs_ini(peek, true);
     std::string own_type;
     const bool typed = peek.GetStringValue("Pad1", "Type", &own_type) && !own_type.empty();
-    if (usb_guitar_at_start && !typed)
+    // vk-285-155 (AI-assisted): only make port 1 a Guitar when this is a guitar game, or the usbguitar flag is set. A real
+    // guitar left plugged in while a normal game runs used to turn port 1 into a Guitar for that game too, and PadGuitar
+    // masks the first button byte, so the game saw the D-pad held left and no sticks: unplayable. gs.ini or the game's file
+    // can still set Pad1/Type=Guitar by hand.
+    const bool want_guitar = usb_guitar_at_start && (guitar_game || orbis_flag("usbguitar"));
+    if (want_guitar && !typed)
       s_base_si.SetStringValue("Pad1", "Type", "Guitar");
     MemorySettingsInterface after = s_base_si;
     orbis_apply_gs_ini(after, true);
     const std::string type = after.GetStringValue("Pad1", "Type", "DualShock2");
     g_orbis_port1_guitar.store(type == "Guitar", std::memory_order_relaxed);
     printf("[boot] PS2 port 1: %s%s\n", type.c_str(),
-      usb_guitar_at_start ? (typed ? " (a USB guitar is connected, but gs.ini or the game's file sets Pad1's type)" : " (a USB guitar is connected)") : "");
+      usb_guitar_at_start ? (typed ? " (a USB guitar is connected, but gs.ini or the game's file sets Pad1's type)"
+                                    : want_guitar ? " (a USB guitar is connected)"
+                                                  : " (a USB guitar is connected, but this isn't a guitar game: use the usbguitar flag)")
+                          : "");
     fflush(stdout);
   }
   s_base_pre_gsini = s_base_si; // eerec-285

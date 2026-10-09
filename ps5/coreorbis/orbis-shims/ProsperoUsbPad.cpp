@@ -78,6 +78,19 @@ namespace
 	std::vector<std::string> s_usb_nodes; // /dev/usb's names ("1.3.2"), from the last scan; the thread's
 	std::atomic<bool> s_guitar_hint{false}; // vk-285-142: the game is a Guitar Hero / Rock Band one (main-boot)
 
+	// vk-285-155 (AI-assisted): the "blind" probes -- opening the raw endpoint nodes of a device the kernel wouldn't
+	// identify (ProbeUgen, for 13.60), and loading libSceUsbd and polling every non-hub USB device -- run only when the
+	// user is actually after a USB guitar or pad: a Guitar Hero / Rock Band game, or the usbguitar / usbpad flag. For
+	// every other game they are off, because reading a stranger's endpoint can take a wired DualSense's input from the
+	// system (the PS button dies, only a power-off helps) or stall the USB drive the game loads from (a black screen).
+	// Two testers hit exactly that on the 140-143 guitar builds, with no guitar in the game. The safe routes that
+	// identify a device first (uhid, and ugen when USB_GET_DEVICEINFO works) still run for every game. Flag usbpadscan
+	// forces the blind probes on for any game.
+	bool DeepScanAllowed()
+	{
+		return s_guitar_hint.load() || OrbisFlag("usbguitar") || OrbisFlag("usbpad") || OrbisFlag("usbpadscan");
+	}
+
 	// vk-285-142 (AI-assisted): the 13.60 tester log (vk-285-140, a base PS5) showed /dev/ugenB.A and /dev/usb/B.A.E nodes,
 	// but every ugen control node answered USB_GET_DEVICEINFO with ENOTTY: Sony's kernel doesn't take FreeBSD's ugen
 	// ioctls there. The endpoint nodes may still read. A candidate is an endpoint node that opened for reading; the
@@ -411,6 +424,13 @@ namespace
 		if (internal)
 		{
 			Log("/dev/%s: %zu endpoint nodes, numbers above 7: an internal device, not read", node.c_str(), eps.size());
+			return;
+		}
+		// vk-285-155: don't open a device we can't identify unless the user is after a guitar or pad (see DeepScanAllowed):
+		// its endpoint might be a wired DualSense's or the USB drive the game loads from.
+		if (!DeepScanAllowed())
+		{
+			Log("/dev/%s: %zu endpoint node(s), not a guitar game: left alone (flag usbpadscan reads them)", node.c_str(), eps.size());
 			return;
 		}
 		for (unsigned e : eps)
@@ -874,7 +894,11 @@ namespace
 					return true;
 			}
 		}
-		// libSceUsbd (vk-285-142: also when the ugen nodes gave nothing, as on 13.60).
+		// libSceUsbd (vk-285-142: also when the ugen nodes gave nothing, as on 13.60). vk-285-155: only when the user is
+		// after a guitar or pad -- it opens and talks to every non-hub USB device, the DualSense and the game's USB drive
+		// included.
+		if (!DeepScanAllowed())
+			return false;
 		return TryUsbd(d, seen);
 	}
 
