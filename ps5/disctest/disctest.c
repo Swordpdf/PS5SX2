@@ -19,6 +19,14 @@
  * v3: the disc's current profile (GET CONFIGURATION), then DB with rotation 0 and 2 (and 3) and explicit speeds, each
  * timed on 16 MiB when the drive takes it; refusals log the sense data's field pointer (which byte the drive objects to).
  *
+ * v3 on swordpdf's console: profile 0x10 (DVD-ROM). Rotation 0: 0x80 and 0x50 refused (asc 0x24, no field pointer), 0x32
+ * taken and read at 3.20x (4.43 MB/s) at both ends of the disc. Rotation 2 (0x80, 0x50, 0x40) and 3 (0x80) refused.
+ *
+ * v4: a sweep, to learn what the drive takes for a DVD: rotation 0 between 0x32 and 0x50 and beyond (is 3.2 a ceiling or
+ * one of a few fixed values?), values read as kB/s (the log string says "kbyte/sec": 5540, 8310, 11080 = 4x, 6x, 8x),
+ * and rotations 1-3 with the low values 0x20/0x32 (is the rotation or the speed what's refused?). Each value the drive
+ * takes is timed on 16 MiB.
+ *
  * Results: klog ([PS5SX2 disctest]), /data/PCSX2/logs/disctest.log, and notifications.
  *
  * Copyright (C) 2026 swordpdf
@@ -208,9 +216,9 @@ int main(void) {
   mkdir("/data/PCSX2/logs", 0777);
   g_log = fopen("/data/PCSX2/logs/disctest.log", "w");
   const pid_t pid = getpid();
-  say("v3 (Sony speed command, DVD variants), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
+  say("v4 (Sony speed command, sweep), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
       (unsigned long long)kernel_get_ucred_authid(pid));
-  notify("PS5SX2 disc test v3: running (about 1 to 3 minutes)");
+  notify("PS5SX2 disc test v4: running (about 1 to 3 minutes)");
 
   const int fd = open_cd(pid);
   if (fd < 0) {
@@ -250,10 +258,12 @@ int main(void) {
   static const struct {
     uint8_t rot;
     uint16_t speed;
-  } kTry[] = {{0, 0x0080}, {0, 0x0050}, {0, 0x0032}, {2, 0x0080}, {2, 0x0050}, {2, 0x0040}, {3, 0x0080}};
+  } kTry[] = {{0, 0x0026}, {0, 0x0030}, {0, 0x0033}, {0, 0x0035}, {0, 0x0038}, {0, 0x003C}, {0, 0x003F}, {0, 0x0040},
+               {0, 0x0048}, {0, 0x004F}, {0, 0x0060}, {0, 0x0100}, {0, 0x15A4}, {0, 0x2076}, {0, 0x2B48}, {1, 0x0020},
+               {1, 0x0032}, {2, 0x0020}, {2, 0x0032}, {3, 0x0032}};
   const int n = (int)(sizeof(kTry) / sizeof(kTry[0]));
-  double res[16] = {0};
-  const uint64_t step = 32ull << 20, first = 64ull << 20;
+  double res[32] = {0};
+  const uint64_t step = 24ull << 20, first = 64ull << 20;
   say("current profile: %#x", current_profile(pass));
 
   const double base = timed_read(fd, first, sz, "as the drive is");
@@ -279,15 +289,14 @@ int main(void) {
   close(fd);
 
   char line[3000];
-  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v3: as is %.1f MB/s (%.1fx)", base, base / 1.385);
-  for (int i = 0; i < n && at < (int)sizeof(line) - 80; i++) {
-    char st[16];
+  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v4: as is %.1f MB/s (%.1fx)", base, base / 1.385);
+  for (int i = 0; i < n && at < (int)sizeof(line) - 80; i++)
+    if (res[i] >= 0)
+      at += snprintf(line + at, sizeof(line) - at, " | r%u %04x: %.1f MB/s (%.1fx)", kTry[i].rot, kTry[i].speed, res[i], res[i] / 1.385);
+  at += snprintf(line + at, sizeof(line) - at, " | refused:");
+  for (int i = 0; i < n && at < (int)sizeof(line) - 20; i++)
     if (res[i] < 0)
-      at += snprintf(line + at, sizeof(line) - at, " | r%u %s refused", kTry[i].rot, speed_text(kTry[i].speed, st, sizeof(st)));
-    else
-      at += snprintf(line + at, sizeof(line) - at, " | r%u %s: %.1f MB/s (%.1fx)", kTry[i].rot, speed_text(kTry[i].speed, st, sizeof(st)),
-                     res[i], res[i] / 1.385);
-  }
+      at += snprintf(line + at, sizeof(line) - at, " r%u/%04x", kTry[i].rot, kTry[i].speed);
   if (best >= 0 && at < (int)sizeof(line) - 60)
     snprintf(line + at, sizeof(line) - at, " | end of disc %.1f MB/s (%.1fx)", end, end / 1.385);
   notify("%s", line);
