@@ -3002,7 +3002,34 @@ int main()
   // HTTPS failed there on vk-285-41/42, with etaHEN's jailbreak; with the PS5SX2 Helper's it hasn't been
   // tried, and boot.log's "[frontend] cover ..." lines will show it. When it fails, the next start's
   // prefetch fetches them from cache/usb-games.txt, as before.
-  if (!orbis_flag("nofrontend") && !orbis_flag("nomenu"))
+  // vk-285-160 (AI-assisted): the disc-launch payload ELF (ps5/disclaunch/disc_launch.c) found the ISO
+  // for the disc in the drive and wrote its full path here before restarting the eboot.  Read and
+  // delete the file immediately (it is always transient) so the next normal start uses the shelf.
+  {
+      const std::string dlp = OrbisLogPath("disc-launch.txt");
+      if (FILE* f = fopen(dlp.c_str(), "r")) {
+          char buf[1024] = {};
+          if (fgets(buf, sizeof(buf), f)) {
+              // strip trailing newline / whitespace
+              size_t n = strlen(buf);
+              while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' '))
+                  buf[--n] = '\0';
+              if (n) {
+                  struct stat dst {};
+                  if (stat(buf, &dst) == 0) {
+                      s_game_path = buf;
+                      printf("[boot] disc-launch: starting %s\n", buf);
+                      fflush(stdout);
+                  } else {
+                      printf("[boot] disc-launch: %s: stat failed (errno %d) — ignored\n", buf, errno);
+                  }
+              }
+          }
+          fclose(f);
+          unlink(dlp.c_str());
+      }
+  }
+  if (s_game_path.empty() && !orbis_flag("nofrontend") && !orbis_flag("nomenu"))
     s_game_path = orbis_frontend_run(orbis_frontend_paths(!orbis_flag("nocoverdl")), ORBIS_BUILD_TAG, &frontend_ran);
 #endif
 #ifdef ORBIS_VULKAN
@@ -3015,7 +3042,7 @@ int main()
   OrbisAchievementsWaitForLogin();
   OrbisAchievementsStopBrowser(); // pr9n: the shelf's achievement list isn't needed now (was: wait out its requests)
 #endif
-  if (!frontend_ran)
+  if (s_game_path.empty() && !frontend_ran)
     s_game_path = orbis_select_game(OrbisDir("games").c_str(), "/data/PCSX2", ORBIS_BUILD_TAG); // vk-285-33: games/ too
   if (s_game_path.empty())
   {
