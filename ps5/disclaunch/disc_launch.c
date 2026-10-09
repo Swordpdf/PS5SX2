@@ -54,6 +54,8 @@
  *   Each extra LaunchApp on an app already in front replays its splash for a moment, so one follow-up only
  *   (+3 s after the exec signal is consumed; +6 s after a cold launch, in case the shell's disc screen lands
  *   last), and the settle after insert is 2 s (was 4) to shorten the home-screen detour.
+ * live-4: USB diagnostics: raw CCB status / SCSI status / resid, GET CONFIGURATION, and the device queue's freeze
+ *   count, released (only as many as it reads) in case the cd driver's failed attach left it frozen.
  * live-3: USB serial read says why it failed (sector 16 result, capacity), READ(12) if READ(10) is refused, 5 tries.
  * live-2: USB DVD drives through their pass device (the CD device doesn't attach on the 4.03 phat), dumped by
  *   the daemon itself; see usb_dump.
@@ -455,6 +457,9 @@ static void cleanup(const char *serial) {
 #define USB_CHUNK_SECTORS 32u
 #define USB_MAX_BAD       20000u
 
+static uint32_t g_raw_status, g_raw_resid; /* live-4: what the last command really returned */
+static uint8_t g_raw_scsi;
+
 static int scsi(int pass, const uint8_t *cdb, int cdb_len, uint32_t dir, uint8_t *data, uint32_t len, uint32_t timeout_ms,
                 char *why, size_t whylen) {
     union ccb ccb;
@@ -462,10 +467,12 @@ static int scsi(int pass, const uint8_t *cdb, int cdb_len, uint32_t dir, uint8_t
     cam_fill_csio(&ccb.csio, 1, NULL, dir | CAM_DEV_QFRZDIS, MSG_SIMPLE_Q_TAG, data, len, SSD_FULL_SIZE,
                   (uint8_t)cdb_len, timeout_ms);
     memcpy(ccb.csio.cdb_io.cdb_bytes, cdb, (size_t)cdb_len);
+    g_raw_status = 0xffffffffu; g_raw_scsi = 0xff; g_raw_resid = 0xffffffffu;
     if (ioctl(pass, CAMIOCOMMAND, &ccb) != 0) {
         if (why) snprintf(why, whylen, "errno %d", errno);
         return -1;
     }
+    g_raw_status = ccb.ccb_h.status; g_raw_scsi = ccb.csio.scsi_status; g_raw_resid = ccb.csio.resid;
     if ((ccb.ccb_h.status & CAM_STATUS_MASK) == CAM_REQ_CMP) return 0;
     if (why) {
         const uint8_t *sd = (const uint8_t *)&ccb.csio.sense_data;
@@ -503,6 +510,31 @@ static int usb_find(char *path, size_t pmax, char *what, size_t wmax) {
     }
     closedir(d);
     return found;
+}
+
+/* live-4: the device queue's freeze count (XPT_REL_SIMQ with CAM_DEV_QFREEZE only reads it), and releasing
+ * exactly that many. The cd driver's failed attach (CAM status 0x50 = AUTOSENSE_FAIL | DEV_QFRZN) may have left the
+ * queue frozen. Never releases more than the count it read. -1 when the query isn't taken. */
+static int usb_qfrozen(int pass) {
+    union ccb ccb;
+    memset(&ccb, 0, sizeof(ccb));
+    ccb.ccb_h.func_code = XPT_REL_SIMQ;
+    ccb.ccb_h.flags = CAM_DEV_QFREEZE; /* count only */
+    if (ioctl(pass, CAMIOCOMMAND, &ccb) != 0) { say("usb: queue count: errno %d", errno); return -1; }
+    return (int)ccb.crs.qfrozen_cnt;
+}
+static void usb_release(int pass) {
+    const int n = usb_qfrozen(pass);
+    say("usb: device queue frozen count %d", n);
+    for (int i = 0; i < n && i < 8; i++) {
+        union ccb ccb;
+        memset(&ccb, 0, sizeof(ccb));
+        ccb.ccb_h.func_code = XPT_REL_SIMQ;
+        ccb.ccb_h.flags = 0;
+        ccb.crs.release_flags = 0;
+        const int rc = ioctl(pass, CAMIOCOMMAND, &ccb);
+        say("usb: release %d: rc %d status %#x, count now %d", i + 1, rc, ccb.ccb_h.status, usb_qfrozen(pass));
+    }
 }
 
 static int usb_ready(int pass) {
@@ -625,7 +657,7 @@ static int usb_dump(int pass, const char *serial, uint32_t sectors) {
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (live-3) pid %d", (int)getpid());
+    say("disc-auto daemon (live-4) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
@@ -756,7 +788,26 @@ int main(void) {
                         /* say why: sector 16 straight, and what it holds */
                         uint8_t pvd[2048] = {0};
                         char why[80] = "";
+                        if (usb_tries == 0) usb_release(usb_fd);
                         const int ok16 = usb_read(usb_fd, 16, 1, pvd, why, sizeof(why));
+                        say("usb: sector 16 raw: ccb status %#x, scsi status %#x, resid %u of 2048; bytes %02x %02x %02x %02x %02x %02x",
+                            g_raw_status, g_raw_scsi, g_raw_resid, pvd[0], pvd[1], pvd[2], pvd[3], pvd[4], pvd[5]);
+                        {
+                            uint8_t rc8[8] = {0};
+                            const uint8_t c[10] = {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+                            char w2[64] = "";
+                            const int r = scsi(usb_fd, c, 10, CAM_DIR_IN, rc8, sizeof(rc8), 10000, w2, sizeof(w2));
+                            say("usb: READ CAPACITY rc %d %s raw: ccb status %#x, scsi %#x, resid %u of 8; %02x%02x%02x%02x %02x%02x%02x%02x",
+                                r, w2, g_raw_status, g_raw_scsi, g_raw_resid, rc8[0], rc8[1], rc8[2], rc8[3], rc8[4], rc8[5], rc8[6], rc8[7]);
+                            uint8_t gc[8] = {0};
+                            const uint8_t cg[10] = {0x46, 0x02, 0, 0, 0, 0, 0, 0, 8, 0};
+                            const int r2 = scsi(usb_fd, cg, 10, CAM_DIR_IN, gc, sizeof(gc), 10000, w2, sizeof(w2));
+                            say("usb: GET CONFIGURATION rc %d %s: profile %#06x, resid %u", r2, w2, gc[6] << 8 | gc[7], g_raw_resid);
+                            uint8_t inq[36] = {0};
+                            const uint8_t ci[6] = {0x12, 0, 0, 0, sizeof(inq), 0};
+                            const int r3 = scsi(usb_fd, ci, 6, CAM_DIR_IN, inq, sizeof(inq), 5000, w2, sizeof(w2));
+                            say("usb: INQUIRY again rc %d: resid %u, '%.8s'", r3, g_raw_resid, inq + 8);
+                        }
                         char label[33] = {0};
                         if (ok16) memcpy(label, pvd + 40, 32);
                         say("usb: no PS2 serial yet (try %d): sector 16 %s%s%.5s%s%s; capacity %u sectors", usb_tries + 1,
