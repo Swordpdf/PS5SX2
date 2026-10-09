@@ -54,6 +54,7 @@
  *   Each extra LaunchApp on an app already in front replays its splash for a moment, so one follow-up only
  *   (+3 s after the exec signal is consumed; +6 s after a cold launch, in case the shell's disc screen lands
  *   last), and the settle after insert is 2 s (was 4) to shorten the home-screen detour.
+ * live-5: USB probe: which standard read commands return data (READ 6/10/12/16, READ CD, capacities, TOC, ...).
  * live-4: USB diagnostics: raw CCB status / SCSI status / resid, GET CONFIGURATION, and the device queue's freeze
  *   count, released (only as many as it reads) in case the cd driver's failed attach left it frozen.
  * live-3: USB serial read says why it failed (sector 16 result, capacity), READ(12) if READ(10) is refused, 5 tries.
@@ -537,6 +538,41 @@ static void usb_release(int pass) {
     }
 }
 
+/* live-5: which standard read commands give this drive's data through the PS5 (live-4: READ(10) and READ CAPACITY
+ * "complete" with resid = everything, while GET CONFIGURATION and INQUIRY return data). Read-only MMC/SBC commands,
+ * once per disc. Returns the opcode that read sector 16 with data, or 0. */
+static uint8_t usb_probe_reads(int pass) {
+    struct { const char *name; uint8_t cdb[16]; int len; uint32_t bytes; int is_s16; } t[] = {
+        {"READ(10) s16",           {0x28, 0, 0, 0, 0, 16, 0, 0, 1, 0}, 10, 2048, 1},
+        {"READ(12) s16",           {0xA8, 0, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0}, 12, 2048, 1},
+        {"READ(16) s16",           {0x88, 0, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0}, 16, 2048, 1},
+        {"READ CD s16 user data",  {0xBE, 0x00, 0, 0, 0, 16, 0, 0, 1, 0x10, 0, 0}, 12, 2048, 1},
+        {"READ(6) s16",            {0x08, 0, 0, 16, 1, 0}, 6, 2048, 1},
+        {"READ CAPACITY(10)",      {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 10, 8, 0},
+        {"READ CAPACITY(16)",      {0x9E, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0}, 16, 32, 0},
+        {"READ TOC",               {0x43, 0, 0, 0, 0, 0, 0, 0, 12, 0}, 10, 12, 0},
+        {"READ DISC INFORMATION",  {0x51, 0, 0, 0, 0, 0, 0, 0, 34, 0}, 10, 34, 0},
+        {"READ DISC STRUCTURE 0",  {0xAD, 0, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0}, 12, 24, 0},
+        {"MODE SENSE(10) 2A",      {0x5A, 0x08, 0x2A, 0, 0, 0, 0, 0, 64, 0}, 10, 64, 0},
+        {"REQUEST SENSE",          {0x03, 0, 0, 0, 18, 0}, 6, 18, 0},
+    };
+    uint8_t op = 0;
+    static uint8_t buf[2048];
+    for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+        memset(buf, 0, sizeof(buf));
+        char w[64] = "";
+        const int r = scsi(pass, t[i].cdb, t[i].len, CAM_DIR_IN, buf, t[i].bytes, 15000, w, sizeof(w));
+        const uint32_t got = g_raw_resid <= t[i].bytes ? t[i].bytes - g_raw_resid : 0;
+        int nz = 0;
+        for (uint32_t k = 0; k < t[i].bytes; k++) nz += buf[k] != 0;
+        say("usb probe: %-22s rc %d %s ccb %#x scsi %#x got %u/%u bytes, %d non-zero; %02x %02x %02x %02x %02x %02x %02x %02x",
+            t[i].name, r, w, g_raw_status, g_raw_scsi, got, t[i].bytes, nz, buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+        if (t[i].is_s16 && r == 0 && buf[0] == 1 && memcmp(buf + 1, "CD001", 5) == 0 && !op) op = t[i].cdb[0];
+    }
+    say("usb probe: sector 16 readable with %s", op ? "the opcode above" : "none of these");
+    return op;
+}
+
 static int usb_ready(int pass) {
     const uint8_t c[6] = {0x00, 0, 0, 0, 0, 0};
     return scsi(pass, c, 6, CAM_DIR_NONE, NULL, 0, 5000, NULL, 0) == 0;
@@ -657,7 +693,7 @@ static int usb_dump(int pass, const char *serial, uint32_t sectors) {
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (live-4) pid %d", (int)getpid());
+    say("disc-auto daemon (live-5) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
@@ -788,7 +824,7 @@ int main(void) {
                         /* say why: sector 16 straight, and what it holds */
                         uint8_t pvd[2048] = {0};
                         char why[80] = "";
-                        if (usb_tries == 0) usb_release(usb_fd);
+                        if (usb_tries == 0) { usb_release(usb_fd); usb_probe_reads(usb_fd); }
                         const int ok16 = usb_read(usb_fd, 16, 1, pvd, why, sizeof(why));
                         say("usb: sector 16 raw: ccb status %#x, scsi status %#x, resid %u of 2048; bytes %02x %02x %02x %02x %02x %02x",
                             g_raw_status, g_raw_scsi, g_raw_resid, pvd[0], pvd[1], pvd[2], pvd[3], pvd[4], pvd[5]);
