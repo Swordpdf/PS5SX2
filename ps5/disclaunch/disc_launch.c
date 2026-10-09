@@ -54,6 +54,8 @@
  *   Each extra LaunchApp on an app already in front replays its splash for a moment, so one follow-up only
  *   (+3 s after the exec signal is consumed; +6 s after a cold launch, in case the shell's disc screen lands
  *   last), and the settle after insert is 2 s (was 4) to shorten the home-screen detour.
+ * live-2: USB DVD drives through their pass device (the CD device doesn't attach on the 4.03 phat), dumped by
+ *   the daemon itself; see usb_dump.
  * live-1: builds are now named live-N (swordpdf, 2026-10-09); live-1 = vk-285-160k daemon + 160l eboot.
  * Needs proper testing on a console with a disc drive.
  *
@@ -80,6 +82,12 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <cam/cam.h>
+#include <cam/cam_ccb.h>
+#include <cam/scsi/scsi_all.h>
+#include <cam/scsi/scsi_message.h>
+#include <cam/scsi/scsi_pass.h>
 
 #include <ps5/kernel.h>
 #include <ps5/klog.h>
@@ -139,9 +147,10 @@ static int read_lba(int fd, uint32_t lba, uint8_t *out) {
 }
 
 /* "SLUS_213.51" in SYSTEM.CNF's BOOT2 -> "SLUS-21351" (same normalisation as fe_games). */
-static int read_serial(int fd, char *out) {
+typedef int (*sector_reader)(void *ctx, uint32_t lba, uint8_t *out);
+static int read_serial_with(sector_reader rd, void *ctx, char *out) {
     uint8_t pvd[2048];
-    if (!read_lba(fd, 16, pvd)) return 0;
+    if (!rd(ctx, 16, pvd)) return 0;
     if (pvd[0] != 1 || memcmp(pvd + 1, "CD001", 5) != 0) return 0;
 
     const uint32_t root_lba  = le32(pvd + 156 + 2);
@@ -150,7 +159,7 @@ static int read_serial(int fd, char *out) {
 
     uint8_t dir[2048];
     for (uint32_t ds = 0; ds < dir_secs; ds++) {
-        if (!read_lba(fd, root_lba + ds, dir)) continue;
+        if (!rd(ctx, root_lba + ds, dir)) continue;
         for (int off = 0; off < 2048; ) {
             const int rlen = dir[off];
             if (rlen == 0) break; /* rest of this sector is padding */
@@ -165,7 +174,7 @@ static int read_serial(int fd, char *out) {
                 uint8_t sec[2048];
                 size_t got = 0;
                 for (uint32_t k = 0; k < (csz + 2047) / 2048 && got < csz; k++) {
-                    if (!read_lba(fd, clba + k, sec)) break;
+                    if (!rd(ctx, clba + k, sec)) break;
                     size_t take = csz - got < 2048 ? csz - got : 2048;
                     memcpy(cnf + got, sec, take);
                     got += take;
@@ -190,6 +199,9 @@ static int read_serial(int fd, char *out) {
     }
     return 0;
 }
+
+static int fd_sector(void *ctx, uint32_t lba, uint8_t *out) { return read_lba(*(int *)ctx, lba, out); }
+static int read_serial(int fd, char *out) { return read_serial_with(fd_sector, &fd, out); }
 
 /* ------------------------------------------------------------------ */
 /* games/ scanner                                                        */
@@ -429,10 +441,176 @@ static void cleanup(const char *serial) {
 /* ------------------------------------------------------------------ */
 /* main                                                                  */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* USB DVD drives (live-2)                                               */
+/* ------------------------------------------------------------------ */
+/* swordpdf's Verbatim BD RW (PIONEER BDR-UD03) on the 4.03 phat: the kernel sees it (umass0, /dev/pass1, INQUIRY
+ * type 5) but its CD device never attaches ("(cd1:umass-sim1...): got CAM status 0x50 ... failed to attach to
+ * device", every plug). So PS5SX2's watcher (cdN only) never sees it. The daemon reads it itself through the pass
+ * device with plain MMC commands: TEST UNIT READY to see a disc (no read), READ CAPACITY, READ(10) in 64 KiB
+ * pieces, SET CD SPEED to the drive's maximum first (standard; a PC drive takes it, and no Sony vendor command
+ * ever goes to it). The copy goes to games/<SERIAL>.iso(.part); then the usual launch takes over.
+ * Needs proper testing on a console with a USB DVD drive. */
+#define USB_CHUNK_SECTORS 32u
+#define USB_MAX_BAD       20000u
+
+static int scsi(int pass, const uint8_t *cdb, int cdb_len, uint32_t dir, uint8_t *data, uint32_t len, uint32_t timeout_ms,
+                char *why, size_t whylen) {
+    union ccb ccb;
+    memset(&ccb, 0, sizeof(ccb));
+    cam_fill_csio(&ccb.csio, 1, NULL, dir | CAM_DEV_QFRZDIS, MSG_SIMPLE_Q_TAG, data, len, SSD_FULL_SIZE,
+                  (uint8_t)cdb_len, timeout_ms);
+    memcpy(ccb.csio.cdb_io.cdb_bytes, cdb, (size_t)cdb_len);
+    if (ioctl(pass, CAMIOCOMMAND, &ccb) != 0) {
+        if (why) snprintf(why, whylen, "errno %d", errno);
+        return -1;
+    }
+    if ((ccb.ccb_h.status & CAM_STATUS_MASK) == CAM_REQ_CMP) return 0;
+    if (why) {
+        const uint8_t *sd = (const uint8_t *)&ccb.csio.sense_data;
+        snprintf(why, whylen, "sense %X/%02X/%02X (cam %#x)", sd[2] & 15, sd[12], sd[13], ccb.ccb_h.status & CAM_STATUS_MASK);
+    }
+    return -1;
+}
+
+static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+
+/* An optical drive that isn't the PS5's own: its pass device path and INQUIRY text. */
+static int usb_find(char *path, size_t pmax, char *what, size_t wmax) {
+    DIR *d = opendir("/dev");
+    if (!d) return 0;
+    struct dirent *e;
+    int found = 0;
+    while (!found && (e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "pass", 4) != 0) continue;
+        char p[64];
+        snprintf(p, sizeof(p), "/dev/%s", e->d_name);
+        const int fd = open(p, O_RDWR);
+        if (fd < 0) continue;
+        uint8_t inq[36] = {0};
+        const uint8_t c[6] = {0x12, 0, 0, 0, sizeof(inq), 0};
+        if (scsi(fd, c, 6, CAM_DIR_IN, inq, sizeof(inq), 5000, NULL, 0) == 0 && (inq[0] & 0x1f) == 5) {
+            char w[64];
+            snprintf(w, sizeof(w), "%.8s | %.16s | %.4s", inq + 8, inq + 16, inq + 32);
+            if (!strstr(w, "PS-SYSTEM")) {
+                snprintf(path, pmax, "%s", p);
+                snprintf(what, wmax, "%s", w);
+                found = 1;
+            }
+        }
+        close(fd);
+    }
+    closedir(d);
+    return found;
+}
+
+static int usb_ready(int pass) {
+    const uint8_t c[6] = {0x00, 0, 0, 0, 0, 0};
+    return scsi(pass, c, 6, CAM_DIR_NONE, NULL, 0, 5000, NULL, 0) == 0;
+}
+
+/* Sectors on the disc (2048-byte blocks), 0 if unknown. */
+static uint32_t usb_capacity(int pass) {
+    uint8_t r[8] = {0};
+    const uint8_t c[10] = {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    char why[64];
+    if (scsi(pass, c, 10, CAM_DIR_IN, r, sizeof(r), 10000, why, sizeof(why)) != 0) {
+        say("usb: READ CAPACITY %s", why);
+        return 0;
+    }
+    if (be32(r + 4) != 2048) { say("usb: block length %u, not 2048", be32(r + 4)); return 0; }
+    return be32(r) + 1;
+}
+
+static int usb_read(int pass, uint32_t lba, uint32_t count, uint8_t *buf, char *why, size_t wmax) {
+    const uint8_t c[10] = {0x28, 0, (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+                           0, (uint8_t)(count >> 8), (uint8_t)count, 0};
+    return scsi(pass, c, 10, CAM_DIR_IN, buf, count * 2048u, 30000, why, wmax) == 0;
+}
+
+static int usb_sector(void *ctx, uint32_t lba, uint8_t *out) { return usb_read(*(int *)ctx, lba, 1, out, NULL, 0); }
+
+static double mono_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+/* Copies the disc in the USB drive to games/<serial>.iso. 1 when the .iso is there in full (bad sectors, if any,
+ * written as zeros and marked with <iso>.incomplete), 0 when it stopped. */
+static int usb_dump(int pass, const char *serial, uint32_t sectors) {
+    char iso[512], part[520];
+    snprintf(iso, sizeof(iso), GAMES_DIR "/%s.iso", serial);
+    snprintf(part, sizeof(part), "%s.part", iso);
+    mkdir(GAMES_DIR, 0777);
+
+    char why[64];
+    uint8_t perf[40] = {0};
+    const uint8_t c_perf[12] = {0xAC, 0x10, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0};
+    if (scsi(pass, c_perf, 12, CAM_DIR_IN, perf, sizeof(perf), 10000, why, sizeof(why)) == 0)
+        say("usb: GET PERFORMANCE %u..%u kB/s", be32(perf + 12), be32(perf + 20));
+    const uint8_t c_bb[12] = {0xBB, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0};
+    if (scsi(pass, c_bb, 12, CAM_DIR_NONE, NULL, 0, 10000, why, sizeof(why)) == 0) say("usb: SET CD SPEED max: ok");
+    else say("usb: SET CD SPEED max: %s", why);
+
+    const int out = open(part, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (out < 0) { say("usb: open %s: errno %d", part, errno); notify("USB disc: can't write to " GAMES_DIR); return 0; }
+    static uint8_t buf[USB_CHUNK_SECTORS * 2048u];
+    const double t0 = mono_s();
+    double tlast = t0;
+    uint32_t lba_last = 0, bad = 0, next_pct = 5;
+    const uint64_t total = (uint64_t)sectors * 2048u;
+    notify("USB disc: copying %s (%.1f GB)", serial, total / 1e9);
+    say("usb: copying %s: %u sectors (%llu bytes) to %s", serial, sectors, (unsigned long long)total, part);
+
+    for (uint32_t lba = 0; lba < sectors;) {
+        const uint32_t n = sectors - lba < USB_CHUNK_SECTORS ? sectors - lba : USB_CHUNK_SECTORS;
+        int ok = 0;
+        for (int tries = 0; tries < 3 && !ok; tries++) ok = usb_read(pass, lba, n, buf, why, sizeof(why));
+        if (!ok) {
+            if (!usb_ready(pass)) { say("usb: drive not ready at sector %u (%s): disc out? stopping", lba, why); close(out); unlink(part); return 0; }
+            /* sector by sector; what stays unreadable becomes zeros */
+            for (uint32_t i = 0; i < n; i++) {
+                int one = 0;
+                for (int tries = 0; tries < 2 && !one; tries++) one = usb_read(pass, lba + i, 1, buf + i * 2048u, NULL, 0);
+                if (!one) { memset(buf + i * 2048u, 0, 2048); bad++; }
+            }
+            say("usb: sectors %u..%u: %s; read one by one, %u unreadable so far", lba, lba + n - 1, why, bad);
+            if (bad > USB_MAX_BAD) { say("usb: too many unreadable sectors: stopping"); notify("USB disc: too many read errors, stopped"); close(out); unlink(part); return 0; }
+        }
+        const ssize_t w = pwrite(out, buf, (size_t)n * 2048u, (off_t)lba * 2048);
+        if (w != (ssize_t)n * 2048) { say("usb: write errno %d at sector %u", errno, lba); notify("USB disc: write failed (disk full?)"); close(out); unlink(part); return 0; }
+        lba += n;
+        const uint32_t pct = (uint32_t)((uint64_t)lba * 100 / sectors);
+        if (pct >= next_pct || lba == sectors) {
+            const double t = mono_s();
+            const double now_mb = (double)(lba - lba_last) * 2048 / (t - tlast > 0.001 ? t - tlast : 0.001) / 1e6;
+            const double avg_mb = (double)lba * 2048 / (t - t0 > 0.001 ? t - t0 : 0.001) / 1e6;
+            say("usb: %u%% (%llu MB, %.1f MB/s = %.1fx DVD now, %.1fx average; %u unreadable)", pct,
+                (unsigned long long)((uint64_t)lba * 2048 / 1000000), now_mb, now_mb / 1.385, avg_mb / 1.385, bad);
+            notify("USB disc %s: %u%% | %.1f MB/s (%.1fx)", serial, pct, now_mb, now_mb / 1.385);
+            tlast = t; lba_last = lba;
+            while (next_pct <= pct) next_pct += 5;
+            stamp_self();
+        }
+    }
+    fsync(out);
+    close(out);
+    if (rename(part, iso) != 0) { say("usb: rename errno %d", errno); return 0; }
+    char inc[540];
+    snprintf(inc, sizeof(inc), "%s.incomplete", iso);
+    if (bad) { FILE *f = fopen(inc, "w"); if (f) { fprintf(f, "%u unreadable sectors\n", bad); fclose(f); } }
+    else unlink(inc);
+    const double secs = mono_s() - t0;
+    say("usb: %s copied in %.0f s (%.1f MB/s = %.1fx DVD average), %u unreadable sectors", iso, secs, total / secs / 1e6,
+        total / secs / 1e6 / 1.385, bad);
+    return 1;
+}
+
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (live-1) pid %d", (int)getpid());
+    say("disc-auto daemon (live-2) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
@@ -455,6 +633,11 @@ int main(void) {
     int startup = 1;
 
     int focus_done = 0;
+
+    /* live-2: USB drive state */
+    char usb_path[64] = {0}, usb_what[64] = {0}, usb_serial[17] = {0};
+    int usb_fd = -1, usb_done = 0;
+    time_t usb_scan = 0, usb_seen = 0, usb_poll = 0;
 
     for (;;) {
         if (superseded()) {
@@ -523,6 +706,58 @@ int main(void) {
             close(fd);
         }
         startup = 0;
+
+
+        /* live-2: a USB DVD drive (pass device only, see usb_dump). Checked every 3 s with TEST UNIT READY. */
+        if (time(NULL) - usb_poll >= 3) {
+            usb_poll = time(NULL);
+            if (usb_fd < 0 && time(NULL) - usb_scan >= 10) {
+                usb_scan = time(NULL);
+                if (usb_find(usb_path, sizeof(usb_path), usb_what, sizeof(usb_what))) {
+                    usb_fd = open(usb_path, O_RDWR);
+                    if (usb_fd >= 0) say("usb: optical drive %s: %s", usb_path, usb_what);
+                }
+            }
+            if (usb_fd >= 0) {
+                if (!usb_ready(usb_fd)) {
+                    if (usb_serial[0]) { cleanup(usb_serial); usb_serial[0] = '\0'; }
+                    usb_done = 0;
+                    /* a drive that went away: look again later */
+                    uint8_t inq[8];
+                    const uint8_t c[6] = {0x12, 0, 0, 0, sizeof(inq), 0};
+                    if (scsi(usb_fd, c, 6, CAM_DIR_IN, inq, sizeof(inq), 3000, NULL, 0) != 0) {
+                        say("usb: %s gone", usb_path);
+                        close(usb_fd); usb_fd = -1;
+                    }
+                } else if (!usb_serial[0] && !usb_done) {
+                    char s2[17] = {0};
+                    if (read_serial_with(usb_sector, &usb_fd, s2)) {
+                        memcpy(usb_serial, s2, sizeof(usb_serial));
+                        usb_seen = time(NULL);
+                        say("usb: PS2 disc %s in %s", usb_serial, usb_path);
+                    } else {
+                        usb_done = 1;
+                        say("usb: disc in %s but no PS2 SYSTEM.CNF: ignoring", usb_path);
+                    }
+                }
+                if (usb_serial[0] && !usb_done && time(NULL) - usb_seen >= kSettleSec) {
+                    usb_done = 1;
+                    char uiso[1024];
+                    if (!find_iso(usb_serial, uiso, sizeof(uiso), 1)) {
+                        const uint32_t sectors = usb_capacity(usb_fd);
+                        if (sectors && usb_dump(usb_fd, usb_serial, sectors)) find_iso(usb_serial, uiso, sizeof(uiso), 0);
+                        else uiso[0] = '\0';
+                    }
+                    if (uiso[0]) {
+                        char inc[1100];
+                        snprintf(inc, sizeof(inc), "%s.incomplete", uiso);
+                        struct stat ist;
+                        if (stat(inc, &ist) == 0) notify("PS5SX2: %s was dumped with read errors; pick it from the shelf to try it", usb_serial);
+                        else launch(usb_serial, uiso);
+                    }
+                }
+            }
+        }
 
         char iso[1024];
         switch (st) {
