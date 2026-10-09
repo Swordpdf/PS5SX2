@@ -62,6 +62,9 @@
  *   dumped by this daemon through the drive's pass device to games/<Title> (<SERIAL>).bin + .cue, its checksums in
  *   <Title> (<SERIAL>).hashes.txt, then started like a DVD. PS1 and PS3 discs are only named in the log for now.
  *   Needs proper testing on a console with a PS2 CD.
+ * live-14: live-12 on the console: the drive reports a PS2 DVD as plain 0x0010 DVD-ROM (Sony's 0xFF6x profiles are
+ *   ShellCore's own, not the drive's on a PS5), so a PS2 CD is looked for on any CD profile (0x08/0x09/0x0A) by its
+ *   SYSTEM.CNF's BOOT2, through READ CD.
  * live-5: USB probe: which standard read commands return data (READ 6/10/12/16, READ CD, capacities, TOC, ...).
  * live-4: USB diagnostics: raw CCB status / SCSI status / resid, GET CONFIGURATION, and the device queue's freeze
  *   count, released (only as many as it reads) in case the cd driver's failed attach left it frozen.
@@ -737,6 +740,11 @@ enum {
 #define CD_MAX_BAD    2000u
 #define CD_MAX_TRACKS 99
 
+/* live-14: on the PS5 the drive reports the standard MMC profile for a PS disc (live-12 on swordpdf's phat: a PS2 DVD,
+ * SLES-53415, came back as 0x0010 DVD-ROM, not Sony's 0xFF61, which ShellCore keeps for itself), so any CD profile is a
+ * candidate; a PS2 CD is one whose SYSTEM.CNF has BOOT2 (read_serial_with), which a PS1 CD's (BOOT) doesn't. */
+static int is_cd_profile(int p) { return p == 0x0008 || p == 0x0009 || p == 0x000A || p == PROFILE_PS1_CD || p == PROFILE_PS2_CD; }
+
 static const char *profile_name(int p) {
     switch (p) {
     case PROFILE_PS1_CD: return "PS1 CD";
@@ -938,7 +946,7 @@ static int cd_dump(int pass, const char *serial) {
             int ok = 0;
             for (int tries = 0; tries < 3 && !ok; tries++) ok = cd_read(pass, lba, n, how, buf, why, sizeof(why));
             if (!ok) {
-                if (drive_profile() != PROFILE_PS2_CD) { say("cd: the disc went at sector %u (%s): stopping", lba, why); close(out); unlink(part); return 0; }
+                if (!is_cd_profile(drive_profile())) { say("cd: the disc went at sector %u (%s): stopping", lba, why); close(out); unlink(part); return 0; }
                 for (uint32_t i = 0; i < n; i++) {
                     int one = 0;
                     for (int tries = 0; tries < 2 && !one; tries++) one = cd_read(pass, lba + i, 1, how, buf + i * CD_RAW, NULL, 0);
@@ -1007,7 +1015,7 @@ static int cd_dump(int pass, const char *serial) {
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (live-12) pid %d", (int)getpid());
+    say("disc-auto daemon (live-14) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
@@ -1087,7 +1095,7 @@ int main(void) {
                 if (time(NULL) - prof_poll >= 3) {
                     prof_poll = time(NULL);
                     const int p = drive_profile();
-                    if (p != PROFILE_PS2_CD && p != PROFILE_UNKNOWN) {
+                    if (!is_cd_profile(p) && p != PROFILE_UNKNOWN) {
                         cleanup(serial);
                         serial[0] = '\0';
                         cd_only = is_cd = 0;
@@ -1114,7 +1122,7 @@ int main(void) {
                         if (p == PROFILE_PS1_CD || p == PROFILE_PS3_DVD || p == PROFILE_PS3_BD)
                             say("%s: not handled yet (PS2 discs only for now)", profile_name(p));
                     }
-                    if (p == PROFILE_PS2_CD && cd_serial_tries < 5) {
+                    if (is_cd_profile(p) && cd_serial_tries < 5) {
                         char s2[17] = {0};
                         int pass = drive_pass();
                         cd_serial_tries++;
@@ -1147,7 +1155,7 @@ int main(void) {
                     say("PS2 disc %s (%lld bytes, profile %#06x %s)%s", serial, (long long)size, (unsigned)prof, profile_name(prof),
                         startup ? ", already in at start" : "");
                     if (startup) seen -= kSettleSec; /* no shell takeover to wait out */
-                } else if (prof == PROFILE_PS2_CD) {
+                } else if (is_cd_profile(prof)) {
                     /* live-12: /dev/cd0 gives no PS2 volume for a CD (mode 2 sectors); the pass device's READ CD does */
                     char s2[17] = {0};
                     int pass = drive_pass();
