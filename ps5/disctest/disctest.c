@@ -11,6 +11,14 @@
  * then sends each of those settings and times a fresh 32 MiB after each, and puts the drive back to 2.0 at the end.
  * Only values from Sony's table are sent; the disc is only read.
  *
+ * v2 on swordpdf's console (13.60, NFS Underground 2): DB 01 00 80 / 01 01 00 / 01 00 60 refused with ILLEGAL REQUEST
+ * asc 0x24 (invalid field: the drive knows the command); DB 00 FF FF taken, still 2.00x. SceShellCore's only setSpeed
+ * call at media detection (0x36882c) is for BD profiles 0x40..0x43 and Sony types 0xFF71/0xFF80/0xFF90: a DVD never gets
+ * it, so the rotation 1 entries are BD speeds.
+ *
+ * v3: the disc's current profile (GET CONFIGURATION), then DB with rotation 0 and 2 (and 3) and explicit speeds, each
+ * timed on 16 MiB when the drive takes it; refusals log the sense data's field pointer (which byte the drive objects to).
+ *
  * Results: klog ([PS5SX2 disctest]), /data/PCSX2/logs/disctest.log, and notifications.
  *
  * Copyright (C) 2026 swordpdf
@@ -42,7 +50,7 @@
 _Static_assert(sizeof(union ccb) == 0x4E0, "union ccb: SceShellCore's CAMIOCOMMAND (0xC4E01902) carries 1248 bytes");
 
 #define CHUNK (4u << 20)
-#define TIMED (32ull << 20)
+#define TIMED (16ull << 20)
 
 static FILE *g_log;
 
@@ -124,9 +132,30 @@ static int set_speed(int pass, uint8_t rot, uint16_t speed) {
     asc = s[2];
     ascq = s[3];
   }
-  say("DB %02x %02x %02x (rotation %u, %s): CAM status %#x, SCSI status %#x, sense key %d asc %#x ascq %#x", rot, speed >> 8,
-      speed & 0xff, rot, speed_text(speed, st, sizeof(st)), ccb.ccb_h.status, ccb.csio.scsi_status, key, asc, ascq);
+  /* fixed sense bytes 15-17: SKSV, C/D, BPV, bit pointer, field pointer (which CDB byte is wrong) */
+  const int sksv = (s[0] & 0x7f) <= 0x71 && (s[15] & 0x80);
+  say("DB %02x %02x %02x (rotation %u, %s): CAM status %#x, SCSI status %#x, sense key %d asc %#x ascq %#x%s%s byte %d bit %d",
+      rot, speed >> 8, speed & 0xff, rot, speed_text(speed, st, sizeof(st)), ccb.ccb_h.status, ccb.csio.scsi_status, key, asc,
+      ascq, sksv ? ", field in the " : ", no field pointer", sksv ? ((s[15] & 0x40) ? "CDB" : "data") : "",
+      sksv ? (s[16] << 8 | s[17]) : -1, sksv && (s[15] & 0x08) ? (s[15] & 7) : -1);
   return -1;
+}
+
+/* GET CONFIGURATION (0x46), the current profile (0x10 DVD-ROM, 0x40 BD-ROM, Sony's own above 0xFF00), or -1. */
+static int current_profile(int pass) {
+  union ccb ccb;
+  uint8_t data[8] = {0};
+  memset(&ccb, 0, sizeof(ccb));
+  cam_fill_csio(&ccb.csio, 1, NULL, CAM_DIR_IN | CAM_DEV_QFRZDIS, MSG_SIMPLE_Q_TAG, data, sizeof(data), SSD_FULL_SIZE, 10, 10000);
+  uint8_t *cdb = ccb.csio.cdb_io.cdb_bytes;
+  cdb[0] = 0x46;
+  cdb[1] = 0x02; /* RT 10b: the feature header only */
+  cdb[8] = sizeof(data);
+  if (ioctl(pass, CAMIOCOMMAND, &ccb) != 0 || (ccb.ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
+    say("GET CONFIGURATION: errno %d, CAM status %#x", errno, ccb.ccb_h.status);
+    return -1;
+  }
+  return data[6] << 8 | data[7];
 }
 
 /* MB/s over TIMED from `from` after a 4 MiB warm-up (the drive settling at a new speed), or 0. */
@@ -179,9 +208,9 @@ int main(void) {
   mkdir("/data/PCSX2/logs", 0777);
   g_log = fopen("/data/PCSX2/logs/disctest.log", "w");
   const pid_t pid = getpid();
-  say("v2 (Sony speed command), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
+  say("v3 (Sony speed command, DVD variants), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
       (unsigned long long)kernel_get_ucred_authid(pid));
-  notify("PS5SX2 disc test v2: running (about 1 to 3 minutes)");
+  notify("PS5SX2 disc test v3: running (about 1 to 3 minutes)");
 
   const int fd = open_cd(pid);
   if (fd < 0) {
@@ -221,10 +250,11 @@ int main(void) {
   static const struct {
     uint8_t rot;
     uint16_t speed;
-  } kTry[] = {{1, 0x0080}, {1, 0x0100}, {0, 0xFFFF}, {1, 0x0060}};
+  } kTry[] = {{0, 0x0080}, {0, 0x0050}, {0, 0x0032}, {2, 0x0080}, {2, 0x0050}, {2, 0x0040}, {3, 0x0080}};
   const int n = (int)(sizeof(kTry) / sizeof(kTry[0]));
-  double res[8] = {0};
-  const uint64_t step = 48ull << 20, first = 64ull << 20;
+  double res[16] = {0};
+  const uint64_t step = 32ull << 20, first = 64ull << 20;
+  say("current profile: %#x", current_profile(pass));
 
   const double base = timed_read(fd, first, sz, "as the drive is");
   for (int i = 0; i < n; i++) {
@@ -249,14 +279,14 @@ int main(void) {
   close(fd);
 
   char line[3000];
-  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v2: as is %.1f MB/s (%.1fx)", base, base / 1.385);
+  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v3: as is %.1f MB/s (%.1fx)", base, base / 1.385);
   for (int i = 0; i < n && at < (int)sizeof(line) - 80; i++) {
     char st[16];
     if (res[i] < 0)
-      at += snprintf(line + at, sizeof(line) - at, " | %s refused", speed_text(kTry[i].speed, st, sizeof(st)));
+      at += snprintf(line + at, sizeof(line) - at, " | r%u %s refused", kTry[i].rot, speed_text(kTry[i].speed, st, sizeof(st)));
     else
-      at += snprintf(line + at, sizeof(line) - at, " | %s: %.1f MB/s (%.1fx)", speed_text(kTry[i].speed, st, sizeof(st)), res[i],
-                     res[i] / 1.385);
+      at += snprintf(line + at, sizeof(line) - at, " | r%u %s: %.1f MB/s (%.1fx)", kTry[i].rot, speed_text(kTry[i].speed, st, sizeof(st)),
+                     res[i], res[i] / 1.385);
   }
   if (best >= 0 && at < (int)sizeof(line) - 60)
     snprintf(line + at, sizeof(line) - at, " | end of disc %.1f MB/s (%.1fx)", end, end / 1.385);
