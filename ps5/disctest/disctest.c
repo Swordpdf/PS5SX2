@@ -48,6 +48,13 @@
  * on reset or power off), and the originals put back after each one and at the end. After each change: DB 00 00 80, then
  * DB 01 00 80, then DB 00 00 32, the first the drive takes timed on 16 MiB, and the drive back to 2.0.
  *
+ * v6: page 32's changes are taken but ignored (it reads back unchanged); page 31 byte 2 sticks; neither changes anything:
+ * DB 00 00 80 / 01 00 80 still refused, DB 00 00 32 still 3.2x. Both pages back, drive back to 2.0 (SP 0, nothing saved).
+ *
+ * v7: page 31 bytes 4-5 (0x0898 = 2200) and 6-7 (0x0064 = 100), the last changeable fields, one value at a time (SP 0, not
+ * saved; the original back after each and at the end). After each: 16 MiB timed with no speed command (does the field set
+ * the speed itself?), then DB 00 00 80 and DB 01 00 80, timed if taken; the drive back to 2.0.
+ *
  * Results: klog ([PS5SX2 disctest]), /data/PCSX2/logs/disctest.log, and notifications.
  *
  * Copyright (C) 2026 swordpdf
@@ -376,9 +383,9 @@ int main(void) {
   mkdir("/data/PCSX2/logs", 0777);
   g_log = fopen("/data/PCSX2/logs/disctest.log", "w");
   const pid_t pid = getpid();
-  say("v6 (Sony mode pages 31/32, not saved), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
+  say("v7 (Sony mode page 31 bytes 4-7, not saved), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
       (unsigned long long)kernel_get_ucred_authid(pid));
-  notify("PS5SX2 disc test v6: running (about 1 minute)");
+  notify("PS5SX2 disc test v7: running (about 2 minutes)");
 
   const int fd = open_cd(pid);
   if (fd < 0) {
@@ -432,48 +439,50 @@ int main(void) {
   hexdump("page 32 before", p32, (uint32_t)n32);
 
   static const struct {
-    uint8_t page, byte, value;
-  } kTry[] = {{0x32, 2, 0}, {0x32, 2, 1}, {0x32, 2, 2}, {0x32, 3, 1}, {0x32, 4, 1},
-               {0x31, 2, 0}, {0x31, 2, 2}, {0x31, 2, 3}};
+    uint8_t byte;  /* 4: bytes 4-5, 6: bytes 6-7 */
+    uint16_t value;
+  } kTry[] = {{4, 0x0000}, {4, 0x0450}, {4, 0x1130}, {4, 0x2B48}, {4, 0xFFFF}, {6, 0x0000}, {6, 0x0032}, {6, 0x00C8}, {6, 0xFFFF}};
   const int n = (int)(sizeof(kTry) / sizeof(kTry[0]));
   char line[3000];
-  const uint64_t step = 24ull << 20, first = 64ull << 20;
+  const uint64_t step = 40ull << 20, first = 64ull << 20;
   const double base = timed_read(fd, first, sz, "as the drive is");
-  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v6: as is %.1f MB/s (%.1fx)", base, base / 1.385);
+  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v7: as is %.1f MB/s (%.1fx)", base, base / 1.385);
   for (int i = 0; i < n; i++) {
     uint8_t page[64];
-    const int len = kTry[i].page == 0x31 ? n31 : n32;
-    memcpy(page, kTry[i].page == 0x31 ? p31 : p32, (size_t)len);
-    if (kTry[i].byte >= len || page[kTry[i].byte] == kTry[i].value)
-      continue;
-    page[kTry[i].byte] = kTry[i].value;
+    memcpy(page, p31, (size_t)n31);
+    page[kTry[i].byte] = (uint8_t)(kTry[i].value >> 8);
+    page[kTry[i].byte + 1] = (uint8_t)kTry[i].value;
     char what[64];
-    snprintf(what, sizeof(what), "page %02x byte %u = %u", kTry[i].page, kTry[i].byte, kTry[i].value);
-    if (write_page(pass, page, len, what) != 0) {
-      at += snprintf(line + at, sizeof(line) - at, " | p%02x[%u]=%u refused", kTry[i].page, kTry[i].byte, kTry[i].value);
+    snprintf(what, sizeof(what), "page 31 bytes %u-%u = %#06x", kTry[i].byte, kTry[i].byte + 1, kTry[i].value);
+    if (write_page(pass, page, n31, what) != 0) {
+      at += snprintf(line + at, sizeof(line) - at, " | p31[%u]=%04x refused", kTry[i].byte, kTry[i].value);
       continue;
     }
     uint8_t check[64];
-    if (read_page(pass, kTry[i].page, check, sizeof(check)) == len)
-      hexdump("  reads back", check, (uint32_t)len);
+    if (read_page(pass, 0x31, check, sizeof(check)) == n31)
+      hexdump("  reads back", check, (uint32_t)n31);
+    const uint64_t from = first + (uint64_t)(i + 1) * step;
+    char w1[96];
+    snprintf(w1, sizeof(w1), "%s, no speed command", what);
+    const double plain = timed_read(fd, from, sz, w1);
     const char *taken = NULL;
+    double fast = 0;
     if (set_speed(pass, 0, 0x80) == 0)
       taken = "DB 00 00 80";
     else if (set_speed(pass, 1, 0x80) == 0)
       taken = "DB 01 00 80";
-    else if (set_speed(pass, 0, 0x32) == 0)
-      taken = "DB 00 00 32";
-    double mbs = 0;
     if (taken) {
       char w2[96];
       snprintf(w2, sizeof(w2), "%s, after %s", what, taken);
-      mbs = timed_read(fd, first + (uint64_t)(i + 1) * step, sz, w2);
+      fast = timed_read(fd, from + (20ull << 20), sz, w2);
     }
     set_speed(pass, 0, 0x20);
-    write_page(pass, kTry[i].page == 0x31 ? p31 : p32, len, "back to the original");
+    write_page(pass, p31, n31, "back to the original");
     if (at < (int)sizeof(line) - 80)
-      at += snprintf(line + at, sizeof(line) - at, " | p%02x[%u]=%u: %s %.1f MB/s", kTry[i].page, kTry[i].byte, kTry[i].value,
-                     taken ? taken : "no DB taken", mbs);
+      at += snprintf(line + at, sizeof(line) - at, " | p31[%u]=%04x: %.1f MB/s%s%s%s", kTry[i].byte, kTry[i].value, plain,
+                     taken ? ", " : "", taken ? taken : "", taken ? " taken" : "");
+    if (taken && at < (int)sizeof(line) - 40)
+      at += snprintf(line + at, sizeof(line) - at, " %.1f MB/s", fast);
   }
   write_page(pass, p31, n31, "page 31 back to the original (end)");
   write_page(pass, p32, n32, "page 32 back to the original (end)");
