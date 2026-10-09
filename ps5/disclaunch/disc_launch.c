@@ -387,7 +387,7 @@ static int proc_comm(pid_t pid, char *out, size_t max) {
     return 1;
 }
 
-static void take_over(void) {
+static void __attribute__((unused)) take_over(void) {
     FILE *f = fopen(PID_FILE, "r");
     if (f) {
         int old = 0;
@@ -409,7 +409,7 @@ static void take_over(void) {
 }
 
 /* Another daemon has taken over when the pid file no longer names us. */
-static int superseded(void) {
+static int __attribute__((unused)) superseded(void) {
     FILE *f = fopen(PID_FILE, "r");
     if (!f) return 0;
     int p = 0;
@@ -1014,9 +1014,20 @@ static int cd_dump(int pass, const char *serial) {
 
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
-int main(void) {
-    say("disc-auto daemon (live-14) pid %d", (int)getpid());
+/* live-14 (swordpdf: "ill need the src so i can build it into my helper.elf"): built with -DDISC_AUTO_EMBEDDED this file
+ * has no main(); the host payload starts disc_auto_thread() on a thread of its own (it loops forever). Embedded, it leaves
+ * the process's credentials and signals to the host, and skips the single-instance pid file (logs/disc-auto.pid):
+ * a standalone DiscLaunch.elf kills the pids listed there, which would be the host. Don't run both at once. */
+static int disc_auto_loop(void) {
+    say("disc-auto daemon (live-14%s) pid %d",
+#ifdef DISC_AUTO_EMBEDDED
+        ", embedded",
+#else
+        "",
+#endif
+        (int)getpid());
 
+#ifndef DISC_AUTO_EMBEDDED
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
         uint8_t all[16];
@@ -1026,6 +1037,7 @@ int main(void) {
     }
     signal(SIGCHLD, SIG_IGN);
     take_over();
+#endif
     load_lnc();
 
     notify("PS5SX2 disc-auto running: put a PS2 DVD in");
@@ -1049,10 +1061,12 @@ int main(void) {
     time_t usb_scan = 0, usb_seen = 0, usb_poll = 0;
 
     for (;;) {
+#ifndef DISC_AUTO_EMBEDDED
         if (superseded()) {
             say("another daemon took over (" PID_FILE "): exiting");
             return 0;
         }
+#endif
         stamp_self();
 
         /* vk-285-160g: PS5SX2 consumes disc-launch-exec.txt right before it re-execs (keeping its app id).
@@ -1327,3 +1341,13 @@ int main(void) {
     }
     return 0;
 }
+
+#ifdef DISC_AUTO_EMBEDDED
+void *disc_auto_thread(void *arg) {
+    (void)arg;
+    disc_auto_loop();
+    return NULL;
+}
+#else
+int main(void) { return disc_auto_loop(); }
+#endif
