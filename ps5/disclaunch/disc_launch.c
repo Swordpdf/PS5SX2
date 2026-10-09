@@ -54,6 +54,7 @@
  *   Each extra LaunchApp on an app already in front replays its splash for a moment, so one follow-up only
  *   (+3 s after the exec signal is consumed; +6 s after a cold launch, in case the shell's disc screen lands
  *   last), and the settle after insert is 2 s (was 4) to shorten the home-screen detour.
+ * live-3: USB serial read says why it failed (sector 16 result, capacity), READ(12) if READ(10) is refused, 5 tries.
  * live-2: USB DVD drives through their pass device (the CD device doesn't attach on the 4.03 phat), dumped by
  *   the daemon itself; see usb_dump.
  * live-1: builds are now named live-N (swordpdf, 2026-10-09); live-1 = vk-285-160k daemon + 160l eboot.
@@ -523,9 +524,23 @@ static uint32_t usb_capacity(int pass) {
 }
 
 static int usb_read(int pass, uint32_t lba, uint32_t count, uint8_t *buf, char *why, size_t wmax) {
-    const uint8_t c[10] = {0x28, 0, (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
-                           0, (uint8_t)(count >> 8), (uint8_t)count, 0};
-    return scsi(pass, c, 10, CAM_DIR_IN, buf, count * 2048u, 30000, why, wmax) == 0;
+    static int use12 = 0; /* READ(12) once READ(10) has been refused as a command */
+    if (!use12) {
+        const uint8_t c[10] = {0x28, 0, (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+                               0, (uint8_t)(count >> 8), (uint8_t)count, 0};
+        char w[64] = "";
+        if (scsi(pass, c, 10, CAM_DIR_IN, buf, count * 2048u, 30000, w, sizeof(w)) == 0) return 1;
+        if (why) snprintf(why, wmax, "READ(10) %s", w);
+        if (!strstr(w, "5/20/")) return 0; /* not "invalid command": a real read error */
+        say("usb: READ(10) refused (%s): using READ(12)", w);
+        use12 = 1;
+    }
+    const uint8_t c12[12] = {0xA8, 0, (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
+                             0, 0, (uint8_t)(count >> 8), (uint8_t)count, 0, 0};
+    char w[64] = "";
+    if (scsi(pass, c12, 12, CAM_DIR_IN, buf, count * 2048u, 30000, w, sizeof(w)) == 0) return 1;
+    if (why) snprintf(why, wmax, "READ(12) %s", w);
+    return 0;
 }
 
 static int usb_sector(void *ctx, uint32_t lba, uint8_t *out) { return usb_read(*(int *)ctx, lba, 1, out, NULL, 0); }
@@ -610,7 +625,7 @@ static int usb_dump(int pass, const char *serial, uint32_t sectors) {
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (live-2) pid %d", (int)getpid());
+    say("disc-auto daemon (live-3) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
@@ -636,7 +651,7 @@ int main(void) {
 
     /* live-2: USB drive state */
     char usb_path[64] = {0}, usb_what[64] = {0}, usb_serial[17] = {0};
-    int usb_fd = -1, usb_done = 0;
+    int usb_fd = -1, usb_done = 0, usb_tries = 0;
     time_t usb_scan = 0, usb_seen = 0, usb_poll = 0;
 
     for (;;) {
@@ -722,6 +737,7 @@ int main(void) {
                 if (!usb_ready(usb_fd)) {
                     if (usb_serial[0]) { cleanup(usb_serial); usb_serial[0] = '\0'; }
                     usb_done = 0;
+                    usb_tries = 0;
                     /* a drive that went away: look again later */
                     uint8_t inq[8];
                     const uint8_t c[6] = {0x12, 0, 0, 0, sizeof(inq), 0};
@@ -734,10 +750,22 @@ int main(void) {
                     if (read_serial_with(usb_sector, &usb_fd, s2)) {
                         memcpy(usb_serial, s2, sizeof(usb_serial));
                         usb_seen = time(NULL);
+                        usb_tries = 0;
                         say("usb: PS2 disc %s in %s", usb_serial, usb_path);
                     } else {
-                        usb_done = 1;
-                        say("usb: disc in %s but no PS2 SYSTEM.CNF: ignoring", usb_path);
+                        /* say why: sector 16 straight, and what it holds */
+                        uint8_t pvd[2048] = {0};
+                        char why[80] = "";
+                        const int ok16 = usb_read(usb_fd, 16, 1, pvd, why, sizeof(why));
+                        char label[33] = {0};
+                        if (ok16) memcpy(label, pvd + 40, 32);
+                        say("usb: no PS2 serial yet (try %d): sector 16 %s%s%.5s%s%s; capacity %u sectors", usb_tries + 1,
+                            ok16 ? "read, id '" : "", ok16 ? "" : why, ok16 ? (const char *)pvd + 1 : "", ok16 ? "', label " : "",
+                            ok16 ? label : "", usb_capacity(usb_fd));
+                        if (++usb_tries >= 5) {
+                            usb_done = 1;
+                            say("usb: disc in %s: no PS2 SYSTEM.CNF after %d tries: ignoring until it's taken out", usb_path, usb_tries);
+                        }
                     }
                 }
                 if (usb_serial[0] && !usb_done && time(NULL) - usb_seen >= kSettleSec) {
