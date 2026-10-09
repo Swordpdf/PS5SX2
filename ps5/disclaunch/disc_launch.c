@@ -1,4 +1,4 @@
-/* PS5SX2 disc-auto daemon (vk-285-160g, AI-assisted).
+/* PS5SX2 disc-auto daemon (vk-285-160h, AI-assisted).
  * Send once to the console's ELF loader (port 9021) and leave it running.
  * Put a PS2 DVD in:
  *   - already dumped  -> PS5SX2 comes to the front and starts that game.
@@ -37,6 +37,10 @@
  *   id" trigger never fired. Focus is now timed from the moment PS5SX2 consumes disc-launch-exec.txt. The
  *   pid-file lookup no longer insists on the full kinfo_proc size (it failed silently and left 160e running),
  *   and the file may list several pids.
+ * vk-285-160h: SetAppFocus(id, 0) returned 0 but the console logged SetControllerFocus(-1), its "take focus away"
+ *   line: 0 is likely "unfocus". Focus attempts are now SetAppFocus(id, 1), then LaunchApp on the running title,
+ *   then SetAppFocus(id, 1) again, each logged. The PS5's kinfo_proc is bigger than the SDK's (ENOMEM), so the
+ *   pid lookup reads into a large buffer.
  * Needs proper testing on a console with a disc drive.
  *
  * Copyright (C) 2026 swordpdf
@@ -326,12 +330,8 @@ static uint32_t emu_appid(void) {
 }
 
 static void give_focus(uint32_t id, int attempt) {
-    if (p_focus) {
-        const int rc = p_focus(id, 0);
-        say("focus #%d: sceLncUtilSetAppFocus(0x%x, 0) = 0x%08x", attempt, (unsigned)id, (unsigned)rc);
-        if (rc == 0) return;
-    }
-    if (p_launch) {
+    if (attempt == 2) {
+        if (!p_launch) { say("focus #2: no sceLncUtilLaunchApp"); return; }
         int user = -1;
         if (p_fguser) p_fguser(&user);
         lnc_app_param_t prm;
@@ -339,8 +339,12 @@ static void give_focus(uint32_t id, int attempt) {
         prm.size = sizeof(prm);
         prm.user_id = user;
         const int rc = p_launch(TITLE_ID, NULL, &prm);
-        say("focus #%d: sceLncUtilLaunchApp(" TITLE_ID ", user %d) = 0x%08x", attempt, user, (unsigned)rc);
+        say("focus #2: sceLncUtilLaunchApp(" TITLE_ID ", user %d) = 0x%08x", user, (unsigned)rc);
+        return;
     }
+    if (!p_focus) { say("focus #%d: no sceLncUtilSetAppFocus", attempt); return; }
+    const int rc = p_focus(id, 1);
+    say("focus #%d: sceLncUtilSetAppFocus(0x%x, 1) = 0x%08x", attempt, (unsigned)id, (unsigned)rc);
 }
 
 /* ------------------------------------------------------------------ */
@@ -348,13 +352,15 @@ static void give_focus(uint32_t id, int attempt) {
 /* ------------------------------------------------------------------ */
 static int proc_comm(pid_t pid, char *out, size_t max) {
     int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid };
-    struct kinfo_proc kp;
-    size_t len = sizeof(kp);
-    memset(&kp, 0, sizeof(kp));
-    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0) { say("sysctl(proc %d): errno %d", (int)pid, errno); return 0; }
-    if (len == 0) return 0; /* no such process */
-    if (kp.ki_pid != pid) { say("sysctl(proc %d): len %zu (struct %zu), ki_pid %d", (int)pid, len, sizeof(kp), (int)kp.ki_pid); return 0; }
-    snprintf(out, max, "%s", kp.ki_comm);
+    static unsigned char buf[8192];
+    size_t len = sizeof(buf);
+    memset(buf, 0, sizeof(buf));
+    if (sysctl(mib, 4, buf, &len, NULL, 0) != 0) { say("sysctl(proc %d): errno %d", (int)pid, errno); return 0; }
+    if (len == 0) return 0;
+    const struct kinfo_proc *kp = (const struct kinfo_proc *)buf;
+    if (kp->ki_pid != pid) { say("sysctl(proc %d): len %zu, ki_pid %d", (int)pid, len, (int)kp->ki_pid); return 0; }
+    snprintf(out, max, "%s", kp->ki_comm);
+    say("pid %d: comm '%s' (kinfo %zu bytes, SDK %zu)", (int)pid, out, len, sizeof(*kp));
     return 1;
 }
 
@@ -428,7 +434,7 @@ static void cleanup(const char *serial) {
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (vk-285-160g) pid %d", (int)getpid());
+    say("disc-auto daemon (vk-285-160h) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
