@@ -488,6 +488,58 @@ namespace
 		return iso;
 	}
 
+	// vk-285-159 (AI-assisted, test build): when a PS2 disc goes in, the system shell (SceShellCore) takes the user to the
+	// home screen with "disc not supported" -- it has no concept of a PS2 disc. The dump thread keeps the disc and copies it
+	// in the background, but the user has been bounced out of PS5SX2, which kills the flow. There's no way to stop the shell's
+	// dialog from our own app, so instead this re-executes our own eboot (the same sceSystemServiceLoadExec the menu uses) to
+	// bring PS5SX2 back to the front. A marker file (disc-refg.txt) stops it looping: after the re-exec the disc is still in,
+	// and we must not bounce a second time. Opt-in for this test: flag disc_refg. What the console must tell us: does the app
+	// come back to the front at all, does the shell dialog still flash or need an OK press, and (from the log timestamps) did
+	// the watcher keep running while the user was at the home screen or was the app suspended. Needs proper testing.
+	extern "C" int sceSystemServiceLoadExec(const char* path, const char* argv[]);
+	std::string ReForegroundMarkPath() { return OrbisLogPath("disc-refg.txt"); }
+	void ClearReForegroundMark() { unlink(ReForegroundMarkPath().c_str()); }
+	// Returns true when LoadExec took (the process is being replaced, so we won't really return then).
+	bool TryReForeground(const std::string& serial)
+	{
+		if (!OrbisFlag("disc_refg"))
+			return false;
+		// Our own re-exec left this marker; on the fresh start the disc is still in, so don't bounce again.
+		if (FILE* f = fopen(ReForegroundMarkPath().c_str(), "r"))
+		{
+			char s[64] = {};
+			long long when = 0;
+			const int got = fscanf(f, "%63s %lld", s, &when);
+			fclose(f);
+			if (got == 2 && time(nullptr) - static_cast<time_t>(when) < 1800)
+			{
+				Log("re-foreground: already bounced for %s at %lld, staying put (flag disc_refg)", s, static_cast<long long>(when));
+				return false;
+			}
+		}
+		const long long now = static_cast<long long>(time(nullptr));
+		Log("re-foreground: PS2 disc %s seen at %lld; re-executing our eboot to bring PS5SX2 to the front (flag disc_refg)", serial.c_str(), now);
+		if (FILE* f = fopen(ReForegroundMarkPath().c_str(), "w"))
+		{
+			fprintf(f, "%s %lld\n", serial.c_str(), now);
+			fclose(f);
+		}
+		OrbisNotifyPlain("PS2 disc: bringing PS5SX2 back to the front");
+		const char* path = "/data/homebrew/PPSA99203/eboot.bin";
+		struct stat st{};
+		if (stat(path, &st) != 0)
+			path = "/app0/eboot.bin";
+		fflush(stdout);
+		const int rc = sceSystemServiceLoadExec(path, nullptr);
+		Log("re-foreground: LoadExec(%s) returned 0x%08x%s at %lld", path, static_cast<unsigned>(rc),
+			rc == 0 ? " (the app should be restarting)" : " (stayed; carrying on in the background)", static_cast<long long>(time(nullptr)));
+		fflush(stdout);
+		if (rc == 0)
+			for (int i = 0; i < 100; i++)
+				usleep(100000); // up to 10 s for the system to replace the process
+		return rc == 0;
+	}
+
 	// The start was a re-exec into the shelf (logs/relaunch.txt from the last minutes), not the user opening the app.
 	bool TakeRelaunchMark()
 	{
@@ -537,6 +589,7 @@ namespace
 		std::string handled;
 		std::string failed;  // vk-285-155: a disc that didn't copy; not tried again until it leaves (no 3 s retry loop)
 		std::string pending; // a copy whose game waits for the shelf
+		bool refg_done = false; // vk-285-159: one re-foreground attempt per boot, whatever the outcome (flag disc_refg)
 		const bool relaunch = TakeRelaunchMark();
 		const std::string recent = RecentAutoStart(kAutoStartGuardSeconds); // vk-285-155: a disc auto-started recently (a likely failed launch)
 		sleep(5); // vk-285-145: well after the app's start
@@ -574,6 +627,13 @@ namespace
 					handled = serial;
 				if (serial == failed)
 					continue; // vk-285-155: already tried and it didn't copy; wait for the disc to be taken out
+				// vk-285-159 (test): bring PS5SX2 back to the front after the shell sent the user to the home screen. Once per
+				// boot, only for a genuinely fresh disc (not a menu re-exec, not one just auto-started or already handled).
+				if (!refg_done && !relaunch && serial != recent && serial != handled)
+				{
+					refg_done = true;
+					TryReForeground(serial); // under flag disc_refg this re-execs and doesn't return
+				}
 				bool clean = true;
 				s_busy.store(true);
 				const std::string copy = Dump(node, serial, clean);
@@ -611,6 +671,8 @@ namespace
 				handled.clear();
 				failed.clear(); // vk-285-155: a disc that failed is tried again once it's reinserted
 				pending.clear();
+				ClearReForegroundMark(); // vk-285-159: a re-inserted disc bounces us to the front again (flag disc_refg)
+				refg_done = false;
 			}
 			// a node that went away and came back (a disc swapped) is described again
 			if (logged.size() > 32)
