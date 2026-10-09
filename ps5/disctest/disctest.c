@@ -39,6 +39,15 @@
  *     bytes 4/5 set, at speed 0x80 (8.0) and 0x32; each the drive takes is timed on 16 MiB, and the drive goes back to
  *     2.0 at the end. No MODE SELECT, nothing written.
  *
+ * v5: features 0107* (real-time streaming, flags 0x0c), 0108* (serial), ff00* and ff10..ff60; mode pages 01, 08, 1a (power
+ * timers), 1d, 2a (nothing changeable), 2d, 2f "04 32" (not changeable: 0x32 = the 3.2 ceiling?), 30, 31 "01 00 0898
+ * 0064" (byte 2 two bits, bytes 4-7 changeable), 32 "03 00 00" (byte 2 two bits, byte 3 bit 0, byte 4 bit 0 changeable).
+ * DB with any other bits set: refused at 0x80, taken at 0x32 (3.2x).
+ *
+ * v6: Sony's pages 31 and 32 changed one field at a time with MODE SELECT(10), PF 1, SP 0 (not saved: the drive forgets
+ * on reset or power off), and the originals put back after each one and at the end. After each change: DB 00 00 80, then
+ * DB 01 00 80, then DB 00 00 32, the first the drive takes timed on 16 MiB, and the drive back to 2.0.
+ *
  * Results: klog ([PS5SX2 disctest]), /data/PCSX2/logs/disctest.log, and notifications.
  *
  * Copyright (C) 2026 swordpdf
@@ -254,6 +263,52 @@ static int set_speed_raw(int pass, uint8_t b1, uint16_t speed, uint8_t b4, uint8
   return ok ? 0 : -1;
 }
 
+/* MODE SENSE(10) of one page (current values) into page[], its length (2 + page length) or -1. */
+static int read_page(int pass, uint8_t code, uint8_t *page, int cap) {
+  uint8_t buf[252] = {0};
+  uint32_t got = 0;
+  uint8_t ms[10] = {0x5A, 0x08, code, 0, 0, 0, 0, 0, (uint8_t)sizeof(buf), 0};
+  if (cmd_in(pass, ms, 10, buf, sizeof(buf), &got, "MODE SENSE") != 0 || got < 10)
+    return -1;
+  const int at = 8 + (buf[6] << 8 | buf[7]);
+  const int n = 2 + buf[at + 1];
+  if ((buf[at] & 0x3f) != code || n > cap || at + n > (int)got)
+    return -1;
+  memcpy(page, buf + at, (size_t)n);
+  return n;
+}
+
+/* MODE SELECT(10), PF 1, SP 0 (not saved), with one page. 0 when taken. */
+static int write_page(int pass, const uint8_t *page, int n, const char *what) {
+  uint8_t data[264] = {0};
+  memcpy(data + 8, page, (size_t)n);
+  data[8] &= 0x3f; /* PS is reserved in MODE SELECT */
+  const uint32_t len = 8 + (uint32_t)n;
+  union ccb ccb;
+  memset(&ccb, 0, sizeof(ccb));
+  cam_fill_csio(&ccb.csio, 1, NULL, CAM_DIR_OUT | CAM_DEV_QFRZDIS, MSG_SIMPLE_Q_TAG, data, len, SSD_FULL_SIZE, 10, 10000);
+  uint8_t *cdb = ccb.csio.cdb_io.cdb_bytes;
+  cdb[0] = 0x55;
+  cdb[1] = 0x10; /* PF 1, SP 0 */
+  cdb[7] = (uint8_t)(len >> 8);
+  cdb[8] = (uint8_t)len;
+  char hex[80];
+  int k = 0;
+  for (int i = 0; i < n && k < (int)sizeof(hex) - 3; i++)
+    k += snprintf(hex + k, sizeof(hex) - k, "%02x", page[i]);
+  if (ioctl(pass, CAMIOCOMMAND, &ccb) != 0) {
+    say("MODE SELECT %s (%s): errno %d", what, hex, errno);
+    return -1;
+  }
+  const int ok = (ccb.ccb_h.status & CAM_STATUS_MASK) == CAM_REQ_CMP;
+  const uint8_t *s = (const uint8_t *)&ccb.csio.sense_data;
+  if (ok)
+    say("MODE SELECT %s (%s): ok", what, hex);
+  else
+    say("MODE SELECT %s (%s): refused, sense key %d asc %#x ascq %#x", what, hex, s[2] & 15, s[12], s[13]);
+  return ok ? 0 : -1;
+}
+
 /* GET CONFIGURATION (0x46), the current profile (0x10 DVD-ROM, 0x40 BD-ROM, Sony's own above 0xFF00), or -1. */
 static int current_profile(int pass) {
   union ccb ccb;
@@ -321,9 +376,9 @@ int main(void) {
   mkdir("/data/PCSX2/logs", 0777);
   g_log = fopen("/data/PCSX2/logs/disctest.log", "w");
   const pid_t pid = getpid();
-  say("v5 (drive features, mode pages, DB flags), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
+  say("v6 (Sony mode pages 31/32, not saved), pid %d, uid %d, authid %#llx", (int)pid, (int)getuid(),
       (unsigned long long)kernel_get_ucred_authid(pid));
-  notify("PS5SX2 disc test v5: running (about 1 minute)");
+  notify("PS5SX2 disc test v6: running (about 1 minute)");
 
   const int fd = open_cd(pid);
   if (fd < 0) {
@@ -361,42 +416,67 @@ int main(void) {
   }
 
   say("current profile: %#x", current_profile(pass));
-  describe_drive(pass);
+  (void)describe_drive; /* v5's full listing, not needed again */
+  (void)set_speed_raw;  /* v5's DB flag sweep */
+
+  uint8_t p31[64], p32[64];
+  const int n31 = read_page(pass, 0x31, p31, sizeof(p31)), n32 = read_page(pass, 0x32, p32, sizeof(p32));
+  say("page 31: %d bytes, page 32: %d bytes", n31, n32);
+  if (n31 < 8 || n32 < 5) {
+    notify("PS5SX2 disc test v6: can't read pages 31/32 (see disctest.log)");
+    close(pass);
+    close(fd);
+    return 1;
+  }
+  hexdump("page 31 before", p31, (uint32_t)n31);
+  hexdump("page 32 before", p32, (uint32_t)n32);
 
   static const struct {
-    uint8_t b1;
-    uint16_t speed;
-    uint8_t b4, b5;
-  } kTry[] = {{0x04, 0x0080, 0, 0}, {0x08, 0x0080, 0, 0}, {0x10, 0x0080, 0, 0}, {0x20, 0x0080, 0, 0}, {0x40, 0x0080, 0, 0},
-               {0x80, 0x0080, 0, 0}, {0x81, 0x0080, 0, 0}, {0x05, 0x0080, 0, 0}, {0x00, 0x0080, 0x01, 0}, {0x00, 0x0080, 0x02, 0},
-               {0x00, 0x0080, 0x10, 0}, {0x00, 0x0080, 0, 0x01}, {0x01, 0x0080, 0x01, 0}, {0x80, 0x0032, 0, 0},
-               {0x00, 0x0032, 0x01, 0}};
+    uint8_t page, byte, value;
+  } kTry[] = {{0x32, 2, 0}, {0x32, 2, 1}, {0x32, 2, 2}, {0x32, 3, 1}, {0x32, 4, 1},
+               {0x31, 2, 0}, {0x31, 2, 2}, {0x31, 2, 3}};
   const int n = (int)(sizeof(kTry) / sizeof(kTry[0]));
-  double res[32] = {0};
+  char line[3000];
   const uint64_t step = 24ull << 20, first = 64ull << 20;
   const double base = timed_read(fd, first, sz, "as the drive is");
+  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v6: as is %.1f MB/s (%.1fx)", base, base / 1.385);
   for (int i = 0; i < n; i++) {
-    char what[80];
-    snprintf(what, sizeof(what), "after DB %02x %02x %02x %02x %02x", kTry[i].b1, kTry[i].speed >> 8, kTry[i].speed & 0xff,
-             kTry[i].b4, kTry[i].b5);
-    if (set_speed_raw(pass, kTry[i].b1, kTry[i].speed, kTry[i].b4, kTry[i].b5) == 0) {
-      res[i] = timed_read(fd, first + (uint64_t)(i + 1) * step, sz, what);
-      set_speed(pass, 0, 0x20);
-    } else
-      res[i] = -1;
-  }
-  char line[3000];
-  int at = snprintf(line, sizeof(line), "PS5SX2 disc test v5: as is %.1f MB/s (%.1fx)", base, base / 1.385);
-  int taken = 0;
-  for (int i = 0; i < n && at < (int)sizeof(line) - 80; i++)
-    if (res[i] >= 0) {
-      taken++;
-      at += snprintf(line + at, sizeof(line) - at, " | DB %02x %04x %02x %02x: %.1f MB/s (%.1fx)", kTry[i].b1, kTry[i].speed,
-                     kTry[i].b4, kTry[i].b5, res[i], res[i] / 1.385);
+    uint8_t page[64];
+    const int len = kTry[i].page == 0x31 ? n31 : n32;
+    memcpy(page, kTry[i].page == 0x31 ? p31 : p32, (size_t)len);
+    if (kTry[i].byte >= len || page[kTry[i].byte] == kTry[i].value)
+      continue;
+    page[kTry[i].byte] = kTry[i].value;
+    char what[64];
+    snprintf(what, sizeof(what), "page %02x byte %u = %u", kTry[i].page, kTry[i].byte, kTry[i].value);
+    if (write_page(pass, page, len, what) != 0) {
+      at += snprintf(line + at, sizeof(line) - at, " | p%02x[%u]=%u refused", kTry[i].page, kTry[i].byte, kTry[i].value);
+      continue;
     }
-  if (!taken)
-    at += snprintf(line + at, sizeof(line) - at, " | no DB variant taken");
-  snprintf(line + at, sizeof(line) - at, " | drive details in disctest.log");
+    uint8_t check[64];
+    if (read_page(pass, kTry[i].page, check, sizeof(check)) == len)
+      hexdump("  reads back", check, (uint32_t)len);
+    const char *taken = NULL;
+    if (set_speed(pass, 0, 0x80) == 0)
+      taken = "DB 00 00 80";
+    else if (set_speed(pass, 1, 0x80) == 0)
+      taken = "DB 01 00 80";
+    else if (set_speed(pass, 0, 0x32) == 0)
+      taken = "DB 00 00 32";
+    double mbs = 0;
+    if (taken) {
+      char w2[96];
+      snprintf(w2, sizeof(w2), "%s, after %s", what, taken);
+      mbs = timed_read(fd, first + (uint64_t)(i + 1) * step, sz, w2);
+    }
+    set_speed(pass, 0, 0x20);
+    write_page(pass, kTry[i].page == 0x31 ? p31 : p32, len, "back to the original");
+    if (at < (int)sizeof(line) - 80)
+      at += snprintf(line + at, sizeof(line) - at, " | p%02x[%u]=%u: %s %.1f MB/s", kTry[i].page, kTry[i].byte, kTry[i].value,
+                     taken ? taken : "no DB taken", mbs);
+  }
+  write_page(pass, p31, n31, "page 31 back to the original (end)");
+  write_page(pass, p32, n32, "page 32 back to the original (end)");
   set_speed(pass, 0, 0x20); /* back to the drive's default, 2.0, as SceShellCore does */
   close(pass);
   close(fd);
