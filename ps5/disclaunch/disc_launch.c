@@ -1,4 +1,4 @@
-/* PS5SX2 disc-launch payload (vk-285-160, AI-assisted):
+/* PS5SX2 disc-launch payload (vk-285-160b, AI-assisted):
  * Reads the PS2 serial from the disc in the drive, scans /data/PCSX2/games/
  * for a matching ISO, writes its path to /data/PCSX2/logs/disc-launch.txt,
  * and relaunches PS5SX2, which skips the shelf and starts that game directly.
@@ -6,10 +6,16 @@
  * When the ISO is not found yet: notifies the user so they know to dump it
  * with PS5SX2 first. Send to the console's ELF loader (port 9021).
  *
+ * vk-285-160b: sceSystemServiceLoadExec is found at runtime via dlopen so the
+ * ELF has no hard libSceSystemService.sprx dependency (which the ELF loader
+ * process may not have loaded). Privilege escalation via kernel_set_ucred_authid
+ * ensures notifications and /dev/cd0 access work regardless of the loader's uid.
+ *
  * Copyright (C) 2026 swordpdf
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <ctype.h>
+#include <dlfcn.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -23,6 +29,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <ps5/kernel.h>
 #include <ps5/klog.h>
 
 /* ------------------------------------------------------------------ */
@@ -196,10 +203,19 @@ static int find_iso(const char *games_dir, const char *serial, char *out_path, s
 /* ------------------------------------------------------------------ */
 /* main                                                                  */
 /* ------------------------------------------------------------------ */
-int sceSystemServiceLoadExec(const char *path, const char *argv[]);
-
 int main(void) {
-    say("disc-launch v1 (vk-285-160)");
+    say("disc-launch v1 (vk-285-160b)");
+
+    /* 0. Privilege escalation: ensure we can open /dev/cd0, send notifications,
+     *    and call sceSystemServiceLoadExec from any loader uid. */
+    {
+        const pid_t pid = getpid();
+        uint8_t caps[16], all[16];
+        memset(all, 0xff, sizeof(all));
+        kernel_get_ucred_caps(pid, caps);
+        kernel_set_ucred_authid(pid, 0x4800000000010003ull);
+        kernel_set_ucred_caps(pid, all);
+    }
 
     /* 1. Read the serial from the disc in the drive. */
     const int fd = open("/dev/cd0", O_RDONLY);
@@ -256,7 +272,24 @@ int main(void) {
     say("sceSystemServiceLoadExec(%s)", eboot);
     fflush(stdout);
 
-    const int rc = sceSystemServiceLoadExec(eboot, NULL);
+    /* Find sceSystemServiceLoadExec at runtime — the ELF loader process may not
+     * have libSceSystemService.sprx loaded, so a hard NEEDED entry prevents this
+     * ELF from loading at all.  dlopen avoids that dependency entirely. */
+    void *lib = dlopen("libSceSystemService.sprx", RTLD_NOW | RTLD_GLOBAL);
+    if (!lib) {
+        say("dlopen(libSceSystemService.sprx) failed: %s", dlerror());
+        notify("Disc launch: could not load libSceSystemService — relaunch PS5SX2 manually");
+        return 1;
+    }
+    typedef int (*LoadExec_t)(const char *, const char **);
+    LoadExec_t LoadExec = (LoadExec_t)(uintptr_t)dlsym(lib, "sceSystemServiceLoadExec");
+    if (!LoadExec) {
+        say("dlsym(sceSystemServiceLoadExec) failed: %s", dlerror());
+        notify("Disc launch: could not find sceSystemServiceLoadExec — relaunch PS5SX2 manually");
+        return 1;
+    }
+
+    const int rc = LoadExec(eboot, NULL);
     say("LoadExec returned 0x%08x%s", (unsigned)rc, rc == 0 ? " (restarting)" : " (failed)");
     return rc == 0 ? 0 : 1;
 }
