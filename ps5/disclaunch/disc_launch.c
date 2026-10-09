@@ -1,4 +1,4 @@
-/* PS5SX2 disc-auto daemon (vk-285-160i, AI-assisted).
+/* PS5SX2 disc-auto daemon (vk-285-160j, AI-assisted).
  * Send once to the console's ELF loader (port 9021) and leave it running.
  * Put a PS2 DVD in:
  *   - already dumped  -> PS5SX2 comes to the front and starts that game.
@@ -45,6 +45,11 @@
  *   running) yet the shell ran its LaunchFlow and switched to it (FG 7 -> 0x8017, controller focus to it): that
  *   is the call. SetAppFocus logged SetControllerFocus(-1) each time (it takes the pad away), so it is gone.
  *   LaunchApp at +3 and +8 s after the exec signal is consumed.
+ * vk-285-160j: 160i's cold start KERNEL-PANICKED the console right after "forked N for LoadExec": fork() in a
+ *   payload process, then LoadExec from the child. No fork and no LoadExec any more. PS5SX2 is started with
+ *   sceLncUtilLaunchApp (the call that already brought it to the front, the launcher's way): for a launch it
+ *   gets disc-launch.txt only (no exec signal, nothing to re-exec), so its first boot starts the game; LaunchApp
+ *   again at +6/+11 s keeps it in front. For a dump it is simply launched.
  * Needs proper testing on a console with a disc drive.
  *
  * Copyright (C) 2026 swordpdf
@@ -255,39 +260,6 @@ static void stamp_self(void) {
 /* ------------------------------------------------------------------ */
 /* Start PS5SX2 when it isn't running                                    */
 /* ------------------------------------------------------------------ */
-typedef int (*LoadExec_t)(const char *, const char **);
-
-static const char *eboot_path(void) {
-    struct stat st;
-    const char *p = "/data/homebrew/PPSA99203/eboot.bin";
-    return stat(p, &st) == 0 ? p : "/app0/eboot.bin";
-}
-
-/* From this payload LoadExec starts PS5SX2 behind the shell (160b); whatever it then
- * needs to show, it brings itself to the front with a self-exec. Called in a child so the
- * daemon survives whether or not LoadExec replaces the calling process; a direct call if
- * fork isn't allowed here. */
-static void start_emu(void) {
-    void *h = dlopen("libSceSystemService.sprx", RTLD_NOW | RTLD_GLOBAL);
-    LoadExec_t le = h ? (LoadExec_t)dlsym(h, "sceSystemServiceLoadExec") : NULL;
-    if (!le) { say("sceSystemServiceLoadExec not found (dlopen %p)", h); return; }
-    const char *path = eboot_path();
-    const pid_t child = fork();
-    if (child == 0) {
-        const int rc = le(path, NULL);
-        klog_printf("[disc-auto] child: LoadExec(%s) = 0x%08x\n", path, (unsigned)rc);
-        _exit(rc == 0 ? 0 : 1);
-    }
-    if (child > 0) {
-        say("starting PS5SX2: forked %d for LoadExec(%s)", (int)child, path);
-        return;
-    }
-    say("fork errno %d; calling LoadExec(%s) directly", errno, path);
-    const int rc = le(path, NULL);
-    say("LoadExec = 0x%08x", (unsigned)rc);
-}
-
-
 /* ------------------------------------------------------------------ */
 /* Focus: bring the running PS5SX2 to the front (vk-285-160f)            */
 /* ------------------------------------------------------------------ */
@@ -398,26 +370,47 @@ static int superseded(void) {
 /* ------------------------------------------------------------------ */
 /* Actions                                                               */
 /* ------------------------------------------------------------------ */
+/* vk-285-160j: start PS5SX2 the way its tile does (sceLncUtilLaunchApp). Never fork here: fork + LoadExec
+ * from the child panicked the kernel (160i). */
+static void launch_title(const char *why) {
+    if (!p_launch) { say("%s: no sceLncUtilLaunchApp", why); return; }
+    int user = -1;
+    if (p_fguser) p_fguser(&user);
+    lnc_app_param_t prm;
+    memset(&prm, 0, sizeof(prm));
+    prm.size = sizeof(prm);
+    prm.user_id = user;
+    const int rc = p_launch(TITLE_ID, NULL, &prm);
+    say("%s: sceLncUtilLaunchApp(" TITLE_ID ", user %d) = 0x%08x", why, user, (unsigned)rc);
+}
+
 static time_t g_last_start;
 static time_t g_focus_armed;   /* when; 0 = no focus watch */
+static time_t g_focus_seen;    /* exec signal consumed (or cold launch); 0 = not yet */
 
 static void launch(const char *serial, const char *iso) {
+    const int alive = emu_alive();
     FILE *f = fopen(LAUNCH_TXT, "w");
     if (!f) { say("fopen(" LAUNCH_TXT "): errno %d", errno); notify("PS5SX2 disc: can't write disc-launch.txt"); return; }
     fprintf(f, "%s\n%s\n", iso, serial);
     fclose(f);
-    f = fopen(EXEC_TXT, "w");
-    if (f) fclose(f);
-    else say("fopen(" EXEC_TXT "): errno %d", errno);
-    say("launch %s: %s", serial, iso);
-    g_focus_armed = time(NULL);
+    say("launch %s: %s (PS5SX2 %s)", serial, iso, alive ? "running" : "not running");
     notify("PS5SX2: starting %s", serial);
-    /* Running: its watcher self-execs into the game (front). Not running: start it; main-boot
-     * sees exec.txt, holds disc-launch.txt, the watcher self-execs, and that boot starts it. */
-    if (!emu_alive()) {
-        say("PS5SX2 not running (no fresh ps5sx2-alive.txt): starting it");
-        start_emu();
+    if (alive) {
+        /* Its disc watcher sees the exec signal and re-execs into the game; then LaunchApp brings it to the
+         * front (the re-exec keeps the shell's focus where it was). */
+        f = fopen(EXEC_TXT, "w");
+        if (f) fclose(f);
+        else say("fopen(" EXEC_TXT "): errno %d", errno);
+        g_focus_armed = time(NULL);
+        g_focus_seen = 0;
+    } else {
+        /* Not running: launch it; its first boot reads disc-launch.txt and starts the game. */
+        unlink(EXEC_TXT);
+        launch_title("start PS5SX2 into the game");
         g_last_start = time(NULL);
+        g_focus_armed = time(NULL);
+        g_focus_seen = time(NULL) + 3; /* LaunchApp again at +6/+11 s */
     }
 }
 
@@ -434,7 +427,7 @@ static void cleanup(const char *serial) {
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (vk-285-160i) pid %d", (int)getpid());
+    say("disc-auto daemon (vk-285-160j) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
@@ -443,7 +436,7 @@ int main(void) {
         kernel_set_ucred_authid(getpid(), 0x4800000000010003ull);
         kernel_set_ucred_caps(getpid(), all);
     }
-    signal(SIGCHLD, SIG_IGN); /* no zombies from start_emu's child */
+    signal(SIGCHLD, SIG_IGN);
     take_over();
     load_lnc();
 
@@ -456,7 +449,6 @@ int main(void) {
     enum state st = S_NONE;
     int startup = 1;
 
-    time_t focus_seen = 0;
     int focus_done = 0;
 
     for (;;) {
@@ -471,9 +463,9 @@ int main(void) {
         if (g_focus_armed) {
             const time_t now = time(NULL);
             struct stat est;
-            if (!focus_seen) {
+            if (!g_focus_seen) {
                 if (stat(EXEC_TXT, &est) != 0) {
-                    focus_seen = now;
+                    g_focus_seen = now;
                     focus_done = 0;
                     say("exec signal consumed: PS5SX2 is re-executing");
                 } else if (now - g_focus_armed > 90) {
@@ -482,13 +474,13 @@ int main(void) {
                 }
             } else {
                 static const int at[2] = { 3, 8 };
-                if (focus_done < 2 && now - focus_seen >= at[focus_done]) {
+                if (focus_done < 2 && now - g_focus_seen >= at[focus_done]) {
                     const uint32_t id = emu_appid();
                     if (id) give_focus(id, focus_done + 1);
                     else say("focus #%d: PS5SX2 not the running big app yet", focus_done + 1);
                     focus_done++;
                 }
-                if (focus_done >= 2) { g_focus_armed = 0; focus_seen = 0; }
+                if (focus_done >= 2) { g_focus_armed = 0; g_focus_seen = 0; }
             }
         }
 
@@ -547,7 +539,7 @@ int main(void) {
                 notify("PS5SX2: dumping %s, it starts when the copy is done", serial);
                 if (!emu_alive()) {
                     say("PS5SX2 not running: starting it to dump");
-                    start_emu();
+                    launch_title("start PS5SX2");
                     g_last_start = time(NULL);
                 }
                 st = S_DUMPING;
@@ -562,7 +554,7 @@ int main(void) {
                 seen = time(NULL) - kSettleSec;
             } else if (!emu_alive() && time(NULL) - g_last_start > kRestartAfter) {
                 say("%s: PS5SX2 stopped before the dump finished: starting it again", serial);
-                start_emu();
+                launch_title("start PS5SX2");
                 g_last_start = time(NULL);
             }
             break;
