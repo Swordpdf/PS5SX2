@@ -96,7 +96,10 @@ struct OrbisDbgStage
 extern "C" uint32_t ps5vk_debug_submission_steps(VkDevice device, OrbisDbgStage* steps, uint32_t capacity) __attribute__((weak));
 static constexpr u32 ORBIS_WORDS_GUARD = 440000;
 static constexpr u32 ORBIS_GUARD_BUDGET = 4400;
-static std::chrono::steady_clock::time_point s_orbis_guard_until;
+// live-11 (AI-assisted): times on the TSC (~1.6 GHz on the PS5; only rough seconds are needed here), not steady_clock: live-10's
+// autoprof had 36% of the GS thread's samples in clock_gettime (a kernel call) under steady_clock::now(), which the budget asked twice a draw.
+static constexpr u64 ORBIS_TSC_SECOND = 1600000000ull;
+static u64 s_orbis_guard_until_tsc = 0;
 static void OrbisMeasureSubmitWords(VkDevice device, u32 draws)
 {
 	static u32 s_n = 0, s_peak_words = 0, s_peak_draws = 0, s_guards = 0;
@@ -114,8 +117,9 @@ static void OrbisMeasureSubmitWords(VkDevice device, u32 draws)
 	}
 	if (words > ORBIS_WORDS_GUARD)
 	{
-		const bool was = std::chrono::steady_clock::now() < s_orbis_guard_until;
-		s_orbis_guard_until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		const u64 tsc = __builtin_ia32_rdtsc();
+		const bool was = tsc < s_orbis_guard_until_tsc;
+		s_orbis_guard_until_tsc = tsc + 10 * ORBIS_TSC_SECOND;
 		if (!was && (++s_guards <= 5 || (s_guards % 100) == 0))
 		{
 			printf("[vkwords] guard: a submission of %llu words (%u draws) is past %u of the driver's 523,503: draw budget %u for 10 s (%u times)\n",
@@ -138,14 +142,14 @@ static u32 OrbisSubmitDrawBudgetRaw();
 static u32 OrbisSubmitDrawBudget()
 {
 	const u32 b = OrbisSubmitDrawBudgetRaw();
-	return (b > ORBIS_GUARD_BUDGET && std::chrono::steady_clock::now() < s_orbis_guard_until) ? ORBIS_GUARD_BUDGET : b;
+	return (b > ORBIS_GUARD_BUDGET && s_orbis_guard_until_tsc != 0 && __builtin_ia32_rdtsc() < s_orbis_guard_until_tsc) ? ORBIS_GUARD_BUDGET : b;
 }
 static u32 OrbisSubmitDrawBudgetRaw()
 {
-	static std::chrono::steady_clock::time_point s_checked;
+	static u64 s_checked = 0;
 	static u32 s_budget = OrbisDefaultDrawBudget();
-	const auto now = std::chrono::steady_clock::now();
-	if (now - s_checked >= std::chrono::seconds(1))
+	const u64 now = __builtin_ia32_rdtsc();
+	if (now - s_checked >= ORBIS_TSC_SECOND)
 	{
 		s_checked = now;
 		u32 budget = OrbisDefaultDrawBudget();
@@ -173,10 +177,10 @@ namespace
 	// most once a second.
 	bool OrbisCopiesAsImageCopies()
 	{
-		static std::chrono::steady_clock::time_point s_checked;
+		static u64 s_checked = 0; // live-11: the TSC, not steady_clock (a kernel call per copy)
 		static bool s_on = false;
-		const auto now = std::chrono::steady_clock::now();
-		if (now - s_checked >= std::chrono::seconds(1))
+		const u64 now = __builtin_ia32_rdtsc();
+		if (now - s_checked >= ORBIS_TSC_SECOND)
 		{
 			s_checked = now;
 			s_on = OrbisFlag("vk_cputransfer");
