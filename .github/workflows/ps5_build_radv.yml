@@ -1,0 +1,372 @@
+# PS5SX2 - build the PS5 eboot on RADV (ps5/coreorbis/link-radv.sh), on a GitHub-hosted runner.
+#
+# The release build links Swordpdf/PS5HB_Vulkan and a modified payload SDK, neither of them public
+# (ps5/README.md, Dependencies). This builds the RADV path instead, which ps5/docs/build-dependencies.md
+# ("Successful RADV build attempt") records as linking from public sources only, with its pins:
+#
+#   deps/PS5_Vulkan       mihawk-99/PS5_Vulkan 3f3ee69: RADV, built with its tools/build-radv.sh release
+#   deps/PS5_PayloadSDK   mihawk-99/PS5_PayloadSDK at PS5_Vulkan's pin (its platform layer, libps5platform.a)
+#   deps/PS5_Mesa         mihawk-99/PS5_Mesa at PS5_Vulkan's pin (RADV's source)
+#   deps/sdk285           the ps5-payload-dev SDK v0.42 release, with link stubs for libSceAgc and
+#                         libSceAgcDriver built from PS5_Vulkan's vendor/ps5/sdk/stubs (the ones its RADV
+#                         title links; they only name the imports, the console's modules provide them)
+#   deps/ryml             rapidyaml 0cd25a1 (c4core is committed in ext/c4core.src)
+#   deps/glslang          glslang 275822a (16.3.0), build-ps5/ built with the SDK's CMake toolchain
+#   deps/shaderc          shaderc v2026.2, for its headers
+#
+# The result is PS5SX2-<tag>.zip: PPSA99203/ (eboot.bin, sce_sys/param.json and icon0.png from ps5/sce_sys,
+# sce_module/libc.prx from PS5_Vulkan's make libc), ready for /data/homebrew or a folder ShadowMountPlus scans,
+# and PCSX2/ for /data/PCSX2 (bin/resources and the empty folders the app reads). Not in it: the release's
+# backgrounds and music (not in the repository) and the PS5SX2 Helper payload (from the releases). It is
+# experimental: console validation of the RADV build is pending (build-dependencies.md).
+#
+# Runs in an Ubuntu 26.04 container: RADV's host tools (mesa_clc, vtn_bindgen2) need LLVM/Clang 22 with
+# libclc and the SPIR-V translator; the PS5 toolchain is LLVM 18 (ps5/README.md, Host tools).
+name: PS5 Build (RADV)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'bin/resources/**', 'pcsx2-qt/**']
+  pull_request:
+    paths-ignore: ['**.md', 'bin/resources/**', 'pcsx2-qt/**']
+  workflow_dispatch:
+    inputs:
+      build_tag:
+        description: ORBIS_BUILD_TAG (shown in boot.log and the shelf); empty = ci-radv-<commit>
+        required: false
+        default: ''
+      test_build:
+        description: ORBIS_TEST_BUILD (1 = the TESTING watermark over games)
+        required: false
+        default: '0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ps5-radv-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PS5_VULKAN_REVISION: 3f3ee69607013b345d2baa6d6a37c86745649a08
+  RYML_REVISION: 0cd25a10e0b83e4e1c11ad74048f4817f45b9763
+  GLSLANG_REVISION: 275822a6261ee689aadb1da5f09a0ec2f058685c
+  SHADERC_TAG: v2026.2
+  SDK_RELEASE_URL: https://github.com/ps5-payload-dev/sdk/releases/download/v0.42/ps5-payload-sdk.zip
+  SDK_RELEASE_SHA256: 8cfbc7cd5811e719eb4f0c47eea668d3dc7b40bc8ab11c4a5031d40c23ec02da
+
+jobs:
+  build:
+    name: Build eboot.bin (RADV)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ubuntu:26.04
+      # SDKs preinstalled on the runner, mounted so the job can delete them for disk space.
+      volumes:
+        - /usr/share/dotnet:/host-free/dotnet
+        - /usr/local/lib/android:/host-free/android
+        - /opt/ghc:/host-free/ghc
+        - /usr/local/.ghcup:/host-free/ghcup
+        - /opt/hostedtoolcache:/host-free/toolcache
+        - /usr/local/share/boost:/host-free/boost
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CCACHE_MAXSIZE: 2G
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Free disk space
+        run: |
+          find /host-free -mindepth 2 -maxdepth 2 -exec rm -rf {} + 2>/dev/null || true
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Install the build tools
+        run: |
+          apt-get update
+          # LLVM 18: the PS5 toolchain (prospero-clang18, ld.lld-18, llvm-nm-18, the host tool, Clang's builtins).
+          # LLVM/Clang 22, libclc and the SPIR-V translator: RADV's host tools (PS5_Vulkan tools/build-radv.sh).
+          apt-get install --yes --no-install-recommends \
+            ca-certificates git curl wget unzip zip xz-utils file make build-essential pkgconf \
+            bsdextrautils patch rsync util-linux zstd \
+            cmake ninja-build meson ccache bison flex glslang-tools spirv-tools \
+            python3 python3-mako python3-yaml python3-packaging python3-ply \
+            clang-18 lld-18 llvm-18 libclang-rt-18-dev zlib1g-dev \
+            llvm-22-dev clang-22 libclang-22-dev libclang-cpp22-dev libclc-22 libclc-22-dev \
+            libllvmspirvlib-22-dev spirv-tools-dev spirv-headers libexpat1-dev
+          # The unversioned names are LLVM 18's (PS5_Vulkan's scripts call clang, llvm-ar, llvm-nm by name), except
+          # llvm-config: RADV's host build finds LLVM 22 by that name (its PATH has 22 first).
+          for path in /usr/lib/llvm-18/bin/*; do
+            tool=${path##*/}
+            [[ $tool == llvm-config ]] && continue
+            [[ -e /usr/bin/$tool && ! -L /usr/bin/$tool ]] || ln -sfn "$path" "/usr/bin/$tool"
+          done
+          for tool in clang-18 clang++-18 ld.lld-18 llvm-nm-18 clang ld.lld llvm-ar llvm-nm; do
+            command -v "$tool" >/dev/null || { echo "missing $tool" >&2; exit 2; }
+          done
+          clang --version | head -n 1
+          /usr/lib/llvm-22/bin/llvm-config --version
+          git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@v7
+        with:
+          path: PS5SX2
+
+      - name: Locate the dependencies
+        run: |
+          deps="$GITHUB_WORKSPACE/deps"
+          mkdir -p "$deps" "$GITHUB_WORKSPACE/ci-cache"
+          builtins="$(clang-18 --print-resource-dir)/lib/linux/libclang_rt.builtins-x86_64.a"
+          [[ -f $builtins ]] || { echo "no Clang 18 builtins at $builtins" >&2; exit 2; }
+          {
+            echo "DEPS=$deps"
+            echo "PS5SX2_DEPS=$deps"
+            echo "PS5_PAYLOAD_SDK=$deps/sdk285"
+            echo "PS5_PAYLOAD_SDK_FORK=$deps/PS5_PayloadSDK"
+            echo "PS5_MESA_FORK=$deps/PS5_Mesa"
+            echo "PS5_RADV_ARCHIVE=$deps/PS5_Vulkan/.deps/native/radv-release/lib/libvulkan_radeon.ps5.a"
+            echo "PS5_RADV_PLATFORM=$deps/PS5_Vulkan/.deps/native/ps5-payload-sdk/target/lib/libps5platform.a"
+            echo "PS5_RADV_BUILTINS=$builtins"
+            echo "CCACHE_DIR=$GITHUB_WORKSPACE/ci-cache/ccache"
+          } >> "$GITHUB_ENV"
+
+      - name: Fetch the pinned sources
+        working-directory: deps
+        run: |
+          fetch_at() { # fetch_at <dir> <url> <commit>...: just those commits, the first checked out
+            local dir=$1 url=$2
+            shift 2
+            git init --quiet "$dir"
+            git -C "$dir" remote add origin "$url" 2>/dev/null || git -C "$dir" remote set-url origin "$url"
+            git -C "$dir" fetch --quiet --depth 1 origin "$@"
+            git -C "$dir" checkout --quiet --force --detach "$1"
+          }
+          fetch_at PS5_Vulkan https://github.com/mihawk-99/PS5_Vulkan.git "$PS5_VULKAN_REVISION"
+          sdk_fork=$(sed -n 's/^sdk_revision=\([0-9a-f]\{40\}\).*/\1/p' PS5_Vulkan/tools/setup-native-dependencies.sh)
+          mesa=$(sed -n 's/^mesa_revision=\([0-9a-f]\{40\}\).*/\1/p' PS5_Vulkan/tools/build-radv.sh)
+          [[ -n $sdk_fork && -n $mesa ]] || { echo "PS5_Vulkan's SDK or Mesa pin was not found" >&2; exit 2; }
+          echo "PS5_Vulkan ${PS5_VULKAN_REVISION:0:12}: SDK fork $sdk_fork, Mesa $mesa"
+          echo "MESA_REVISION=$mesa" >> "$GITHUB_ENV"
+          echo "SDK_FORK_REVISION=$sdk_fork" >> "$GITHUB_ENV"
+          fetch_at PS5_PayloadSDK https://github.com/mihawk-99/PS5_PayloadSDK.git "$sdk_fork"
+          fetch_at PS5_Mesa https://github.com/mihawk-99/PS5_Mesa.git "$mesa"
+          fetch_at ryml https://github.com/biojppm/rapidyaml.git "$RYML_REVISION"
+          fetch_at glslang https://github.com/KhronosGroup/glslang.git "$GLSLANG_REVISION"
+          git clone --quiet --depth 1 --branch "$SHADERC_TAG" https://github.com/google/shaderc.git shaderc
+          [[ -d ryml/ext/c4core.src/c4 && -f shaderc/libshaderc/include/shaderc/shaderc.h ]]
+          df -h .
+
+      - name: Restore downloads
+        uses: actions/cache@v5
+        with:
+          # The SDK release for deps/sdk285, and what PS5_Vulkan's bootstrap downloads (the same release, zlib).
+          path: |
+            ci-cache/downloads
+            deps/PS5_Vulkan/.deps/native/ps5-payload-sdk.zip
+            deps/PS5_Vulkan/.deps/native/zlib/zlib-*.tar.gz
+          key: ps5-downloads-${{ env.SDK_RELEASE_SHA256 }}-${{ env.SDK_FORK_REVISION }}
+
+      - name: The payload SDK (deps/sdk285, with AGC link stubs)
+        run: |
+          # v0.42 as released, the "upstream SDK runtime" the RADV attempt linked with (build-dependencies.md).
+          downloads="$GITHUB_WORKSPACE/ci-cache/downloads"
+          mkdir -p "$downloads"
+          zip="$downloads/ps5-payload-sdk-v0.42.zip"
+          [[ -f $zip ]] || curl --fail --location --retry 3 -o "$zip" "$SDK_RELEASE_URL"
+          echo "$SDK_RELEASE_SHA256  $zip" | sha256sum --check --strict
+          rm -rf "$DEPS/sdk285" "$DEPS/sdk-unzip"
+          unzip -q "$zip" -d "$DEPS/sdk-unzip"
+          mv "$DEPS/sdk-unzip/ps5-payload-sdk" "$PS5_PAYLOAD_SDK"
+          rmdir "$DEPS/sdk-unzip"
+          # libSceAgc and libSceAgcDriver: RADV's PS5 winsys imports them; the release has no stubs for them.
+          # The stubs PS5_Vulkan's RADV title links (tools/build-radv-title.sh), SONAME <name>.prx.
+          stubs="$DEPS/PS5_Vulkan/vendor/ps5/sdk/stubs"
+          for entry in "libSceAgc agc_canary_link_stub.c" "libSceAgcDriver agc_driver_canary_link_stub.c"; do
+            read -r name source <<< "$entry"
+            sh PS5SX2/ps5/proto/native/tooling/prospero-clang18 -std=c11 -O2 -fPIC \
+              -c "$stubs/$source" -o "$DEPS/${name}_stub.o"
+            "$PS5_PAYLOAD_SDK/bin/prospero-lld" --shared -soname "$name.prx" \
+              -o "$PS5_PAYLOAD_SDK/target/lib/$name.so" "$DEPS/${name}_stub.o"
+          done
+          ls -l "$PS5_PAYLOAD_SDK/target/lib/"libSceAgc*.so
+        env:
+          PS5_CLANG: /usr/bin/clang-18
+
+      - name: Install PS5_Vulkan's SDK (the fork, for RADV)
+        run: |
+          # zlib: the script downloads it from zlib.net, which can answer a CI runner with something other than the
+          # tarball (the checksum then fails). zlib's GitHub release carries the same file: fetched from there and
+          # checked against the script's own pin, the script finds it in place and doesn't download.
+          script="$DEPS/PS5_Vulkan/tools/setup-native-dependencies.sh"
+          zlib_version=$(sed -n 's/^zlib_version="\([0-9.]*\)".*/\1/p' "$script")
+          zlib_hash=$(sed -n 's/^zlib_hash="\([0-9a-f]\{64\}\)".*/\1/p' "$script")
+          [[ -n $zlib_version && -n $zlib_hash ]] || { echo "no zlib pin in $script" >&2; exit 2; }
+          zlib_dir="$DEPS/PS5_Vulkan/.deps/native/zlib"
+          zlib_archive="$zlib_dir/zlib-$zlib_version.tar.gz"
+          mkdir -p "$zlib_dir"
+          if ! echo "$zlib_hash  $zlib_archive" | sha256sum --check --strict --status 2>/dev/null; then
+            curl --fail --location --retry 3 -o "$zlib_archive" \
+              "https://github.com/madler/zlib/releases/download/v$zlib_version/zlib-$zlib_version.tar.gz"
+          fi
+          echo "$zlib_hash  $zlib_archive" | sha256sum --check --strict
+          BUILD_JOBS=$(nproc) bash "$script"
+          [[ -f $PS5_RADV_PLATFORM ]] || { echo "no $PS5_RADV_PLATFORM" >&2; exit 2; }
+
+      - name: Generate sce_module/libc.prx (PS5_Vulkan make libc)
+        run: |
+          # The module the app carries in sce_module/ (ps5/README.md: "the driver repository generates with make libc").
+          # Deterministic: rebuild-libc.sh checks the result against PS5_Vulkan's own runtime/libc.prx.sha256.
+          make -C "$DEPS/PS5_Vulkan" -s libc
+          ls -l "$DEPS/PS5_Vulkan/runtime/libc.prx"
+
+      - name: Restore the RADV driver
+        id: radv
+        uses: actions/cache/restore@v5
+        with:
+          path: deps/PS5_Vulkan/.deps/native/radv-release
+          key: ps5-radv-release-${{ env.MESA_REVISION }}-${{ env.SDK_FORK_REVISION }}
+
+      - name: Build RADV (PS5_Vulkan tools/build-radv.sh release)
+        run: |
+          # Host LLVM 22 first on PATH for mesa_clc and vtn_bindgen2; the cross build goes through the SDK's
+          # wrappers, which pick LLVM 18 by its versioned name.
+          export PATH="/usr/lib/llvm-22/bin:$PATH"
+          if ! bash "$DEPS/PS5_Vulkan/tools/build-radv.sh" release; then
+            for log in "$DEPS"/PS5_Vulkan/.deps/work/*.log; do
+              [[ -f $log ]] && { echo "::group::$log"; tail -n 60 "$log"; echo "::endgroup::"; }
+            done
+            exit 1
+          fi
+          cat "$DEPS/PS5_Vulkan/.deps/native/radv-release/PROVENANCE.txt"
+
+      - name: Save the RADV driver
+        if: steps.radv.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: deps/PS5_Vulkan/.deps/native/radv-release
+          key: ps5-radv-release-${{ env.MESA_REVISION }}-${{ env.SDK_FORK_REVISION }}
+
+      - name: Build glslang for the PS5 (deps/glslang/build-ps5)
+        run: |
+          # As ps5/docs/build-dependencies.md: Release, no optimizer, no HLSL, no binaries, no tests.
+          cmake -S "$DEPS/glslang" -B "$DEPS/glslang/build-ps5" -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/toolchain/prospero.cmake" \
+            -DCMAKE_BUILD_TYPE=Release -DENABLE_OPT=OFF -DENABLE_HLSL=OFF \
+            -DENABLE_GLSLANG_BINARIES=OFF -DGLSLANG_TESTS=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF
+          cmake --build "$DEPS/glslang/build-ps5" -j "$(nproc)"
+          ls "$DEPS/glslang/build-ps5/glslang/libglslang.a" \
+             "$DEPS/glslang/build-ps5/glslang/libglslang-default-resource-limits.a" \
+             "$DEPS/glslang/build-ps5/glslang/OSDependent/Unix/libOSDependent.a"
+        env:
+          PS5_CLANG: /usr/bin/clang-18
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v5
+        with:
+          path: ci-cache/ccache
+          key: ps5-ccache-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ps5-ccache-
+
+      - name: Compile (make -f Makefile.vk)
+        working-directory: PS5SX2/ps5/coreorbis
+        run: |
+          ccache --zero-stats
+          # ccache in front of the SDK's wrappers (Makefile.vk's CXX and CC).
+          make -f Makefile.vk -j"$(nproc)" \
+            CXX="ccache $PS5_PAYLOAD_SDK/bin/prospero-clang++" CC="ccache $PS5_PAYLOAD_SDK/bin/prospero-clang"
+          ccache --show-stats || true
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: ci-cache/ccache
+          key: ps5-ccache-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Link and sign (link-radv.sh)
+        working-directory: PS5SX2/ps5/coreorbis
+        env:
+          INPUT_BUILD_TAG: ${{ inputs.build_tag }}
+          INPUT_TEST_BUILD: ${{ inputs.test_build }}
+        run: |
+          tag=$INPUT_BUILD_TAG
+          [[ -n $tag ]] || tag="ci-radv-${GITHUB_SHA:0:7}"
+          [[ $tag =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "build_tag: letters, digits and ._+- only" >&2; exit 2; }
+          test_build=${INPUT_TEST_BUILD:-0}
+          [[ $test_build =~ ^[0-9]+$ ]] || { echo "test_build must be a number" >&2; exit 2; }
+          echo "BUILD_TAG=$tag" >> "$GITHUB_ENV"
+          # -z nodynamic-undefined-weak: the optional hooks nothing defines resolve to zero instead of weak
+          # imports the native converter refuses (build-dependencies.md).
+          ORBIS_BUILD_TAG="$tag" ORBIS_TEST_BUILD="$test_build" \
+          LLD=ld.lld-18 NM=llvm-nm-18 HOST_CXX=clang++-18 \
+          LLD_EXTRA='--no-dynamic-linker -z nodynamic-undefined-weak' \
+            bash link-radv.sh
+
+      - name: Package (PPSA99203 folder for ShadowMountPlus, and PCSX2 data folder)
+        run: |
+          # The zip, unpacked:
+          #   PPSA99203/   the app folder: sce_sys/param.json at its root, which ShadowMountPlus registers from
+          #                /data/homebrew, /data/etaHEN/games or a USB drive's scan folders
+          #   PCSX2/       /data/PCSX2: resources/ (GameIndex.yaml, shaders) and the empty folders the app reads
+          stage="$GITHUB_WORKSPACE/stage"
+          rm -rf "$stage"
+          app="$stage/PPSA99203"
+          mkdir -p "$app/sce_sys" "$app/sce_module"
+          cp PS5SX2/ps5/build-radv/app/eboot.bin "$app/eboot.bin"
+          cp PS5SX2/ps5/sce_sys/param.json PS5SX2/ps5/sce_sys/icon0.png "$app/sce_sys/"
+          cp "$DEPS/PS5_Vulkan/runtime/libc.prx" "$app/sce_module/libc.prx"
+          title=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["titleId"])' "$app/sce_sys/param.json")
+          [[ $title == PPSA99203 ]] || { echo "param.json's titleId is $title, not PPSA99203" >&2; exit 2; }
+          # /data/PCSX2. flags/ is left out on purpose: with no flags/ (and no older switch files), the app writes the
+          # release's switch files itself at its first start (main-boot.cpp orbis_ensure_data_layout).
+          data="$stage/PCSX2"
+          mkdir -p "$data/resources"
+          cp -a PS5SX2/bin/resources/. "$data/resources/"
+          for dir in bios games memcards savestates settings patches cheats covers textures cache logs; do
+            mkdir -p "$data/$dir"
+          done
+          printf '%s\n' "Put your PS2 BIOS here (.bin, with its .mec/.nvm if you have them)." > "$data/bios/PUT-BIOS-HERE.txt"
+          printf '%s\n' "Put your disc images here (.iso, .chd, .cso, ...)." > "$data/games/PUT-GAMES-HERE.txt"
+          cp "$DEPS/PS5_Vulkan/.deps/native/radv-release/PROVENANCE.txt" "$stage/RADV-PROVENANCE.txt"
+          cp PS5SX2/COPYING.GPLv3 "$stage/COPYING.GPLv3"
+          cat > "$stage/README.txt" <<EOF
+          PS5SX2 $BUILD_TAG - experimental RADV build from GitHub Actions (not an official release)
+
+          The RADV build hasn't been validated on a console yet (ps5/docs/build-dependencies.md in the source).
+          Logs for a report: /data/PCSX2/logs/boot.log and stderr.log. Never share achievements-secrets.ini.
+
+          Install
+          1. Copy PPSA99203/ to /data/homebrew/PPSA99203/ (or a folder ShadowMountPlus scans, a USB drive's included).
+             Updating: back up your current PPSA99203 folder first.
+          2. Copy PCSX2/ to /data/PCSX2/. Existing files with the same names are replaced (resources/ only; the other
+             folders are empty), so your BIOS, games, memory cards and settings stay as they are.
+          3. Put your BIOS in /data/PCSX2/bios/ and your disc images in /data/PCSX2/games/.
+          4. Let ShadowMountPlus register the folder (or rescan), then start PS5SX2 from the home screen.
+
+          PS5SX2 needs a jailbreak when it starts: the PS5SX2 Helper payload from the official releases (loaded with
+          kstuff), or etaHEN/OnionHEN with PPSA99203 in its app_jailbreak allowlist. Don't autoload PS5SX2Installer.elf
+          with this build: it installs the latest official release over it.
+
+          Sources
+          PS5SX2 $GITHUB_SHA
+          PS5_Vulkan $PS5_VULKAN_REVISION (RADV and sce_module/libc.prx), PS5 Mesa $MESA_REVISION,
+          PS5_PayloadSDK fork $SDK_FORK_REVISION; payload SDK v0.42 ($SDK_RELEASE_SHA256) with libSceAgc and
+          libSceAgcDriver link stubs; rapidyaml $RYML_REVISION, glslang $GLSLANG_REVISION, shaderc $SHADERC_TAG.
+          GPL-3.0-or-later (COPYING.GPLv3).
+          EOF
+          (cd "$stage" && find . -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs -d '\n' sha256sum > SHA256SUMS)
+          zip_name="PS5SX2-$BUILD_TAG.zip"
+          (cd "$stage" && rm -f "../$zip_name" && zip -qr -X "../$zip_name" PPSA99203 PCSX2 README.txt RADV-PROVENANCE.txt COPYING.GPLv3 SHA256SUMS)
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          mv "$GITHUB_WORKSPACE/$zip_name" "$GITHUB_WORKSPACE/out/"
+          (cd "$GITHUB_WORKSPACE/out" && sha256sum "$zip_name" | tee "$zip_name.sha256")
+          unzip -l "$GITHUB_WORKSPACE/out/$zip_name" | grep -E 'PPSA99203/|README|  [0-9]+ files'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          # The artifact is itself downloaded as a zip; PS5SX2-<tag>.zip is inside it.
+          name: PS5SX2-${{ env.BUILD_TAG }}
+          path: out/
+          retention-days: 14

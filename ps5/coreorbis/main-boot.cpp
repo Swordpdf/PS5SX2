@@ -64,6 +64,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/ProsperoKbdMouse.h" // vk-285-72, vk-285-113: the PS5's USB keyboard and mouse
 #include "orbis-shims/OrbisPadMap.h"     // vk-285-116: the controller remapping
 #include "OrbisNfs.h"                     // vk-285-135: games on NFS shares
+#include "orbis-shims/OrbisForward.h"    // --rom from a home screen forwarder
 #include <mutex>
 #include <set> // vk-285-134
 // vk-285-108 (GSRenderer.cpp): the helper threads' CPUs and the ticker's heartbeat for the GS thread's watchdog.
@@ -1771,6 +1772,9 @@ static std::string orbis_console_survey()
   return info;
 }
 
+// A home screen forwarder's --exit-after-game (orbis-shims/OrbisForward.h): back to the menu closes the app.
+static bool s_forward_exit_after_game = false;
+
 // vk-285-48: at vsync on the CPU thread (StubHost.cpp, request 3): stop the VM. Execute returns at
 // the next event test and main() takes it from there (orbis_back_to_menu).
 void OrbisBackToMenuCpu()
@@ -1854,6 +1858,13 @@ static void orbis_back_to_menu()
   // a notification says so when they don't make it. Returns at once when nothing is waiting.
   Achievements::OrbisFlushBeforeExit(5000);
 #endif
+  if (s_forward_exit_after_game)
+  {
+    // A forwarder's game with --exit-after-game: the cards and the NVRAM are on disk, so out to the home screen.
+    printf("[menu] the forwarded game ended (--exit-after-game): closing\n");
+    orbis_eventf("the forwarded game ended: the app closed (--exit-after-game)");
+    OrbisExitApp(0);
+  }
   const char* path = "/data/homebrew/PPSA99203/eboot.bin";
   struct stat st{};
   if (stat(path, &st) != 0)
@@ -2596,8 +2607,12 @@ static void orbis_vk_environment()
 #endif
 
 
-int main()
+// argc and argv: a home screen forwarder's --rom and --exit-after-game (orbis-shims/OrbisForward.h); the CRT
+// (proto/native/tooling/native/app_crt.cpp) passes the launch arguments. The re-executions of this eboot (back to the
+// menu, a failed start, a new build) pass none, so they open the shelf.
+int main(int argc, char** argv)
 {
+  const orbis_forward::Args forward = orbis_forward::Parse(argc, argv);
   // Bigapp: no elfldr socket. Log to file (read back over FTP) + notify.
   // vk-285-33: in logs/ when that folder exists (OrbisPaths.h).
   // vk-285-113: a broken pipe (a network peer that went away) is an error return, not the end of the app.
@@ -2651,6 +2666,8 @@ int main()
   }
   if (g_orbis_test_build > 0)
     printf("[boot] testing build: %s\n", orbis_build_label().c_str()); // test build 1 (vk-285-55)
+  if (!forward.rom.empty())
+    printf("[boot] forwarder: --rom %s%s\n", forward.rom.c_str(), forward.exit_after_game ? " --exit-after-game" : "");
 #ifdef ORBIS_VULKAN
   orbis_event_log_init(OrbisLogPath("settings.log")); // vk-285-51
 #endif
@@ -2715,7 +2732,8 @@ int main()
 #ifdef ORBIS_VULKAN
   orbis_log_flag_access("before the jailbreak");
   orbis_scan_usb("before the jailbreak"); // test build 1: whether the sandbox shows USB drives yet
-  if (!orbis_flag("nofrontend") && !orbis_flag("nomenu") && !orbis_flag("nocoverdl"))
+  // A forwarder's game starts without the shelf, so no covers to wait for (the shelf fetches them when it opens).
+  if (forward.rom.empty() && !orbis_flag("nofrontend") && !orbis_flag("nomenu") && !orbis_flag("nocoverdl"))
     orbis_frontend_prefetch_covers(orbis_frontend_paths(true), 30.0, sys_notify);
 #endif
 
@@ -2891,6 +2909,30 @@ int main()
   // shows its QR code; it keeps running in the game. The nowebui flag leaves it off.
   orbis_scan_usb("after the jailbreak"); // test build 1: games on USB drives
   orbis_check_bios(); // vk-285-134: after the drives are seen, before the shelf
+#endif
+  // A home screen forwarder's game (--rom): looked for now that /data and the USB drives can be read. Found, it starts
+  // without the shelf or the plain list; not found, the shelf opens as usual, with a notification.
+  bool forwarded = false;
+  if (!forward.rom.empty())
+  {
+    for (const std::string& path : orbis_forward::Candidates(forward.rom, {OrbisDir("games"), "/data/PCSX2"}))
+    {
+      struct stat st{};
+      if (stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+      {
+        s_game_path = path;
+        forwarded = true;
+        break;
+      }
+    }
+    s_forward_exit_after_game = forwarded && forward.exit_after_game;
+    printf("[boot] forwarded game %s: %s\n", forward.rom.c_str(), forwarded ? s_game_path.c_str() : "not found");
+    fflush(stdout);
+    orbis_eventf("forwarded game %s: %s", forward.rom.c_str(), forwarded ? "found" : "not found, the shelf opens");
+    if (!forwarded)
+      sys_notify(("PS5SX2: game not found: " + forward.rom).c_str());
+  }
+#ifdef ORBIS_VULKAN
   orbis_boot_log_release("before the settings page starts"); // vk-285-113: still holding? (the folder can show up late)
   if (!orbis_flag("nowebui"))
     orbis_web_start(orbis_frontend_paths(false), orbis_build_label().c_str());
@@ -2899,7 +2941,7 @@ int main()
   // HTTPS failed there on vk-285-41/42, with etaHEN's jailbreak; with the PS5SX2 Helper's it hasn't been
   // tried, and boot.log's "[frontend] cover ..." lines will show it. When it fails, the next start's
   // prefetch fetches them from cache/usb-games.txt, as before.
-  if (!orbis_flag("nofrontend") && !orbis_flag("nomenu"))
+  if (!forwarded && !orbis_flag("nofrontend") && !orbis_flag("nomenu"))
     s_game_path = orbis_frontend_run(orbis_frontend_paths(!orbis_flag("nocoverdl")), ORBIS_BUILD_TAG, &frontend_ran);
 #endif
 #ifdef ORBIS_VULKAN
@@ -2912,7 +2954,7 @@ int main()
   OrbisAchievementsWaitForLogin();
   OrbisAchievementsStopBrowser(); // pr9n: the shelf's achievement list isn't needed now (was: wait out its requests)
 #endif
-  if (!frontend_ran)
+  if (!forwarded && !frontend_ran)
     s_game_path = orbis_select_game(OrbisDir("games").c_str(), "/data/PCSX2", ORBIS_BUILD_TAG); // vk-285-33: games/ too
   if (s_game_path.empty())
   {
@@ -3424,7 +3466,8 @@ int main()
     // half started, a crash on top of the failed start. Only when the game came from the shelf, which waits
     // for a pick: the plain list's automatic picks (the only image, the nomenu flag, no controller or
     // display) would choose the same image again, and fail again, in a loop.
-    if (frontend_ran)
+    // A forwarder's game too: the re-execution has no arguments, so it opens the shelf rather than this image again.
+    if (frontend_ran || forwarded)
       orbis_restart_to_menu();
     orbis_exit_quietly(1);
   }

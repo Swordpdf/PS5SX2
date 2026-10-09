@@ -16,6 +16,10 @@
 #   - the directory functions are the platform's as a family (RADV uses dirfd and rewinddir on its DIRs), so the port's
 #     own opendir/readdir/closedir (orbis-shims/dirshim.cpp) are left out of this link;
 #   - the archive carries its own zlib (a Mesa subproject), so the port's inflate sources (ps5/third_party/zlib) are left out.
+#   - games on NFS shares (vk-285-135): the C library's calls in orbis-shims/OrbisNfs.wrap go through OrbisNfs.cpp, as
+#     link-vk.sh. fclose and fflush are wrapped by both it and the platform layer (open_memstream's), so the two are
+#     chained: the platform's __wrap_<name> is renamed in a copy of libps5platform.a, and OrbisNfs.o's __real_<name>
+#     (in a copy) calls it. A call goes OrbisNfs (NFS FILEs) -> the platform (memstreams) -> the C library.
 # The eboot finds out which driver it has at run time (include-orbis/OrbisDriver.h); nothing is compiled differently.
 #
 #   make -f Makefile.vk -j2 && PS5_RADV_ARCHIVE=... PS5_RADV_PLATFORM=... bash link-radv.sh
@@ -48,6 +52,7 @@ TAG=${ORBIS_BUILD_TAG:-vk-285-1-radv}
 TEST_BUILD=${ORBIS_TEST_BUILD:-0}
 LLD=${LLD:-ld.lld-18}
 NM=${NM:-llvm-nm-18}
+OBJCOPY=${OBJCOPY:-$(command -v llvm-objcopy-18 || command -v llvm-objcopy)}
 export PS5_PAYLOAD_SDK=$SDK
 export PS5_CLANG=${PS5_CLANG:-$(command -v clang-18 || command -v clang)}
 
@@ -106,9 +111,11 @@ echo "[link-radv] main-boot ($TAG, test build $TEST_BUILD), crt and binding obje
 make -C "$here" -f Makefile.vk -s objects.txt PCSX2="$PCSX2" RYML="$RYML" PS5_PAYLOAD_SDK="$SDK"
 OBJS="$OUT/build/obj/app_crt.o $OUT/build/obj/app_cpp_runtime.o $OUT/build/obj/main-boot.o $OUT/build/obj/radv-bindings.o"
 left_out=()
+NFS_OBJ=
 while IFS= read -r o; do
   case $o in
     */ps5/third_party/zlib/*.o | */orbis-shims/dirshim.o) left_out+=("$o") ;;
+    */orbis-shims/OrbisNfs.o) NFS_OBJ="$here/$o"; OBJS="$OBJS @NFS_OBJ@" ;; # its chained copy, made in 3.
     *) OBJS="$OBJS $here/$o" ;;
   esac
 done < "$here/objects.txt"
@@ -127,6 +134,33 @@ for name in malloc calloc realloc free posix_memalign aligned_alloc memalign \
     malloc_usable_size reallocf reallocarray getline getdelim; do
   radv_flags+=("--wrap=$name")
 done
+# vk-285-135 (AI-assisted): games on NFS shares, as link-vk.sh (orbis-shims/OrbisNfs.wrap). Where the platform layer
+# already has a __wrap_<name> (fclose and fflush, open_memstream's), the two are chained rather than duplicated:
+# the platform's becomes ps5sx2_platform_wrap_<name> in a copy of its archive, and OrbisNfs.o's __real_<name> in a
+# copy of it calls that, so a call goes OrbisNfs -> the platform -> the C library.
+[[ -n $NFS_OBJ && -f $NFS_OBJ ]] || { echo "[link-radv] error: orbis-shims/OrbisNfs.o is not in objects.txt" >&2; exit 1; }
+[[ -n $OBJCOPY ]] || { echo "[link-radv] error: llvm-objcopy not found (set OBJCOPY)" >&2; exit 1; }
+"$NM" --defined-only -j "$RADV_PLATFORM" 2>/dev/null | sed -n 's/^__wrap_//p' | sort -u > "$OUT/build/radv-platform-wraps.txt"
+nfs_count=0
+chained=()
+platform_renames=()
+nfs_renames=()
+while IFS= read -r name; do
+  [[ -z $name || $name == \#* ]] && continue
+  nfs_count=$((nfs_count + 1))
+  if grep -qxF -- "$name" "$OUT/build/radv-platform-wraps.txt"; then
+    chained+=("$name")
+    platform_renames+=(--redefine-sym "__wrap_$name=ps5sx2_platform_wrap_$name")
+    nfs_renames+=(--redefine-sym "__real_$name=ps5sx2_platform_wrap_$name")
+  fi
+  [[ " ${radv_flags[*]} " == *" --wrap=$name "* ]] || radv_flags+=("--wrap=$name")
+done < "$here/orbis-shims/OrbisNfs.wrap"
+PLATFORM_LIB="$OUT/build/libps5platform-chained.a"
+NFS_LINKED="$OUT/build/obj/OrbisNfs-chained.o"
+"$OBJCOPY" "${platform_renames[@]}" "$RADV_PLATFORM" "$PLATFORM_LIB"
+"$OBJCOPY" "${nfs_renames[@]}" "$NFS_OBJ" "$NFS_LINKED"
+OBJS=${OBJS/@NFS_OBJ@/$NFS_LINKED}
+echo "[link-radv] NFS shares: $nfs_count C library calls wrapped (orbis-shims/OrbisNfs.wrap), chained with the platform's: ${chained[*]:-none}"
 # qsort_r and localtime_r are bound by radv-bindings.S instead (see there).
 bound=(mkstemps openlog popen pclose open_memstream __xuname __assert
   __memset_chk regcomp regexec regfree regerror newlocale freelocale
@@ -174,7 +208,7 @@ pie_link() {
     --as-needed $STUBS \
     -L "$SDK"/target/lib \
     "$SDK"/target/lib/libc++.a "$SDK"/target/lib/libc++abi.a \
-    "$SDK"/target/lib/libunwind.a "$SDK"/target/lib/libc.a "$RADV_PLATFORM" "$RADV_BUILTINS" -lpthread
+    "$SDK"/target/lib/libunwind.a "$SDK"/target/lib/libc.a "$PLATFORM_LIB" "$RADV_BUILTINS" -lpthread
 }
 pie_link
 echo "[link-radv] pie link OK"
