@@ -1,4 +1,4 @@
-/* PS5SX2 disc-auto daemon (vk-285-160h, AI-assisted).
+/* PS5SX2 disc-auto daemon (vk-285-160i, AI-assisted).
  * Send once to the console's ELF loader (port 9021) and leave it running.
  * Put a PS2 DVD in:
  *   - already dumped  -> PS5SX2 comes to the front and starts that game.
@@ -41,6 +41,10 @@
  *   line: 0 is likely "unfocus". Focus attempts are now SetAppFocus(id, 1), then LaunchApp on the running title,
  *   then SetAppFocus(id, 1) again, each logged. The PS5's kinfo_proc is bigger than the SDK's (ENOMEM), so the
  *   pid lookup reads into a large buffer.
+ * vk-285-160i: 160h on the console: sceLncUtilLaunchApp on the running PS5SX2 answered 0x8094000c (already
+ *   running) yet the shell ran its LaunchFlow and switched to it (FG 7 -> 0x8017, controller focus to it): that
+ *   is the call. SetAppFocus logged SetControllerFocus(-1) each time (it takes the pad away), so it is gone.
+ *   LaunchApp at +3 and +8 s after the exec signal is consumed.
  * Needs proper testing on a console with a disc drive.
  *
  * Copyright (C) 2026 swordpdf
@@ -329,22 +333,18 @@ static uint32_t emu_appid(void) {
     return strncmp(t, TITLE_ID, 9) == 0 ? id : 0;
 }
 
+/* Launching the title that is already running is what clicking its tile does: the shell answers
+ * "already running" (0x8094000c) and switches to it. */
 static void give_focus(uint32_t id, int attempt) {
-    if (attempt == 2) {
-        if (!p_launch) { say("focus #2: no sceLncUtilLaunchApp"); return; }
-        int user = -1;
-        if (p_fguser) p_fguser(&user);
-        lnc_app_param_t prm;
-        memset(&prm, 0, sizeof(prm));
-        prm.size = sizeof(prm);
-        prm.user_id = user;
-        const int rc = p_launch(TITLE_ID, NULL, &prm);
-        say("focus #2: sceLncUtilLaunchApp(" TITLE_ID ", user %d) = 0x%08x", user, (unsigned)rc);
-        return;
-    }
-    if (!p_focus) { say("focus #%d: no sceLncUtilSetAppFocus", attempt); return; }
-    const int rc = p_focus(id, 1);
-    say("focus #%d: sceLncUtilSetAppFocus(0x%x, 1) = 0x%08x", attempt, (unsigned)id, (unsigned)rc);
+    if (!p_launch) { say("focus #%d: no sceLncUtilLaunchApp", attempt); return; }
+    int user = -1;
+    if (p_fguser) p_fguser(&user);
+    lnc_app_param_t prm;
+    memset(&prm, 0, sizeof(prm));
+    prm.size = sizeof(prm);
+    prm.user_id = user;
+    const int rc = p_launch(TITLE_ID, NULL, &prm);
+    say("focus #%d (app 0x%x): sceLncUtilLaunchApp(" TITLE_ID ", user %d) = 0x%08x", attempt, (unsigned)id, user, (unsigned)rc);
 }
 
 /* ------------------------------------------------------------------ */
@@ -434,7 +434,7 @@ static void cleanup(const char *serial) {
 enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
 
 int main(void) {
-    say("disc-auto daemon (vk-285-160h) pid %d", (int)getpid());
+    say("disc-auto daemon (vk-285-160i) pid %d", (int)getpid());
 
     /* /dev/cd0 and notifications whatever uid the loader gave us (160b). */
     {
@@ -467,7 +467,7 @@ int main(void) {
         stamp_self();
 
         /* vk-285-160g: PS5SX2 consumes disc-launch-exec.txt right before it re-execs (keeping its app id).
-         * From then, hand the running PS5SX2 focus at +3/+7/+13 s. */
+         * From then, hand the running PS5SX2 focus at +3/+8 s. */
         if (g_focus_armed) {
             const time_t now = time(NULL);
             struct stat est;
@@ -481,14 +481,14 @@ int main(void) {
                     g_focus_armed = 0;
                 }
             } else {
-                static const int at[3] = { 3, 7, 13 };
-                if (focus_done < 3 && now - focus_seen >= at[focus_done]) {
+                static const int at[2] = { 3, 8 };
+                if (focus_done < 2 && now - focus_seen >= at[focus_done]) {
                     const uint32_t id = emu_appid();
                     if (id) give_focus(id, focus_done + 1);
                     else say("focus #%d: PS5SX2 not the running big app yet", focus_done + 1);
                     focus_done++;
                 }
-                if (focus_done >= 3) { g_focus_armed = 0; focus_seen = 0; }
+                if (focus_done >= 2) { g_focus_armed = 0; focus_seen = 0; }
             }
         }
 
