@@ -25,7 +25,7 @@ struct OrbisDiscReadMethod
 
 // Finds the drive's pass device through /dev/cd0 (CAMGETPASSTHRU) and logs what the drive says about its speeds. Then
 // (vk-285-152) times pread on out->cd as the drive is and at each of Sony's faster speed settings (SceShellCore's DB
-// command: 8.0 rotation 1, 0x100, max, 6.0), 16 MiB each, and leaves the drive at the fastest if it beats the drive as it
+// command: vk-285-154, 8.0 rotation 1 then 3.2 rotation 0), 16 MiB each, and leaves the drive at the fastest if it beats the drive as it
 // was by 15% (out->set_rotation/set_speed; OrbisDiscSpeedRestore puts it back to 2.0), else back at 2.0. Flag
 // disc_passbench: also 151's pass read methods. Logs every step ([discspeed] lines). Flag nodiscspeed: nothing is sent.
 void OrbisDiscSpeedUp(const char* cd_path, uint64_t bytes, OrbisDiscReadMethod* out);
