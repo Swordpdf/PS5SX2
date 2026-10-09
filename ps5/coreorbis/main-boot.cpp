@@ -3364,7 +3364,7 @@ int main()
     struct stat st;
     if (tune)
     {
-      setenv("PS5SX2_DRAW_BUDGET", "4800", 0);
+      setenv("PS5SX2_DRAW_BUDGET", "6000", 0); // live-10: 4800 -> 6000 (a view past 4800, "still the same issue"); the words guard in GSDeviceVK.cpp
       setenv("PS5VK_RECORD_THREAD", "1", 0);
       setenv("PS5SX2_PIN_LAYOUT", "2 6 4 8 10", 0);
       if (stat(recbatch.c_str(), &st) != 0)
@@ -3385,7 +3385,7 @@ int main()
       unlink(recbatch.c_str());
       unlink(marker.c_str());
     }
-    printf("[boot] game tuning: %s\n", tune ? "Ratchet & Clank (draw budget 4800, recorder thread + vk_recbatch, thread layout 2 6 4 8 10)" :
+    printf("[boot] game tuning: %s\n", tune ? "Ratchet & Clank (draw budget 6000, recorder thread + vk_recbatch, thread layout 2 6 4 8 10)" :
       !on ? "off (PS5SX2/GameTuning)" : "none for this game");
     fflush(stdout);
   }

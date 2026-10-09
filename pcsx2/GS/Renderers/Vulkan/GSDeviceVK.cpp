@@ -71,18 +71,76 @@ unsigned long long g_orbis_readback_n, g_orbis_readback_bytes, g_orbis_readback_
 // else (8x or 6x made no difference). 4400 x 107 words (a 90-word draw plus a 17-word feedback barrier, the worst case) is 471k of the
 // 523,503 the driver takes, ~52k left for uploads, clears and the present pass; the typical feedback draw is ~67 words (~295k).
 // flags/vk_drawbudget holding a number (1000..4800) overrides it, read live. Needs proper testing on a console.
-// live-9 (AI-assisted): the game's own default from PS5SX2_DRAW_BUDGET (main-boot.cpp sets 4800 for R&C1, where swordpdf's base PS5 held
+// live-9 (AI-assisted): the game's own default from PS5SX2_DRAW_BUDGET (main-boot.cpp sets 6000 for R&C1 since live-10, where swordpdf's base PS5 held
 // 60 fps at the heavy spot with it, 2026-10-10); the flag still wins.
 static u32 OrbisDefaultDrawBudget()
 {
 	static const u32 s_default = [] {
 		const char* e = getenv("PS5SX2_DRAW_BUDGET");
 		const unsigned long v = e ? std::strtoul(e, nullptr, 10) : 0;
-		return (v >= 1000 && v <= 4800) ? static_cast<u32>(v) : 4400u;
+		return (v >= 1000 && v <= 8000) ? static_cast<u32>(v) : 4400u;
 	}();
 	return s_default;
 }
+// live-10 (AI-assisted): swordpdf on live-8 with 4800, another R&C1 view: "still the same issue in ratchet" -- 30 fps / 50% again, the log
+// "4800 draws in this submission and 1 more coming, submitting early (500 times)", 2 submissions and 1 present a frame. The 4800 cap was a
+// worst-case guess (107 words a draw); vk-285-113 measured ~67 words a feedback draw and ~50 a plain one, so the stream has room for more.
+// So the cap is 8000 now, and the words are measured: after every submission the driver's step sizes (ps5vk_debug_submission_steps, the
+// last submission it queued) are summed, and a submission past 440,000 of the driver's 523,503 words drops the budget to 4400 for 10 s
+// ("[vkwords] ... guard"). Every 600 submissions the largest is logged with its words per draw. Needs proper testing on a console.
+struct OrbisDbgStage
+{
+	void* address;
+	size_t bytes;
+};
+extern "C" uint32_t ps5vk_debug_submission_steps(VkDevice device, OrbisDbgStage* steps, uint32_t capacity) __attribute__((weak));
+static constexpr u32 ORBIS_WORDS_GUARD = 440000;
+static constexpr u32 ORBIS_GUARD_BUDGET = 4400;
+static std::chrono::steady_clock::time_point s_orbis_guard_until;
+static void OrbisMeasureSubmitWords(VkDevice device, u32 draws)
+{
+	static u32 s_n = 0, s_peak_words = 0, s_peak_draws = 0, s_guards = 0;
+	if (!ps5vk_debug_submission_steps || device == VK_NULL_HANDLE)
+		return;
+	OrbisDbgStage steps[64];
+	const u32 count = std::min<u32>(ps5vk_debug_submission_steps(device, steps, 64), 64);
+	u64 words = 0;
+	for (u32 i = 0; i < count; i++)
+		words += steps[i].bytes / sizeof(u32);
+	if (words > s_peak_words)
+	{
+		s_peak_words = static_cast<u32>(words);
+		s_peak_draws = draws;
+	}
+	if (words > ORBIS_WORDS_GUARD)
+	{
+		const bool was = std::chrono::steady_clock::now() < s_orbis_guard_until;
+		s_orbis_guard_until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		if (!was && (++s_guards <= 5 || (s_guards % 100) == 0))
+		{
+			printf("[vkwords] guard: a submission of %llu words (%u draws) is past %u of the driver's 523,503: draw budget %u for 10 s (%u times)\n",
+				static_cast<unsigned long long>(words), draws, ORBIS_WORDS_GUARD, ORBIS_GUARD_BUDGET, s_guards);
+			fflush(stdout);
+		}
+	}
+	if (++s_n >= 600)
+	{
+		if (s_peak_words >= 100000)
+		{
+			printf("[vkwords] largest of the last 600 submissions: %u words, %u draws (~%u a draw), of the driver's 523,503\n", s_peak_words,
+				s_peak_draws, s_peak_draws ? s_peak_words / s_peak_draws : 0);
+			fflush(stdout);
+		}
+		s_n = s_peak_words = s_peak_draws = 0;
+	}
+}
+static u32 OrbisSubmitDrawBudgetRaw();
 static u32 OrbisSubmitDrawBudget()
+{
+	const u32 b = OrbisSubmitDrawBudgetRaw();
+	return (b > ORBIS_GUARD_BUDGET && std::chrono::steady_clock::now() < s_orbis_guard_until) ? ORBIS_GUARD_BUDGET : b;
+}
+static u32 OrbisSubmitDrawBudgetRaw()
 {
 	static std::chrono::steady_clock::time_point s_checked;
 	static u32 s_budget = OrbisDefaultDrawBudget();
@@ -95,7 +153,7 @@ static u32 OrbisSubmitDrawBudget()
 		if (OrbisCachedRead(OrbisFlagPath("vk_drawbudget").c_str(), text))
 		{
 			const unsigned long v = std::strtoul(text.c_str(), nullptr, 10);
-			if (v >= 1000 && v <= 4800)
+			if (v >= 1000 && v <= 8000) // live-10: 8000 (was 4800), with the words guard above
 				budget = static_cast<u32>(v);
 		}
 		if (budget != s_budget)
@@ -2534,6 +2592,8 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 	}
 #ifdef ORBIS_VULKAN
 	OrbisVkSubmitDone(); // vk-285-113
+	if (!OrbisDriverIsRADV())
+		OrbisMeasureSubmitWords(m_device, m_orbis_submit_draws); // live-10
 	s_orbis_submit++;
 	// vk-285-18: `putdata vktrace` asks for the last submits' draws while the game runs. Every
 	// 64th submit (about once a second) checks for the flag file; the dump goes to vktrace.txt.
