@@ -97,6 +97,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <string>
+#include <map>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -188,6 +189,31 @@ namespace
 			Log("%s: media size %llu, ISO 9660 volume %llu: copying the media size", path.c_str(),
 				static_cast<unsigned long long>(out.bytes), static_cast<unsigned long long>(vol));
 		return out.bytes > 0;
+	}
+
+	// vk-285-160l (AI-assisted): swordpdf: "after the disc is dumped, the drive is making a repetitive noise, like trying
+	// to start to read". It stopped when PS5SX2 was closed with the disc-auto daemon still polling (open + DIOCGMEDIASIZE
+	// every second): the noise was this watcher reading sector 16 and SYSTEM.CNF every 3 s, waking the drive each time it
+	// tried to spin down. So a node's probe is kept and only redone when its media size changes (a different disc, or
+	// none); the size query doesn't make the drive read. Needs proper testing on a console with a disc drive.
+	struct ProbeCache
+	{
+		uint64_t media = 0; // DIOCGMEDIASIZE when probed
+		bool iso = false;
+		Node node;
+		std::string serial;
+	};
+
+	// The media size without reading the disc; 0 when it doesn't open or holds nothing.
+	uint64_t QuietMediaSize(const std::string& path)
+	{
+		const int fd = open(path.c_str(), O_RDONLY);
+		if (fd < 0)
+			return 0;
+		off_t media = 0;
+		const int r = ioctl(fd, DIOCGMEDIASIZE, &media);
+		close(fd);
+		return (r == 0 && media > 0) ? static_cast<uint64_t>(media) : 0;
 	}
 
 	std::vector<std::string> Candidates(bool log)
@@ -625,6 +651,7 @@ namespace
 	{
 		bool first = true;
 		std::vector<std::string> logged; // nodes already described
+		std::map<std::string, ProbeCache> probes; // vk-285-160l: last probe per node, kept while its media size holds
 		// The disc whose game was started (or that was in the drive at a re-exec): not started again until it leaves.
 		std::string handled;
 		std::string failed;  // vk-285-155: a disc that didn't copy; not tried again until it leaves (no 3 s retry loop)
@@ -673,13 +700,23 @@ namespace
 			for (const std::string& path : nodes)
 			{
 				const bool log = std::find(logged.begin(), logged.end(), path) == logged.end();
-				Node node;
-				const bool iso = ProbeNode(path, node, log);
+				// vk-285-160l: reuse the last probe while the media size is unchanged (no disc reads, so the drive can rest).
+				const uint64_t media = QuietMediaSize(path);
+				ProbeCache& pc = probes[path];
+				if (media == 0 || media != pc.media || log)
+				{
+					pc = ProbeCache{};
+					pc.iso = ProbeNode(path, pc.node, log);
+					pc.media = media; // a non-PS2 disc is remembered too, so it isn't re-read every 3 s either
+					if (pc.iso)
+						pc.serial = fe::ReadSerial(path);
+				}
 				if (log)
 					logged.push_back(path);
-				if (!iso)
+				if (!pc.iso)
 					continue;
-				const std::string serial = fe::ReadSerial(path);
+				Node node = pc.node;
+				const std::string serial = pc.serial;
 				if (serial.empty())
 				{
 					static std::string s_said;
