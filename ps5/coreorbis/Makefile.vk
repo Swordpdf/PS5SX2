@@ -337,7 +337,7 @@ SHIM_SRCS := ./orbis-shims/ProsperoInput.cpp ./orbis-shims/ProsperoCDVD.cpp \
   ./orbis-shims/ProsperoHenJailbreak.cpp \
   ./orbis-shims/ps5_shaderc.cpp ./orbis-shims/orbis_vk.cpp ./orbis-shims/orbis_eeprof.cpp \
   ./orbis-shims/game_select.cpp ./orbis-shims/orbis_paths.cpp ./orbis-shims/orbis_memprobe.cpp \
-  ./orbis-shims/ProsperoKbdMouse.cpp ./orbis-shims/ProsperoNotify.cpp ./orbis-shims/ProsperoUsbPad.cpp ./orbis-shims/ProsperoMic.cpp ./orbis-shims/ProsperoDiscDump.cpp \
+  ./orbis-shims/ProsperoKbdMouse.cpp ./orbis-shims/ProsperoNotify.cpp ./orbis-shims/ProsperoUsbPad.cpp ./orbis-shims/ProsperoMic.cpp ./orbis-shims/ProsperoDiscDump.cpp ./orbis-shims/ProsperoDiscSpeed.cpp \
   ./orbis-shims/ProsperoHTTPDownloader.cpp ./orbis-shims/ProsperoHTTPConsole.cpp ./orbis-shims/ProsperoAchievements.cpp \
   ./orbis-shims/ProsperoAchievementBrowser.cpp \
   ./orbis-shims/orbis_gs_shaders.cpp \

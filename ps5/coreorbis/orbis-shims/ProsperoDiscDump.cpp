@@ -50,10 +50,16 @@
 // RPCS3To5's PS3 disc dumper (a payload, not a title) says a title's file writes are throttled after about 1.3 GiB: "drive
 // busy" well under 100% would show the copy waiting on writes rather than on the drive.
 //
+// vk-285-150: 149 on the console: CDRIOCREADSPEED EINVAL as max and as 8x, the copy at a flat 2.0x with the drive busy
+// 100%: the drive's own pace. Now each copy first asks the drive through its pass device (ProsperoDiscSpeed.cpp: SET
+// STREAMING, the DVD way, after what Sony's SceShellCore does with libcam). Flag disc_readtest: a disc already copied is
+// read for a speed test (256 MB at its start and its end). Flag nodiscspeed: no drive commands.
+//
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "ProsperoDiscDump.h"
+#include "ProsperoDiscSpeed.h"
 #include "OrbisDiscCopy.h"
 #include "ProsperoNotify.h"
 
@@ -62,7 +68,6 @@
 #include "../../frontend/fe_ps5.h"
 
 #include <sys/types.h>
-#include <sys/cdrio.h>
 #include <sys/disk.h>
 #include <sys/ioctl.h>
 #include <sys/param.h>
@@ -260,6 +265,20 @@ namespace
 		return found;
 	}
 
+	// vk-285-150: flag disc_readtest: for a disc that's already copied, ask the drive for speed as a copy would and time
+	// 256 MB at its start and its end (a drive that spins freely reads the end faster), once per disc.
+	void ReadTestOnce(const Node& node, const std::string& serial)
+	{
+		if (!OrbisFlag("disc_readtest"))
+			return;
+		Log("%s: read test (flag disc_readtest)", serial.c_str());
+		OrbisNotifyPlain("Disc read test: about 3 minutes at 2x");
+		s_busy.store(true);
+		OrbisDiscSpeedUp(node.path.c_str(), node.bytes);
+		OrbisDiscReadTest(node.path.c_str(), node.bytes);
+		s_busy.store(false);
+	}
+
 	// Copies the disc unless games/ has it. The copy's path when it's there in full at the end, else empty.
 	std::string Dump(const Node& node, const std::string& serial)
 	{
@@ -280,6 +299,7 @@ namespace
 			{
 				s_said = iso;
 				Log("%s is already copied (%s)", serial.c_str(), iso.c_str());
+				ReadTestOnce(node, serial);
 			}
 			return iso;
 		}
@@ -291,6 +311,7 @@ namespace
 			{
 				s_said = existing;
 				Log("%s is already in games/ as %s: not copied again", serial.c_str(), existing.c_str());
+				ReadTestOnce(node, serial);
 			}
 			return existing;
 		}
@@ -326,21 +347,9 @@ namespace
 			snprintf(msg, sizeof(msg), "Copying PS2 disc: %s (%llu MB)", title.c_str(), static_cast<unsigned long long>(node.bytes >> 20));
 			OrbisNotifyPlain(msg);
 		}
-		// vk-285-147 (swordpdf: "try 8x dump speed"): ask the drive for its top read speed (FreeBSD cd(4)'s
-		// CDRIOCREADSPEED, through libkernel's ioctl; CDR_MAX_SPEED is "as fast as it goes"). The PS5's drive may not
-		// take it: the log says. Then reads run ahead of the writes (OrbisDiscCopy.h).
-		{
-			int speed = CDR_MAX_SPEED;
-			int rc = ioctl(in, CDRIOCREADSPEED, &speed);
-			Log("read speed: CDRIOCREADSPEED max -> %s%d", rc ? "errno " : "rc ", rc ? errno : rc);
-			if (rc)
-			{
-				// vk-285-148: 8x DVD in kB/s, the unit cd(4) takes, for a driver that wants a real number
-				speed = 11080;
-				rc = ioctl(in, CDRIOCREADSPEED, &speed);
-				Log("read speed: CDRIOCREADSPEED 11080 kB/s (8x) -> %s%d", rc ? "errno " : "rc ", rc ? errno : rc);
-			}
-		}
+		// vk-285-150: the drive asked for its fastest read through its pass device (SET STREAMING; ProsperoDiscSpeed.cpp).
+		// vk-285-147/148's CDRIOCREADSPEED came back EINVAL on the console: it sends SET CD SPEED, a CD command.
+		OrbisDiscSpeedUp(node.path.c_str(), node.bytes);
 		const size_t chunk = static_cast<size_t>(OrbisFlag("disc_1m") ? 1 : 4) << 20;
 		const int depth = 4;
 		int last_pct = -1, last_note = 0;
