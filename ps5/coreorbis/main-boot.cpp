@@ -2146,6 +2146,8 @@ static OrbisFrontendPaths orbis_frontend_paths(bool allow_download)
   // Test build 1 (vk-285-55): USB drives, the testing label and the logs download.
   fe.usb_dirs = s_usb_dirs;
   fe.usb_list = OrbisDir("cache") + "/usb-games.txt";
+  for (const OrbisNfs::ShareInfo& s : OrbisNfs::Shares()) // vk-285-156: a share's covers/ and ART/ folders, like a drive's
+    fe.share_roots.push_back(s.mount_point);
   fe.serial_cache = OrbisDir("cache") + "/chd-serials.txt"; // vk-285-108
   fe.gamedb_file = OrbisDir("resources") + "/GameIndex.yaml"; // vk-285-113: the games' names, for the shelf and the page
   fe.memcards_dir = OrbisDir("memcards"); // vk-285-113: the settings page's memory card list and creator

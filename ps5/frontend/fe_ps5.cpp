@@ -875,14 +875,15 @@ bool OnUsb(const std::string& path)
 
 // cache/usb-games.txt, one "<serial>\t<stem>\t<title>" line per USB game: before the jailbreak,
 // where covers download, the app may not see the drives, so the covers of the games found on them
-// after the jailbreak are fetched at the next start from this list.
+// after the jailbreak are fetched at the next start from this list. vk-285-156: NFS shares' games too
+// (mounted only after the jailbreak; testers: their covers never came).
 void WriteUsbList(const std::string& path, const std::vector<GameInfo>& games)
 {
 	if (path.empty())
 		return;
 	std::string text;
 	for (const GameInfo& g : games)
-		if (OnUsb(g.path) && !g.serial.empty())
+		if ((OnUsb(g.path) || OnNetworkShare(g.path)) && !g.serial.empty())
 			text += g.serial + "\t" + g.stem + "\t" + g.title + "\n";
 	std::string old;
 	if (FILE* f = std::fopen(path.c_str(), "rb"))
@@ -1467,6 +1468,7 @@ bool orbis_web_start(const OrbisFrontendPaths& paths, const char* build_tag)
 		return true;
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
 	SetGameDbFile(paths.gamedb_file);       // vk-285-113
+	SetShareRoots(paths.share_roots);       // vk-285-156
 	WebConfig cfg;
 	cfg.game_dirs = {paths.games_dir, paths.top_dir};
 	cfg.game_dirs.insert(cfg.game_dirs.end(), paths.usb_dirs.begin(), paths.usb_dirs.end()); // test build 1
@@ -1647,10 +1649,11 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	const double t0 = Now();
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
 	SetGameDbFile(paths.gamedb_file);       // vk-285-113
+	SetShareRoots(paths.share_roots);       // vk-285-156
 	std::vector<std::string> dirs = {paths.games_dir, paths.top_dir};
 	dirs.insert(dirs.end(), paths.usb_dirs.begin(), paths.usb_dirs.end()); // test build 1: USB drives
 	std::vector<GameInfo> games = ScanGames(dirs);
-	int on_usb = 0;
+	int on_usb = 0, on_nfs = 0;
 	for (GameInfo& g : games)
 	{
 		g.serial = ReadSerial(g.path);
@@ -1659,6 +1662,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		const bool renamed = ApplyGameDbTitle(g);
 		ReadBadges(g, paths.settings_dir, paths.gs_ini, paths.patches_dir);
 		on_usb += OnUsb(g.path) ? 1 : 0;
+		on_nfs += OnNetworkShare(g.path) ? 1 : 0;
 		if (renamed)
 			std::printf("[frontend] %s: titled \"%s\" (the file name gave \"%s\")\n", g.file.c_str(), g.title.c_str(), file_title.c_str());
 		// Test build 1: the size too (a disc image of an odd size is often a bad dump), and the folder.
@@ -1678,7 +1682,8 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		}
 	}
 	SortGames(games); // vk-285-113: by the titles the game database may have changed
-	std::printf("[frontend] %zu disc image(s), %d on USB, scanned in %.0f ms\n", games.size(), on_usb, (Now() - t0) * 1000.0);
+	std::printf("[frontend] %zu disc image(s), %d on USB, %d on NFS shares, scanned in %.0f ms\n", games.size(), on_usb, on_nfs,
+		(Now() - t0) * 1000.0);
 	std::fflush(stdout);
 	WriteUsbList(paths.usb_list, games);
 	// Keep the shelf available without games too, for settings and account sign-in.

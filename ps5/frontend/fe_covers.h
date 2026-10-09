@@ -48,7 +48,8 @@ struct CoverConfig
 	std::string url_template; // "${serial}" is replaced
 	bool allow_download = true;
 	// vk-285-110: the shelf downloads only for games on USB drives (the prefetch before the jailbreak
-	// can't see those); every other cover comes from the prefetch, as before.
+	// can't see those); every other cover comes from the prefetch, as before. vk-285-156: and for games on
+	// NFS shares, which are mounted only after the jailbreak too (OnNetworkShare).
 	bool download_usb_only = false;
 };
 
@@ -98,6 +99,17 @@ private:
 
 // vk-285-110: "/mnt/usb3" for a path on USB drive 3, else "".
 std::string UsbDriveRoot(const std::string& path);
+
+// vk-285-156 (AI-assisted; testers: NFS games had no covers): a path on one of the app's NFS shares ("/nfs/<host>/...",
+// OrbisNfs.cpp), which only exist after the jailbreak, like USB drives.
+bool OnNetworkShare(const std::string& path);
+
+// vk-285-156: the NFS shares' folders ("/nfs/192.168.1.10/volume1/PS2"), so a share's root works like a USB drive's for
+// covers: its covers/ folder and Open PS2 Loader's ART/ folder. Set by the shelf before it starts the covers.
+void SetShareRoots(const std::vector<std::string>& roots);
+
+// vk-285-156: the root of the drive or share a game is on (UsbDriveRoot, else the longest share root holding it), or "".
+std::string DriveRoot(const std::string& path);
 
 // vk-285-110: Open PS2 Loader's name for a game, "SLUS_213.51" for "SLUS-21351"; "" for a serial of
 // another shape.

@@ -27,6 +27,7 @@ struct OrbisFrontendPaths
 	// Test build 1 (vk-285-55):
 	std::vector<std::string> usb_dirs; // folders on USB drives to list games from (orbis_usb_game_dirs)
 	std::string usb_list;              // cache/usb-games.txt: the USB games seen, for the next start's cover prefetch
+	std::vector<std::string> share_roots; // vk-285-156: the NFS shares' folders (OrbisNfs mount points), for covers
 	int test_build = 0;                // > 0: a testing build; the shelf shows TESTING and this label
 	std::string build_label;           // "Test build 1 · vk-285-55", or the plain tag
 	std::string test_note;             // vk-285-105: testing builds, under the label (the testers' Discord)

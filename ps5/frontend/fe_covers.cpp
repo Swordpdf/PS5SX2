@@ -262,6 +262,43 @@ std::string UsbDriveRoot(const std::string& path)
 	return path.substr(0, i);
 }
 
+namespace
+{
+std::mutex g_share_roots_lock;
+std::vector<std::string> g_share_roots;
+} // namespace
+
+bool OnNetworkShare(const std::string& path)
+{
+	return path.compare(0, 5, "/nfs/") == 0;
+}
+
+void SetShareRoots(const std::vector<std::string>& roots)
+{
+	std::vector<std::string> keep;
+	for (std::string r : roots)
+	{
+		while (r.size() > 1 && r.back() == '/')
+			r.pop_back();
+		if (OnNetworkShare(r) && std::find(keep.begin(), keep.end(), r) == keep.end())
+			keep.push_back(r);
+	}
+	std::lock_guard<std::mutex> lock(g_share_roots_lock);
+	g_share_roots = std::move(keep);
+}
+
+std::string DriveRoot(const std::string& path)
+{
+	std::string root = UsbDriveRoot(path);
+	if (!root.empty() || !OnNetworkShare(path))
+		return root;
+	std::lock_guard<std::mutex> lock(g_share_roots_lock);
+	for (const std::string& r : g_share_roots)
+		if (r.size() > root.size() && path.size() > r.size() && path.compare(0, r.size(), r) == 0 && path[r.size()] == '/')
+			root = r;
+	return root;
+}
+
 std::string OplGameId(const std::string& serial)
 {
 	// SYSTEM.CNF's "SLUS_213.51" is the serial "SLUS-21351" (fe_games.cpp); OPL names ART files after the former.
@@ -362,8 +399,8 @@ std::vector<CoverFile> CoverFinder::Search(const GameInfo& g, bool first_only)
 	const size_t slash = g.path.rfind('/');
 	if (slash != std::string::npos && slash > 0 && Lookup(g.path.substr(0, slash), g.stem, "beside", out) && first_only)
 		return out;
-	// 3. A covers folder at the root of the game's USB drive.
-	const std::string drive = UsbDriveRoot(g.path);
+	// 3. A covers folder at the root of the game's USB drive (vk-285-156: or NFS share).
+	const std::string drive = DriveRoot(g.path);
 	const std::string drive_covers = Subdir(drive, "covers");
 	if (!drive_covers.empty())
 		for (const std::string& n : names)
@@ -622,13 +659,13 @@ bool CoverService::FindLocalCover(CoverFinder& finder, int index, CoverImage& ou
 }
 
 // A download for the game is worth a try: a serial, downloads allowed (on the shelf only for games on
-// USB drives), and no 404 for it in the last two weeks. (The network being down is checked as the
+// USB drives and, vk-285-156, NFS shares: the prefetch before the jailbreak sees neither), and no 404 for it in the last two weeks. (The network being down is checked as the
 // downloads go: m_offline.)
 bool CoverService::MayDownload(int index) const
 {
 	const GameInfo& g = m_games[static_cast<size_t>(index)];
 	return !g.serial.empty() && m_cfg.allow_download && m_download && !m_cfg.url_template.empty() &&
-		   (!m_cfg.download_usb_only || !UsbDriveRoot(g.path).empty()) && !RecentlyMissing(m_cfg.cache_dir, g.serial);
+		   (!m_cfg.download_usb_only || !UsbDriveRoot(g.path).empty() || OnNetworkShare(g.path)) && !RecentlyMissing(m_cfg.cache_dir, g.serial);
 }
 
 bool CoverService::DownloadCover(int index, CoverImage& out)
