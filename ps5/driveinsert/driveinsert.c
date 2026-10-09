@@ -39,7 +39,7 @@
 
 _Static_assert(sizeof(union ccb) == 0x4E0, "union ccb: SceShellCore's CAMIOCOMMAND (0xC4E01902) carries 1248 bytes");
 
-#define TEST_VERSION "v1"
+#define TEST_VERSION "v2"
 
 static FILE *g_out;
 static char g_sum[2000];
@@ -215,22 +215,40 @@ int main(void) {
     return 1;
   }
 
-  /* 1. The disc out. */
+  /* 1. The disc out. v2: every state the drive reports is logged; after 30 s without the disc coming out the drive is
+   * asked to eject it (START STOP UNIT with LoEj, what the eject button does). */
   g_t0 = now_s();
   int s = tur();
   if (s != 0x023A00 && s != 0x023A01 && s != 0x023A02) {
     notify("Drive insert test: EJECT the disc now (PS5 eject button). Then put the PS2 DVD back in when asked.");
     say("waiting for the disc to come out (state %s)", state_name(s));
-    const double until = now_s() + 90;
+    const double start = now_s(), until = start + 120;
+    double beat = start;
+    int last = s, ejected = 0;
     while (now_s() < until) {
       s = tur();
+      if (s != last) {
+        say("state while waiting: %s", state_name(s));
+        last = s;
+      }
       if (s == 0x023A00 || s == 0x023A01 || s == 0x023A02)
         break;
+      if (!ejected && now_s() - start > 30) {
+        const uint8_t ej[6] = {0x1B, 0, 0, 0, 0x02, 0}; /* LoEj 1, Start 0: eject */
+        const int r = cmd(ej, 6, CAM_DIR_NONE, NULL, 0);
+        say("no eject seen in 30 s: asked the drive to eject: %s (%06x)", r == 0 ? "ok" : "refused", r);
+        notify("Drive insert test: ejecting the disc. Take it out, then put it back in when asked.");
+        ejected = 1;
+      }
+      if (now_s() - beat > 15) {
+        say("still waiting for the disc to come out (state %s)", state_name(s));
+        beat = now_s();
+      }
       usleep(100000);
     }
     if (s != 0x023A00 && s != 0x023A01 && s != 0x023A02) {
-      say("the disc didn't come out in 90 s (state %s)", state_name(s));
-      notify("Drive insert test: the disc wasn't ejected; run it again");
+      say("the disc didn't come out in 2 minutes (state %s)", state_name(s));
+      notify("Drive insert test: the disc didn't come out; send /data/drive-insert.txt");
       return 1;
     }
   }
