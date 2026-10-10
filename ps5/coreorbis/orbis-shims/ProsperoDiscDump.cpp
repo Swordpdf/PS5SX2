@@ -355,6 +355,26 @@ namespace
 		s_busy.store(false);
 	}
 
+	// live-22 (AI-assisted): while a disc is copied, the shelf shows a spinning-disc entry with a live percentage
+	// (fe_app.cpp PollDiscDump). This publishes the copy's serial, title and percent (0-100) to logs/disc-dump-progress.txt,
+	// which the shelf polls once or twice a second. The write is atomic (a .tmp renamed over) and cheap (every ~1%, not every
+	// sector); the file is removed when the copy ends (success or fail). Its mtime is refreshed on every write, so the shelf
+	// can treat a file that's gone stale (a crash mid-copy) as finished. Format: "<serial> <pct>\n<title>\n".
+	std::string DumpProgressPath() { return OrbisLogPath("disc-dump-progress.txt"); }
+	void PublishDumpProgress(const std::string& serial, const std::string& title, int pct)
+	{
+		const std::string path = DumpProgressPath();
+		const std::string tmp = path + ".tmp";
+		if (FILE* f = fopen(tmp.c_str(), "w"))
+		{
+			fprintf(f, "%s %d\n%s\n", serial.c_str(), pct, title.c_str());
+			fclose(f);
+			if (rename(tmp.c_str(), path.c_str()) != 0)
+				unlink(tmp.c_str());
+		}
+	}
+	void ClearDumpProgress() { unlink(DumpProgressPath().c_str()); }
+
 	// Copies the disc unless games/ has it. The copy's path when it's there in full at the end, else empty. vk-285-155:
 	// `clean` is set false when the copy had unreadable sectors (the caller then doesn't auto-start it).
 	std::string Dump(const Node& node, const std::string& serial, bool& clean)
@@ -431,6 +451,7 @@ namespace
 			snprintf(msg, sizeof(msg), "Copying PS2 disc: %s (%llu MB)", title.c_str(), static_cast<unsigned long long>(node.bytes >> 20));
 			OrbisNotifyPlain(msg);
 		}
+		PublishDumpProgress(serial, title, 0); // live-22: the shelf's spinning-disc entry starts here
 		// vk-285-150: the drive asked for its fastest read through its pass device (SET STREAMING; ProsperoDiscSpeed.cpp).
 		// vk-285-147/148's CDRIOCREADSPEED came back EINVAL on the console: it sends SET CD SPEED, a CD command.
 		// vk-285-151: and the fastest way to read it (pread on cd0, or READ commands through pass0; ProsperoDiscSpeed.cpp)
@@ -440,7 +461,7 @@ namespace
 		Log("reading with %s", rm.name.c_str());
 		const size_t chunk = static_cast<size_t>(OrbisFlag("disc_1m") ? 1 : 4) << 20;
 		const int depth = 4;
-		int last_pct = -1, last_note = 0;
+		int last_pct = -1, last_note = 0, last_file_pct = -1; // live-22: last percent published to the shelf
 		const auto t0 = std::chrono::steady_clock::now();
 		auto rate = [&](uint64_t done) {
 			const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -467,6 +488,13 @@ namespace
 			[&](const void* buf, size_t len) { return write(out, buf, len) == static_cast<ssize_t>(len); },
 			[&](uint64_t done, uint64_t bad) {
 				const int pct = static_cast<int>(done * 100 / node.bytes);
+				// live-22: tell the shelf every ~1% (before the 5% log/notification gate below), so the spinning-disc
+				// entry's percentage climbs smoothly.
+				if (pct != last_file_pct)
+				{
+					last_file_pct = pct;
+					PublishDumpProgress(serial, title, pct);
+				}
 				if (pct / 5 == last_pct / 5)
 					return;
 				last_pct = pct;
@@ -511,11 +539,13 @@ namespace
 		close(out);
 		if (failed)
 		{
+			ClearDumpProgress(); // live-22: drop the shelf's spinning-disc entry
 			OrbisNotifyPlain("PS2 disc copy failed: see the log (Download logs)");
 			unlink(part.c_str());
 			sleep(30);
 			return {};
 		}
+		ClearDumpProgress(); // live-22: the copy is done; the shelf drops the spinning-disc entry (the game launches next)
 		rename(part.c_str(), iso.c_str());
 		const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 		Log("done: %s, %llu MB in %.0f s (%.1f MB/s, %.1fx average), %llu unreadable sectors", iso.c_str(),

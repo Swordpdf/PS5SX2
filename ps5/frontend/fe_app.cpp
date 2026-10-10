@@ -10,6 +10,8 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <ctime>
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -53,6 +55,57 @@ uint32_t Rgba(float r, float g, float b, float a = 1.0f)
 std::string SizeText(uint64_t bytes)
 {
 	return Size(bytes);
+}
+
+// live-22 (AI-assisted): a disc being copied is a shelf entry whose Init-list index is this (below every real index, 0..N-1),
+// so it sorts to the front and the cover service, which keys on real indices, never touches it.
+constexpr int kDumpIndex = -1;
+
+// live-22 (AI-assisted, graphics approach from the dropped frontend of PR #34): a spinning disc drawn on the front of a box
+// (model `model`), as UI triangles whose corners are the box's front points projected, so it lies on the box at any angle.
+// `alpha` fades it on the boxes beside the selected one. Here it marks the game currently being dumped; the percentage is
+// drawn over it by Build.
+void AddDiscSpinner(std::vector<UiVertex>& ui, const Mat4& view_proj, const Mat4& model, float t, float alpha, float W, float H)
+{
+	if (alpha <= 0.01f)
+		return;
+	constexpr int kSegments = 72;
+	constexpr float kPi = 3.14159265f;
+	const float cx = 0.0f, cy = 0.18f, z = kBoxHalfD + 0.004f; // a little above centre; the percentage sits below it
+	auto put = [&](float r, float a, uint32_t color) {
+		const Vec4 w = model * Vec4(cx + r * std::cos(a), cy + r * std::sin(a), z, 1.0f);
+		const Vec4 c = view_proj * w;
+		UiVertex v = {((c.x / c.w) * 0.5f + 0.5f) * W, ((c.y / c.w) * 0.5f + 0.5f) * H, 0, 0, color, 1e5f, 1e5f, 0, 1};
+		return v;
+	};
+	auto ring = [&](float r0, float r1, float from, float to, const auto& colour) {
+		const int n = std::max(2, static_cast<int>(kSegments * (to - from) / (2 * kPi)));
+		for (int k = 0; k < n; k++)
+		{
+			const float a0 = from + (to - from) * k / n, a1 = from + (to - from) * (k + 1) / n;
+			const UiVertex p0 = put(r0, a0, colour(a0, 0.0f)), p1 = put(r1, a0, colour(a0, 1.0f));
+			const UiVertex p2 = put(r1, a1, colour(a1, 1.0f)), p3 = put(r0, a1, colour(a1, 0.0f));
+			ui.insert(ui.end(), {p0, p1, p2, p0, p2, p3});
+		}
+	};
+	const float spin = t * 5.0f;
+	const auto a8 = [&](float a) { return static_cast<uint32_t>(Clamp(a, 0.0f, 1.0f) * 255.0f + 0.5f) << 24; };
+	// The disc: silver with two glints that turn with it and a faint rainbow, the clear hub, and the hole.
+	ring(0.13f, 0.40f, 0.0f, 2 * kPi, [&](float a, float outer) {
+		const float g1 = std::pow(std::max(0.0f, std::cos(a - spin)), 10.0f), g2 = std::pow(std::max(0.0f, std::cos(a - spin - kPi)), 10.0f);
+		const float glint = 0.55f * (g1 + g2) * (0.6f + 0.4f * outer);
+		const float hue = a * 2.0f - spin;
+		const float r = 0.62f + 0.10f * std::sin(hue) + glint, g = 0.64f + 0.10f * std::sin(hue + 2.1f) + glint,
+					bl = 0.72f + 0.10f * std::sin(hue + 4.2f) + glint;
+		return a8(alpha * 0.92f) | Rgba(Clamp(r, 0.0f, 1.0f), Clamp(g, 0.0f, 1.0f), Clamp(bl, 0.0f, 1.0f), 0);
+	});
+	ring(0.055f, 0.13f, 0.0f, 2 * kPi, [&](float, float) { return a8(alpha * 0.55f) | Rgba(0.85f, 0.88f, 0.95f, 0); });
+	// The loading arc around it, a quarter turn long, going round faster than the disc.
+	const float head = t * 3.2f;
+	ring(0.44f, 0.465f, head, head + kPi * 0.6f, [&](float a, float) {
+		const float tail = (a - head) / (kPi * 0.6f);
+		return a8(alpha * (0.15f + 0.85f * tail)) | Rgba(1.0f, 1.0f, 1.0f, 0);
+	});
 }
 
 // vk-285-114: multiplies the alpha of UI vertices [begin, end) by `f` (what the options sheet covers fades out).
@@ -199,7 +252,7 @@ bool App::Step(int dir)
 		return false;
 	m_selected = next;
 	m_select_time = m_time;
-	if (m_covers)
+	if (m_covers && m_index[static_cast<size_t>(m_selected)] >= 0) // live-22: the dump entry (kDumpIndex) isn't the service's
 		m_covers->SetSelected(m_index[static_cast<size_t>(m_selected)]);
 	return true;
 }
@@ -255,7 +308,7 @@ bool App::ApplyHidden(int keep)
 	m_scroll = static_cast<float>(m_selected);
 	m_scroll_vel = 0;
 	m_select_time = m_time;
-	if (m_covers && !m_games.empty())
+	if (m_covers && !m_games.empty() && m_index[static_cast<size_t>(m_selected)] >= 0) // live-22: skip the dump entry
 		m_covers->SetSelected(m_index[static_cast<size_t>(m_selected)]);
 	return true;
 }
@@ -283,7 +336,8 @@ void App::KeepCoversNear()
 		return;
 	const int scroll = static_cast<int>(std::lround(m_scroll));
 	for (int pos = 0; pos < n; pos++)
-		if (m_slots[static_cast<size_t>(pos)].wanted && std::abs(pos - m_selected) > kCoverDrop && std::abs(pos - scroll) > kCoverDrop)
+		if (m_index[static_cast<size_t>(pos)] >= 0 && m_slots[static_cast<size_t>(pos)].wanted &&
+			std::abs(pos - m_selected) > kCoverDrop && std::abs(pos - scroll) > kCoverDrop) // live-22: never the dump entry
 			DropCovers(m_slots[static_cast<size_t>(pos)], m_index[static_cast<size_t>(pos)]);
 	for (Shelved& h : m_shelved) // vk-285-137: off the shelf, not drawn
 		if (h.slot.wanted)
@@ -291,7 +345,7 @@ void App::KeepCoversNear()
 	// Nearest first, so the service (which also goes nearest first) has the visible ones at the front.
 	for (int d = 0; d <= kCoverKeep; d++)
 		for (int pos : {m_selected - d, m_selected + d})
-			if (pos >= 0 && pos < n && !m_slots[static_cast<size_t>(pos)].wanted)
+			if (pos >= 0 && pos < n && m_index[static_cast<size_t>(pos)] >= 0 && !m_slots[static_cast<size_t>(pos)].wanted) // live-22
 			{
 				m_slots[static_cast<size_t>(pos)].wanted = true;
 				m_covers->Want(m_index[static_cast<size_t>(pos)]);
@@ -356,12 +410,140 @@ void App::PollCovers()
 		}
 }
 
+// live-22 (AI-assisted): the dump entry's position on the shelf (its index is kDumpIndex), or -1.
+int App::DumpPos() const
+{
+	for (size_t i = 0; i < m_index.size(); i++)
+		if (m_index[i] == kDumpIndex)
+			return static_cast<int>(i);
+	return -1;
+}
+
+// live-22 (AI-assisted): a synthetic shelf entry for the disc being copied, at the front, selected, with its box painted
+// (no title: the spinning disc goes there) and its spine carrying the title. Its index is kDumpIndex, so the cover service
+// leaves it alone. The percentage is drawn over the box by Build.
+void App::InsertDumpEntry(const std::string& serial, const std::string& title, int pct)
+{
+	const std::string disp = title.empty() ? std::string("PS2 disc") : title;
+	GameInfo g;
+	g.path = "@disc-dump"; // a sentinel path: this entry is never launched
+	g.serial = serial;
+	g.title = disp;
+	Slot s;
+	CoverImage ph, sp;
+	GameInfo front = g;
+	front.title.clear(); // the box front holds the spinning disc, not the title
+	CoverService::PaintPlaceholder(*m_fonts, front, ph);
+	CoverService::PaintSpine(*m_fonts, g, sp);
+	s.placeholder = m_renderer->CreateTexture(static_cast<uint32_t>(ph.width), static_cast<uint32_t>(ph.height),
+		VK_FORMAT_R8G8B8A8_UNORM, ph.rgba.data());
+	s.spine = m_renderer->CreateTexture(static_cast<uint32_t>(sp.width), static_cast<uint32_t>(sp.height),
+		VK_FORMAT_R8G8B8A8_UNORM, sp.rgba.data());
+	if (s.placeholder && s.spine)
+	{
+		s.set = m_renderer->AllocTextureSet(s.placeholder, s.placeholder, s.spine);
+		s.dirty = !s.set; // the descriptor pool may be full for a frame; PollCovers retries
+	}
+	else
+		s.dirty = true;
+	m_games.insert(m_games.begin(), std::move(g));
+	m_slots.insert(m_slots.begin(), std::move(s));
+	m_index.insert(m_index.begin(), kDumpIndex);
+	// Select the new entry so its spinner and percentage are front and centre; the shelf springs over from where it was.
+	m_scroll += 1.0f;
+	m_selected = 0;
+	m_scroll_vel = 0;
+	m_select_time = m_time;
+	m_dump_on = true;
+	m_dump_serial = serial;
+	m_dump_title = disp;
+	m_dump_pct = pct;
+	Sound(Sfx::Move, 0.0f);
+	std::printf("[frontend] disc dump: %s (%s) %d%% on the shelf\n", disp.c_str(), serial.c_str(), pct);
+	std::fflush(stdout);
+}
+
+// live-22 (AI-assisted): drop the dump entry (the copy ended). The game either launches at once (the dumper's launch
+// request) or appears on the shelf at the next open, as it did before.
+void App::RemoveDumpEntry()
+{
+	const int pos = DumpPos();
+	m_dump_on = false;
+	if (pos < 0)
+		return;
+	Slot& s = m_slots[static_cast<size_t>(pos)];
+	m_renderer->FreeTextureSet(s.set);
+	m_renderer->DestroyTexture(s.cover);
+	m_renderer->DestroyTexture(s.placeholder);
+	m_renderer->DestroyTexture(s.spine);
+	m_games.erase(m_games.begin() + pos);
+	m_slots.erase(m_slots.begin() + pos);
+	m_index.erase(m_index.begin() + pos);
+	if (m_selected > pos)
+		m_selected--;
+	const int n = static_cast<int>(m_games.size());
+	m_selected = n == 0 ? 0 : std::max(0, std::min(m_selected, n - 1));
+	m_scroll = static_cast<float>(m_selected);
+	m_scroll_vel = 0;
+	m_select_time = m_time;
+	if (m_covers && n > 0 && m_index[static_cast<size_t>(m_selected)] >= 0)
+		m_covers->SetSelected(m_index[static_cast<size_t>(m_selected)]);
+	std::printf("[frontend] disc dump: entry removed\n");
+	std::fflush(stdout);
+}
+
+// live-22 (AI-assisted): read the dumper's status file (throttled) and keep the dump entry in step with it.
+void App::PollDiscDump()
+{
+	if (m_cfg.disc_dump_progress.empty() || m_time - m_dump_poll < 0.5)
+		return;
+	m_dump_poll = m_time;
+	std::string serial, title;
+	int pct = -1;
+	bool active = false;
+	struct stat st;
+	// A file last written in the last 20 s: a live copy (every ~1% write refreshes its mtime). An older one is a copy that
+	// crashed; it is treated as finished so the entry doesn't linger.
+	if (stat(m_cfg.disc_dump_progress.c_str(), &st) == 0 && std::time(nullptr) - st.st_mtime < 20)
+	{
+		if (FILE* f = std::fopen(m_cfg.disc_dump_progress.c_str(), "r"))
+		{
+			char ser[80] = {0}, line[256] = {0};
+			if (std::fscanf(f, "%79s %d ", ser, &pct) == 2 && pct >= 0 && pct <= 100)
+			{
+				serial = ser;
+				if (std::fgets(line, sizeof(line), f))
+				{
+					size_t len = std::strlen(line);
+					while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+						line[--len] = 0;
+					title = line;
+				}
+				active = true;
+			}
+			std::fclose(f);
+		}
+	}
+	if (active)
+	{
+		if (m_dump_on && serial != m_dump_serial)
+			RemoveDumpEntry(); // a different disc is being copied now: start fresh
+		if (!m_dump_on)
+			InsertDumpEntry(serial, title, pct);
+		else
+			m_dump_pct = pct;
+	}
+	else if (m_dump_on)
+		RemoveDumpEntry();
+}
+
 void App::Update(double dt, const Input& in)
 {
 	m_time += dt;
 	m_account.Poll(m_cfg.achievements);
 	PollGameAchievements();
 	const float fdt = static_cast<float>(std::min(dt, 0.1));
+	m_dump_spin += fdt; // live-22: the dump disc's rotation, advanced whether or not a dump is on
 
 	// 2026-10-05: the account panel fades in and out, and its keyboard slides up under it (AI-assisted).
 	{
@@ -464,7 +646,13 @@ void App::Update(double dt, const Input& in)
 			if (((in.cross && !m_prev.cross) || (in.options && !m_prev.options)) && !m_games.empty() && !m_qr_big)
 			{
 				const GameInfo& picked = m_games[static_cast<size_t>(m_selected)];
-				if (!picked.damaged.empty()) // vk-285-134: an image that can't be read stays on the shelf
+				if (m_index[static_cast<size_t>(m_selected)] == kDumpIndex) // live-22: the disc is still being copied
+				{
+					m_refused_text = "This disc is still being copied (" + std::to_string(m_dump_pct) + "%).";
+					m_refused_time = m_time;
+					Sound(Sfx::Edge, 0.0f);
+				}
+				else if (!picked.damaged.empty()) // vk-285-134: an image that can't be read stays on the shelf
 				{
 					m_refused_text = "This image can't be read (" + picked.damaged +
 					                 "): copy it again, or make the CHD again with chdman from a good copy.";
@@ -519,6 +707,7 @@ void App::Update(double dt, const Input& in)
 		m_scroll += m_scroll_vel * h;
 	}
 
+	PollDiscDump(); // live-22: the disc being copied shows as a spinning-disc entry at the front
 	PollCovers();
 	for (Slot& s : m_slots)
 		if (s.has_cover && s.cover_mix < 1.0f)
@@ -641,6 +830,19 @@ void App::Build(FrameDesc& f, const std::string& clock)
 		r.model = Mat4::Translate(0, 2 * kFloorY, 0) * Mat4::Scale(1, -1, 1) * b.model;
 		r.sheen_strength = 0;
 		f.reflections.push_back(r);
+		// live-22: the disc being copied: a spinning disc and the live percentage over its box.
+		if (m_index[static_cast<size_t>(i)] == kDumpIndex)
+		{
+			const float a = std::max(0.0f, 1.0f - std::fabs(d) * 1.6f) * b.brightness;
+			AddDiscSpinner(f.ui, f.view_proj, b.model, m_dump_spin, a, W, H);
+			const Vec4 wp = b.model * Vec4(0.0f, -0.30f, kBoxHalfD + 0.01f, 1.0f);
+			const Vec4 cp = f.view_proj * wp;
+			const float sx = ((cp.x / cp.w) * 0.5f + 0.5f) * W, sy = ((cp.y / cp.w) * 0.5f + 0.5f) * H;
+			char pctbuf[8];
+			std::snprintf(pctbuf, sizeof(pctbuf), "%d%%", m_dump_pct);
+			const float ppx = (54.0f + 60.0f * b.selected) * k;
+			m_fonts->AddText(f.ui, pctbuf, sx, sy, ppx, Rgba(1.0f, 1.0f, 1.0f, std::min(1.0f, a * 1.4f)), 0.6f, Fonts::Center);
+		}
 	}
 
 	// The outline glow on the selected case once the shelf settles on it.
@@ -762,7 +964,10 @@ void App::Build(FrameDesc& f, const std::string& clock)
 		};
 		add(g.serial);
 		add(Region(g.region)); // vk-285-110: the region names in the PS5's language
-		add(SizeText(g.bytes));
+		if (m_index[static_cast<size_t>(m_selected)] == kDumpIndex) // live-22: the disc being copied, not a sized image
+			add("Copying " + std::to_string(m_dump_pct) + "%");
+		else
+			add(SizeText(g.bytes));
 		if (!g.damaged.empty())
 			add("can't be read"); // vk-285-134
 		if (g.hidden)

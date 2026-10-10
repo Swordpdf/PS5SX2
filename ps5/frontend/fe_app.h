@@ -58,6 +58,10 @@ struct AppConfig
 	// vk-285-135 (AI-assisted): the sheet for all games' Folders rows and their picker start from these places (label, path),
 	// those that are folders when it opens (the drives come and go); empty: no Folders rows.
 	std::vector<std::pair<std::string, std::string>> folder_places;
+	// live-22 (AI-assisted): the disc dumper's progress file (orbis-shims/ProsperoDiscDump.cpp, logs/disc-dump-progress.txt).
+	// While a PS2 disc is being copied, the shelf polls it and shows a spinning-disc entry with the live percentage, until
+	// the copy ends (the file is removed, and the game launches). Empty: no such entry (the host sets it for its test).
+	std::string disc_dump_progress;
 };
 
 class App
@@ -91,6 +95,8 @@ public:
 	int SheetTab() const { return m_sheet.tab(); }
 	bool PickerOpen() const { return m_picker.open; } // vk-285-135
 	int ShelfCount() const { return static_cast<int>(m_games.size()); } // vk-285-137: the games on the shelf
+	// live-22: the disc dump entry's percentage (0-100) while one is on the shelf, else -1 (the host test checks it).
+	int DumpPercent() const { return m_dump_on ? m_dump_pct : -1; }
 
 private:
 	struct Slot
@@ -133,6 +139,20 @@ private:
 	std::string TexturePackHelp(const TexturePackStatus& s, int pick, const std::string& serial) const;
 	void BuildTexturePackActivity(std::vector<UiVertex>& ui, float x, float y, float k, uint32_t accent);
 	void PollCovers();
+	// live-22 (AI-assisted): a disc being copied shows as a spinning-disc entry at the front of the shelf with its live
+	// percentage (AppConfig::disc_dump_progress). PollDiscDump reads the dumper's status file (throttled), inserts the
+	// synthetic entry when a copy starts, keeps its percent up to date, and drops it when the copy ends. The entry is a
+	// normal shelf entry whose Init-list index is kDumpIndex (< 0), so the cover service never touches it; its box carries
+	// a spinning disc and the percentage drawn over it.
+	void PollDiscDump();
+	void InsertDumpEntry(const std::string& serial, const std::string& title, int pct);
+	void RemoveDumpEntry();
+	int DumpPos() const; // the dump entry's position on the shelf, or -1
+	bool m_dump_on = false;
+	std::string m_dump_serial, m_dump_title;
+	int m_dump_pct = 0;
+	float m_dump_spin = 0;      // the disc's rotation, advanced each frame
+	double m_dump_poll = -10;   // when the status file was last read
 	void KeepCoversNear();                // 2026-10-10: asks for the games near the selection, drops the rest's textures
 	void DropCovers(Slot& s, int index); // its textures and set freed, the service told
 	// vk-285-135 (AI-assisted; swordpdf: "i also want to pick a folder though the browser in the shelf"): the folder picker of the

@@ -251,6 +251,8 @@ bool ParseStep(const std::string& line, std::vector<Step>& out)
 		s >> st.seconds;
 	else if (st.op == "shot" || st.op == "game")
 		s >> st.arg;
+	else if (st.op == "dump") // live-22: "dump <pct>" writes the dumper's progress file, "dump off" removes it
+		s >> st.arg;
 	else if (st.op == "rec") // 2026-10-08: "rec on" / "rec off": what --record keeps (from the start when no step says)
 		s >> st.arg;
 	else
@@ -711,6 +713,9 @@ int main(int argc, char** argv)
 		g.badges.clear();
 		ReadBadges(g, op.settings_dir, op.gs_ini, op.patches_dir);
 	};
+	// live-22: the disc dumper's progress file (ProsperoDiscDump.cpp on the console); the "dump" step writes it.
+	const std::string dump_progress = data + "/disc-dump-progress.txt";
+	acfg.disc_dump_progress = dump_progress;
 	for (const Step& s : steps)
 		if (s.op == "game")
 			acfg.preselect = std::atoi(s.arg.c_str());
@@ -804,6 +809,14 @@ int main(int argc, char** argv)
 			if (rec)
 				std::printf("[host] rec %s at frame %u\n", rec_on ? "on" : "off", rec_frames); // where the cuts are
 		}
+		else if (s.op == "dump") // live-22: stand in for the console's disc dumper writing its progress file
+		{
+			if (s.arg == "off")
+				std::remove(dump_progress.c_str());
+			else
+				WriteText(dump_progress, "SLUS-00000 " + s.arg + "\nHost Dump Game\n");
+			run(dt); // let the shelf poll it (PollDiscDump is throttled to ~0.5 s)
+		}
 		else if (s.op == "sleep")
 		{
 			const double until = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() + s.seconds;
@@ -823,7 +836,8 @@ int main(int argc, char** argv)
 			                key == "done"     ? app.Done() : // 2026-10-08: the shelf closed (a game, or the PS2 system menu)
 			                key == "systemmenu" ? app.SystemMenuChosen() :
 			                key == "picker"   ? app.PickerOpen() : // vk-285-135
-			                key == "shelf"    ? app.ShelfCount() : -99; // vk-285-137: the games on the shelf
+			                key == "shelf"    ? app.ShelfCount() : // vk-285-137: the games on the shelf
+			                key == "dumppct"  ? app.DumpPercent() : -99; // live-22: the disc dump entry's percentage (-1 when none)
 			if (got == -99 || eq == std::string::npos)
 			{
 				std::fprintf(stderr, "[host] unknown expect: %s\n", s.arg.c_str());

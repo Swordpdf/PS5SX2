@@ -22,6 +22,7 @@
 #include "fe_vk.h"
 #include "fe_web.h"
 #include "ps5/coreorbis/orbis-shims/ProsperoNotify.h" // 2026-10-05: the texture packs' popup
+#include "OrbisPaths.h" // live-22: OrbisLogPath for the disc-dump progress file the shelf shows
 #ifdef PS5SX2_ACHIEVEMENTS
 #include "ps5/coreorbis/orbis-shims/ProsperoAchievements.h"
 #include "pcsx2/Achievements.h"
@@ -1883,6 +1884,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.bios_present = paths.bios_check; // vk-285-134
 	acfg.bios_problem = paths.bios_problem;
 	acfg.bios_dir = paths.bios_dir;
+	// live-22 (AI-assisted): while a PS2 disc is being copied (orbis-shims/ProsperoDiscDump.cpp), the shelf shows a
+	// spinning-disc entry with the live percentage, read from this file (the same path the dumper writes).
+	acfg.disc_dump_progress = OrbisLogPath("disc-dump-progress.txt");
 	bool ok = app.Init(&renderer, fonts, games, covers, acfg);
 	std::printf("[frontend] up in %.0f ms (%s)\n", (Now() - t0) * 1000.0, ok ? "ok" : renderer.error().c_str());
 	std::fflush(stdout);
