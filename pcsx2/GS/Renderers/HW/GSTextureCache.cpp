@@ -4880,9 +4880,16 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 	// leaving stale GPU mip data (visible as the flat-coloured ring around the
 	// player character in R&C 1 after cutscenes — general fix, not game-specific).
 	// needs proper testing
+	// 2.01 follow-up (GoW1 black sky report): only for host->local (CPU) writes, as the commit message says. Every draw
+	// calls this with target=false (GSRendererHW.cpp InvalidateVideoMem(context->offset.fb, real_rect, false)), and a GPU
+	// draw never updates GS local memory, so re-uploading a layer there can only put stale VRAM over a good layer.
+	// Repeating sources index m_valid by texture-local block (Source::Update), not by GS page, so valid[page] = 0 would
+	// clear unrelated blocks of mip 0 there: skip them.
 	for (Source* s : m_src.m_surfaces)
 	{
-		if (s->m_target || s->m_from_hash_cache)
+		if (!target)
+			break;
+		if (s->m_target || s->m_from_hash_cache || s->m_repeating)
 			continue;
 		u32* RESTRICT valid = s->m_valid.get();
 		if (!valid || s->CanPreload())
