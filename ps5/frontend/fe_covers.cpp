@@ -776,6 +776,13 @@ void CoverService::Run()
 {
 	const size_t n = m_games.size();
 	// Spines and placeholders first: they make every box presentable at once.
+	// vk-285-157 (AI-assisted): throttle the queue so a large NFS library (e.g. 2287 games) doesn't
+	// dump ~2.8 GB of undrained spine+placeholder images into RAM before the main thread can consume
+	// them. Each spine is 96×1304 (~490 KB) and each placeholder is 364×512 (~730 KB); without a cap
+	// a 2000-game library fills ~2.8 GB at once → memory pressure → frame stalls → watchdog KP.
+	// The main thread drains 4 images per frame; keep at most 24 queued so it stays ahead.
+	// needs proper testing
+	static const size_t kMaxQueue = 24;
 	std::vector<bool> done(n, false);
 	for (size_t k = 0; k < n && !m_stop; k++)
 	{
@@ -785,9 +792,20 @@ void CoverService::Run()
 		PaintSpine(*m_fonts, m_games[static_cast<size_t>(i)], spine);
 		PaintPlaceholder(*m_fonts, m_games[static_cast<size_t>(i)], hold);
 		spine.game = hold.game = i;
-		std::lock_guard<std::mutex> lock(m_mutex);
-		m_results.push_back(std::move(spine));
-		m_results.push_back(std::move(hold));
+		// Wait until the main thread has drained enough before pushing more.
+		for (;;)
+		{
+			{
+				std::lock_guard<std::mutex> lock(m_mutex);
+				if (m_results.size() < kMaxQueue || m_stop)
+				{
+					m_results.push_back(std::move(spine));
+					m_results.push_back(std::move(hold));
+					break;
+				}
+			}
+			usleep(5000); // 5 ms; yields CPU to the render thread
+		}
 	}
 	// Then the covers already on disk, nearest the selection first (vk-285-110: all of them before any
 	// download, so a slow or failing download never holds one back).
