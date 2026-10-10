@@ -104,6 +104,7 @@ private:
 		bool has_cover = false;
 		float glow[3] = {0.55f, 0.42f, 1.0f};
 		bool has_glow = false;
+		bool wanted = false; // 2026-10-10: asked of the cover service (near the selection); textures only while it is
 	};
 
 	bool Step(int dir); // true when the selection moved
@@ -132,6 +133,8 @@ private:
 	std::string TexturePackHelp(const TexturePackStatus& s, int pick, const std::string& serial) const;
 	void BuildTexturePackActivity(std::vector<UiVertex>& ui, float x, float y, float k, uint32_t accent);
 	void PollCovers();
+	void KeepCoversNear();                // 2026-10-10: asks for the games near the selection, drops the rest's textures
+	void DropCovers(Slot& s, int index); // its textures and set freed, the service told
 	// vk-285-135 (AI-assisted; swordpdf: "i also want to pick a folder though the browser in the shelf"): the folder picker of the
 	// sheet's Folders rows (game folders, the BIOS folder) and the NFS share list, in the sheet's place while it is open.
 	struct PickerItem

@@ -33,6 +33,11 @@ constexpr float kSideZ = -0.55f;
 constexpr float kStepZ = 0.10f;
 constexpr float kSideTurn = 58.0f;  // degrees the neighbours turn towards the centre
 constexpr int kVisible = 7;         // cases drawn on each side
+// 2026-10-10 (AI-assisted; a tester with ~2,600 NFS games had no covers): textures only for the games near the selection.
+// Every game used to keep a spine, a placeholder and a cover (~2.7 MB): gigabytes for a large library, and past ~1,020
+// games the renderer's descriptor pool (1,024 sets) ran out, so boxes weren't drawn. Needs proper testing on the console.
+constexpr int kCoverKeep = 24; // games within this many places of the selection are asked for
+constexpr int kCoverDrop = 32; // and dropped beyond this many (from the selection and the scroll), so going back and forth doesn't repaint
 
 // The author's handles, under the wordmark (vk-285-50, the user's request).
 constexpr const char* kDiscordHandle = "sword.pdf";
@@ -261,10 +266,43 @@ void App::Sound(Sfx sfx, float pan)
 		m_cfg.sound->Play(sfx, pan);
 }
 
+void App::DropCovers(Slot& s, int index)
+{
+	m_renderer->FreeTextureSet(s.set);
+	m_renderer->DestroyTexture(s.cover);
+	m_renderer->DestroyTexture(s.placeholder);
+	m_renderer->DestroyTexture(s.spine);
+	s = Slot();
+	m_covers->Forget(index);
+}
+
+void App::KeepCoversNear()
+{
+	const int n = static_cast<int>(m_games.size());
+	if (n == 0)
+		return;
+	const int scroll = static_cast<int>(std::lround(m_scroll));
+	for (int pos = 0; pos < n; pos++)
+		if (m_slots[static_cast<size_t>(pos)].wanted && std::abs(pos - m_selected) > kCoverDrop && std::abs(pos - scroll) > kCoverDrop)
+			DropCovers(m_slots[static_cast<size_t>(pos)], m_index[static_cast<size_t>(pos)]);
+	for (Shelved& h : m_shelved) // vk-285-137: off the shelf, not drawn
+		if (h.slot.wanted)
+			DropCovers(h.slot, h.index);
+	// Nearest first, so the service (which also goes nearest first) has the visible ones at the front.
+	for (int d = 0; d <= kCoverKeep; d++)
+		for (int pos : {m_selected - d, m_selected + d})
+			if (pos >= 0 && pos < n && !m_slots[static_cast<size_t>(pos)].wanted)
+			{
+				m_slots[static_cast<size_t>(pos)].wanted = true;
+				m_covers->Want(m_index[static_cast<size_t>(pos)]);
+			}
+}
+
 void App::PollCovers()
 {
 	if (!m_covers)
 		return;
+	KeepCoversNear();
 	CoverImage img;
 	int budget = 4; // textures a frame
 	while (budget-- > 0 && m_covers->Poll(img))
@@ -285,7 +323,7 @@ void App::PollCovers()
 					game = &h.game;
 					break;
 				}
-		if (!slot)
+		if (!slot || !slot->wanted) // 2026-10-10: dropped since (KeepCoversNear)
 			continue;
 		Slot& s = *slot;
 		Texture* t = m_renderer->CreateTexture(static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height),
@@ -314,7 +352,7 @@ void App::PollCovers()
 		{
 			m_renderer->FreeTextureSet(s.set);
 			s.set = m_renderer->AllocTextureSet(s.cover ? s.cover : s.placeholder, s.placeholder, s.spine);
-			s.dirty = false;
+			s.dirty = !s.set; // 2026-10-10: the pool full for now (sets freed are given back a frame later): try again
 		}
 }
 
