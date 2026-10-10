@@ -365,7 +365,8 @@ const std::vector<OptionGroup>& OptionGroups()
 					{{"Auto 4:3/3:2", "Auto"}, {"4:3", "4:3"}, {"16:9", "16:9"}, {"Stretch", "Stretch"}}),
 				Toggle("EmuCore/EnableWideScreenPatches", "Widescreen patches", "false", "Widescreen %",
 					"Uses the game's 16:9 patch when there is one."),
-				Seg("TVShader", "Display filter", "0", "%", {{"6", "FSR"}, {"7", "FSR soft"}, {"0", "Classic"}, {"5", "CRT"}}),
+				Seg("TVShader", "Display filter", "0", "%", {{"6", "FSR"}, {"7", "FSR soft"}, {"0", "Classic"}, {"5", "CRT"}, {"1", "Scanlines"}, {"2", "VHS soft"}, {"3", "VHS"}},
+					"How the picture reaches the TV. FSR sharpens the upscale; CRT is a curved tube with beam lines; Scanlines draws a thin dark line between the 480 lines; VHS soft and VHS look like a tape (VHS: a worn one that wobbles)."),
 				// 2026-10-08 (AI-assisted): frame generation (GSDeviceVK.cpp), read when the game starts (main-boot.cpp).
 				Toggle("PS5SX2/FrameGeneration", "Frame generation", "false", "Frame gen %",
 					"Shows a frame made between two of the game's: a 60 fps game at 120 on a TV that takes 120 Hz (the TV switches to "

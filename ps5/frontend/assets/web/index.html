@@ -355,7 +355,8 @@ const GROUPS = [
     { key: "EmuCore/EnableWideScreenPatches", label: "Widescreen patches", type: "toggle", def: "false", short: "Widescreen %",
       hint: "Uses the game's 16:9 patch when there is one." },
     { key: "TVShader", label: "Display filter", type: "seg", def: "0", short: "%",
-      options: [["6","FSR"],["7","FSR soft"],["0","Classic"],["5","CRT"]] },
+      options: [["6","FSR"],["7","FSR soft"],["0","Classic"],["5","CRT"],["1","Scanlines"],["2","VHS soft"],["3","VHS"]],
+      hint: "How the picture reaches the TV. FSR sharpens the upscale; CRT is a curved tube with beam lines; Scanlines draws a thin dark line between the 480 lines; VHS soft and VHS look like a tape (VHS: a worn one that wobbles)." },
     // 2026-10-08 (AI-assisted): frame generation (GSDeviceVK.cpp), read when the game starts.
     { key: "PS5SX2/FrameGeneration", label: "Frame generation", type: "toggle", def: "false", short: "Frame gen %", restart: true,
       hint: "Shows a frame made between two of the game's: a 60 fps game at 120 on a TV that takes 120 Hz (the TV switches to 120 Hz for the game), a 30 fps game at 60. Only while the game holds its frame rate (an uneven one shows the game's own frames); the FPS box then counts what the TV gets. A little more input lag, and small smears at the edges of fast movement. Experimental. Takes effect when the game starts." },

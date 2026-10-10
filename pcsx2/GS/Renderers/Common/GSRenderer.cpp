@@ -789,6 +789,10 @@ namespace
 		{"FSR SOFT", 7, 0, 0},
 		{"CLASSIC", 0, 60, 0},
 		{"CRT", 5, 0, 0},
+		// live-20: present.glsl ORBIS_TVFX filters in PCSX2's scanline/diagonal/triangular slots.
+		{"SCANLINES", 1, 0, 0},
+		{"VHS SOFT", 2, 0, 0},
+		{"VHS", 3, 0, 0},
 	};
 	constexpr int ORBIS_NUM_MODES = static_cast<int>(sizeof(s_orbis_modes) / sizeof(s_orbis_modes[0]));
 	int s_orbis_mode = 0;
