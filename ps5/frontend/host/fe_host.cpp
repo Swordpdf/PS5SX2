@@ -6,6 +6,7 @@
 //   [--no-bios "<what was found instead>"] (vk-285-134) [--ime-text "<what the keyboard types>"] (vk-285-135: with --ime)
 //   [--games <file>] [--build-tag <text>] [--record <out.mp4> [--record-fps 30|60]] (2026-10-08: the showcase video)
 //                               [--script <file>] [step ...]
+// --drive: a disc drive (/dev/cd1) at the front of the shelf, empty until a "drive" step puts a disc in it.
 // --games: one game a line, "title|region|serial|size in MB" (the shelf's order); its cover is <data>/covers/<serial>.jpg.
 // --record: every frame the steps run (at --record-fps, default 30) goes to ffmpeg, which writes out.mp4 (H.264, near
 // lossless); "shot" steps still write their PNGs. "rec off" / "rec on" steps leave frames out (they still run).
@@ -21,6 +22,8 @@
 //   hold <button> <s>      the button stays down for <s> seconds
 //   shot <name>            <out>/<name>.png of the current frame
 //   game <n>               (before any other step) the shelf starts on game n
+//   drive <state> [s|t|r|mb] (with --drive) the disc drive's disc: "empty", "reading", "ready SLUS-20370|Kingdom
+//                          Hearts|USA|2900" (serial|title|region|size in MB), or "other" (a disc that isn't a PS2 game)
 // Buttons: left right up down cross circle square triangle options l1 r1 l2 r2; "a+b" presses them together.
 //
 // Copyright (C) 2026 swordpdf
@@ -207,7 +210,7 @@ struct Gpu
 
 struct Step
 {
-	std::string op, arg;
+	std::string op, arg, rest;
 	double seconds = 0;
 	int count = 1;
 };
@@ -251,6 +254,11 @@ bool ParseStep(const std::string& line, std::vector<Step>& out)
 		s >> st.seconds;
 	else if (st.op == "shot" || st.op == "game")
 		s >> st.arg;
+	else if (st.op == "drive") // the disc drive's disc (--drive)
+	{
+		s >> st.arg;
+		std::getline(s >> std::ws, st.rest);
+	}
 	else if (st.op == "rec") // 2026-10-08: "rec on" / "rec off": what --record keeps (from the start when no step says)
 		s >> st.arg;
 	else
@@ -354,6 +362,7 @@ int main(int argc, char** argv)
 	std::string web;
 	bool no_bios = false; // vk-285-134
 	std::string no_bios_problem;
+	bool drive = false; // --drive
 	std::string games_file, build_tag = "vk-285-114 (host)", record, record_audio; // 2026-10-08: the showcase video
 	std::string places; // 2026-10-08: --places "Label=/path|Label=/path": the folder picker's places (else the data folder's)
 	int record_fps = 30;
@@ -397,6 +406,8 @@ int main(int argc, char** argv)
 		}
 		else if (a == "--games")
 			games_file = next();
+		else if (a == "--drive")
+			drive = true;
 		else if (a == "--build-tag")
 			build_tag = next();
 		else if (a == "--record")
@@ -487,6 +498,8 @@ int main(int argc, char** argv)
 		}
 		games = std::move(list);
 	}
+	if (drive)
+		games.insert(games.begin(), EmptyDrive("/dev/cd1"));
 	OptionsPaths op;
 	op.settings_dir = data + "/settings";
 	op.gs_ini = data + "/gs.ini";
@@ -711,6 +724,39 @@ int main(int argc, char** argv)
 		g.badges.clear();
 		ReadBadges(g, op.settings_dir, op.gs_ini, op.patches_dir);
 	};
+	// --drive: the disc a "drive" step put in the drive, handed to the shelf at its next frame with its pictures (as
+	// fe_ps5.cpp's DriveWatch paints them).
+	bool drive_pending = false;
+	GameInfo drive_next;
+	if (drive)
+		acfg.drive_changed = [&](GameInfo& g, std::vector<CoverImage>& images) {
+			if (!drive_pending)
+				return false;
+			drive_pending = false;
+			g = drive_next;
+			if (g.absent)
+				return true;
+			images.resize(2);
+			CoverService::PaintSpine(*fonts, g, images[0]);
+			GameInfo front = g;
+			if (g.reading)
+				front.title.clear(); // the spinning disc goes there
+			CoverService::PaintPlaceholder(*fonts, front, images[1]);
+			images[0].kind = CoverImage::Spine;
+			images[1].kind = CoverImage::Placeholder;
+			CoverFinder finder(cc.manual_dir, cc.cache_dir);
+			const CoverFile f = finder.Best(g);
+			std::ifstream in(f.path, std::ios::binary);
+			const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+			CoverImage cover;
+			if (!f.path.empty() && CoverService::Decode(bytes, 1024, cover))
+			{
+				cover.kind = CoverImage::Cover;
+				cover.source = f.source;
+				images.push_back(std::move(cover));
+			}
+			return true;
+		};
 	for (const Step& s : steps)
 		if (s.op == "game")
 			acfg.preselect = std::atoi(s.arg.c_str());
@@ -797,6 +843,43 @@ int main(int argc, char** argv)
 				SetButton(in, s.arg, false);
 				run(dt * 2);
 			}
+		else if (s.op == "drive")
+		{
+			if (!drive)
+			{
+				std::fprintf(stderr, "[host] a drive step needs --drive\n");
+				return 2;
+			}
+			if (s.arg == "empty" || s.arg == "other")
+				drive_next = EmptyDrive("/dev/cd1");
+			else if (s.arg == "reading")
+				drive_next = ReadingDrive("/dev/cd1");
+			else if (s.arg == "ready")
+			{
+				std::string field[4];
+				size_t at = 0;
+				for (int k = 0; k < 4; k++)
+				{
+					const size_t bar = s.rest.find('|', at);
+					field[k] = s.rest.substr(at, bar == std::string::npos ? std::string::npos : bar - at);
+					at = bar == std::string::npos ? s.rest.size() : bar + 1;
+				}
+				drive_next = EmptyDrive("/dev/cd1");
+				drive_next.absent = false;
+				drive_next.serial = field[0];
+				drive_next.stem = field[0];
+				drive_next.title = field[1];
+				drive_next.region = field[2].empty() ? RegionFromSerial(field[0]) : field[2];
+				drive_next.bytes = std::strtoull(field[3].c_str(), nullptr, 10) << 20;
+			}
+			else
+			{
+				std::fprintf(stderr, "[host] unknown drive state: %s\n", s.arg.c_str());
+				return 2;
+			}
+			drive_pending = true;
+			run(dt);
+		}
 		else if (s.op == "rec")
 		{
 			rec_on = s.arg == "on";

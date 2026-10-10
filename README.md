@@ -47,6 +47,7 @@ Expect rough edges. Bug reports with logs are very welcome, and so is patience.
 - **Up to 4 players** with a multitap: the other PS5 users logged in when the game starts play on their own controllers.
 - **Fast forward** (experimental) on a button combo you choose, to skip videos.
 - **Games, BIOS and textures on a USB drive.** Games are found in the drive's top folder, `games/`, `PCSX2/games/` and `PS5SX2/games/`; a BIOS in `bios/`, `PCSX2/bios/` or `PS5SX2/bios/`.
+- **PS2 discs in a USB disc drive**. A PS5 without a disc drive of its own can play the discs themselves from a USB DVD drive, or a BD drive that reads DVDs. See [Playing discs from a USB drive](#playing-discs-from-a-usb-drive).
 - **USB keyboard and mouse** play as the PS2 controller, with PCSX2's own keys. This doesn't work on firmware 11.x and 12.00 yet: see [Known limitations](#known-limitations).
 - **Logs that survive.** The last sessions' boot, emulator and settings logs stay on the console, so a problem can be tracked down afterwards. When a game runs slow, a built-in profiler notes in the log which part of the emulator the time went to: logs from slow games are the most useful ones to send.
 
@@ -167,6 +168,15 @@ In a game, hold L2 + D-pad Down for 2 seconds and the PS5's own web browser open
 3. `/data/PCSX2/textures/<serial>/`, PCSX2's own place.
 
 Folder names match in any case.
+
+## Playing discs from a USB drive
+
+Plug a USB DVD drive, or a BD drive that reads DVDs, into the PS5 and put a PS2 disc in it, before or after starting PS5SX2. When the disc goes in, a box for it joins the front of the shelf and is selected, with a spinning disc on it while the disc is read. Once the disc is known to be a PS2 game, the box shows the game's title, serial and region and its cover, like the games on the console. Take the disc out and the box leaves the shelf; a disc that isn't a PS2 game (a film, music) never gets one.
+
+- The game's settings are kept under its serial (`settings/SLUS-20370.ini`), so each disc has its own.
+- A file named `bootdisc` in `/data/PCSX2/flags/` starts the disc in the drive straight away, without the shelf, as a PS2 does. With no disc in, the shelf opens as usual.
+- DVD games were tested with a TSSTcorp SN-208FB drive on a PS5 on firmware 12.20. CD games (PS2 games on blue discs) are read through the drive's raw sector commands, which still need testing.
+- Loading is slower than from an image file: a USB drive reads about 3 MB/s and seeks slowly.
 
 ## Online play
 

@@ -31,6 +31,11 @@ struct GameInfo
 	// vk-285-137 (AI-assisted; swordpdf: "add an option to hide games from the shelf"): PS5SX2/HideGame=true in its own settings
 	// file (ReadBadges). The shelf leaves it out unless gs.ini's PS5SX2/ShowHiddenGames is on, and then shows it dimmed.
 	bool hidden = false;
+	// A disc drive's entry (IsDrivePath): `absent` while it holds no PS2 disc (the shelf leaves it out, whatever
+	// ShowHiddenGames says), `reading` while a disc that went in is spun up and checked (its box shows a spinning disc,
+	// and it won't start until it's known).
+	bool absent = false;
+	bool reading = false;
 };
 
 // A disc image's file name: .iso, (vk-285-108) .chd, (vk-285-113) .cso or .zso, (2026-10-08) .bin or .img, in any case,
@@ -38,6 +43,24 @@ struct GameInfo
 bool IsDiscImageName(const char* name);
 // 2026-10-08: an .elf (a PS2 executable). ScanGames lists one whose first bytes are an ELF header; it has no serial.
 bool IsElfName(const char* name);
+
+// A disc drive's device, "/dev/cd0" to "/dev/cd7": a USB DVD or BD drive on a PS5 without a disc drive of its
+// own. The shelf lists the drive (fe_ps5.cpp) and the game boots from the disc in it (main-boot.cpp, CDVD_SourceType::Disc).
+bool IsDrivePath(const std::string& path);
+// The disc in drive `device`, for the shelf: its serial (SYSTEM.CNF), the volume's size, a title (the volume's name, else "PS2
+// disc"; ApplyGameDbTitle names it better) and the settings file's name (the serial, or "Disc drive cd1" without one).
+// False, with `g` still describing the drive, when no data disc reads: none in it, still spinning up, not an ISO 9660 disc;
+// `why` then says which, for the shelf.
+bool ReadDriveDisc(const std::string& device, GameInfo& g, std::string* why);
+
+// A disc drive's entry for the shelf while it holds no PS2 disc (absent) and while a disc that went in is read (reading:
+// "Reading the disc" on its box). ReadDriveDisc describes it once the disc is known.
+GameInfo EmptyDrive(const std::string& device);
+GameInfo ReadingDrive(const std::string& device);
+
+// The region a PS2 serial's prefix stands for ("SLUS-21351": "USA"; SLES/SCES Europe, SLPS/SLPM/SCPS Japan, SLKA/SCKA
+// Korea, SCAJ/SLAJ Asia), in the names MakeTitle gives; empty for a prefix it doesn't know.
+std::string RegionFromSerial(const std::string& serial);
 
 // Lists the disc images in `dirs` (the first folder wins for a name found twice), sorted by title.
 std::vector<GameInfo> ScanGames(const std::vector<std::string>& dirs);

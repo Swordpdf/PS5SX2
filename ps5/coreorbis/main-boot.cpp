@@ -33,6 +33,7 @@
 #include "../frontend/fe_i18n.h" // vk-285-110: the notifications' text
 #include "../frontend/fe_bios.h" // vk-285-134: the BIOS before the shelf
 #include "../frontend/fe_games.h" // vk-285-139: fe::DiscSet
+#include "OrbisDiscDrive.h"        // USB disc drives (flags/bootdisc)
 #include "ps2/BiosTools.h"       // vk-285-134: IsBIOS, IsBIOSAvailable
 #endif // vk-285-36/38: [vkwait], [shaders]
 extern volatile unsigned long long g_orbis_map_addr;
@@ -2104,7 +2105,7 @@ static std::string orbis_find_image(const std::string& want, const char* what)
   const auto is_file = [&](const std::string& p) { return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode); };
   if (want.find('/') != std::string::npos)
   {
-    if (is_file(want))
+    if (is_file(want) || (fe::IsDrivePath(want) && stat(want.c_str(), &st) == 0)) // or a disc drive, "/dev/cd1"
       return want;
     printf("[boot] %s %s isn't there\n", what, want.c_str());
     return {};
@@ -2202,7 +2203,8 @@ void OrbisChangeDiscCpu(int req)
   }
   if (to.empty())
     return;
-  const bool ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, to);
+  // To or from a disc drive's disc too (the cheat disc's game, in the drive).
+  const bool ok = VMManager::ChangeDisc(fe::IsDrivePath(to) ? CDVD_SourceType::Disc : CDVD_SourceType::Iso, to);
   if (ok)
   {
     std::lock_guard<std::mutex> lock(s_disc_mutex);
@@ -2899,7 +2901,25 @@ int main()
   // HTTPS failed there on vk-285-41/42, with etaHEN's jailbreak; with the PS5SX2 Helper's it hasn't been
   // tried, and boot.log's "[frontend] cover ..." lines will show it. When it fails, the next start's
   // prefetch fetches them from cache/usb-games.txt, as before.
-  if (!orbis_flag("nofrontend") && !orbis_flag("nomenu"))
+  // The bootdisc flag (flags/bootdisc): a PS2 disc in a disc drive (a USB DVD or BD drive, OrbisDiscDrive.h) starts straight away,
+  // without the shelf, as a PS2 starts the disc it holds. With no disc in a drive, the shelf opens as usual.
+  bool boot_disc = false;
+  if (orbis_flag("bootdisc"))
+    for (const std::string& drive : OrbisDiscDrive::List())
+    {
+      fe::GameInfo disc;
+      std::string why;
+      if (fe::ReadDriveDisc(drive, disc, &why) && !disc.serial.empty()) // a PS2 game (a SYSTEM.CNF names its executable)
+      {
+        s_game_path = drive;
+        boot_disc = true; // not frontend_ran: a start that fails then closes the app, never back here in a loop
+        printf("[boot] bootdisc: %s holds %s; starting it without the shelf\n", drive.c_str(), disc.serial.c_str());
+        orbis_eventf("bootdisc: starting the disc in %s (%s) without the shelf", drive.c_str(), disc.serial.c_str());
+        break;
+      }
+      printf("[boot] bootdisc: %s: %s\n", drive.c_str(), why.empty() ? "the disc in it isn't a PS2 game" : why.c_str());
+    }
+  if (s_game_path.empty() && !orbis_flag("nofrontend") && !orbis_flag("nomenu"))
     s_game_path = orbis_frontend_run(orbis_frontend_paths(!orbis_flag("nocoverdl")), ORBIS_BUILD_TAG, &frontend_ran);
 #endif
 #ifdef ORBIS_VULKAN
@@ -2912,7 +2932,7 @@ int main()
   OrbisAchievementsWaitForLogin();
   OrbisAchievementsStopBrowser(); // pr9n: the shelf's achievement list isn't needed now (was: wait out its requests)
 #endif
-  if (!frontend_ran)
+  if (!frontend_ran && !boot_disc)
     s_game_path = orbis_select_game(OrbisDir("games").c_str(), "/data/PCSX2", ORBIS_BUILD_TAG); // vk-285-33: games/ too
   if (s_game_path.empty())
   {
@@ -2944,6 +2964,15 @@ int main()
     const size_t dot = stem.rfind('.');
     if (dot != std::string::npos && dot > 0)
       stem.erase(dot);
+    // A disc drive's (/dev/cd1): named after the disc's serial, as the shelf names it (fe::ReadDriveDisc).
+    if (fe::IsDrivePath(s_game_path))
+    {
+      fe::GameInfo disc;
+      std::string why;
+      const bool read = fe::ReadDriveDisc(s_game_path, disc, &why);
+      stem = disc.stem;
+      printf("[boot] disc drive %s: %s\n", s_game_path.c_str(), read ? (disc.serial.empty() ? "a disc with no serial" : disc.serial.c_str()) : why.c_str());
+    }
     s_game_ini_path = "/data/PCSX2/settings/" + stem + ".ini";
   }
 #ifdef ORBIS_VULKAN
@@ -3178,6 +3207,10 @@ int main()
     params.filename = orbis_disc_boot(s_game_path);
     if (params.filename != s_game_path)
       params.source_type = CDVD_SourceType::Iso;
+    // A game from a disc drive (a USB DVD or BD drive) plays from the disc itself, through PCSX2's disc reader
+    // (orbis-shims/OrbisIOCtlSrc.cpp). Unless it starts from the cheat disc: then the drive is the disc it changes to.
+    else if (fe::IsDrivePath(s_game_path))
+      params.source_type = CDVD_SourceType::Disc;
   }
   // 2026-10-08 (AI-assisted; testers: "mount ELFs", "ELF properties: disc path"): an .elf from the shelf boots as PCSX2 boots
   // an ELF (VMBootParameters::elf_override, always fast booted; host: is its folder when EmuCore/HostFs is on), with the disc
@@ -3190,7 +3223,7 @@ int main()
     if (!disc.empty())
     {
       params.filename = disc;
-      params.source_type = CDVD_SourceType::Iso;
+      params.source_type = fe::IsDrivePath(disc) ? CDVD_SourceType::Disc : CDVD_SourceType::Iso; // a disc drive
       std::lock_guard<std::mutex> lock(s_disc_mutex); // vk-285-139: the page can change it
       s_disc_set = {disc};
       s_disc_current = disc;

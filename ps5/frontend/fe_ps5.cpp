@@ -21,6 +21,7 @@
 #include "fe_patchdl.h" // 2026-10-08
 #include "fe_vk.h"
 #include "fe_web.h"
+#include "OrbisDiscDrive.h" // USB disc drives
 #include "ps5/coreorbis/orbis-shims/ProsperoNotify.h" // 2026-10-05: the texture packs' popup
 #ifdef PS5SX2_ACHIEVEMENTS
 #include "ps5/coreorbis/orbis-shims/ProsperoAchievements.h"
@@ -31,7 +32,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -39,6 +42,7 @@
 #include <ctime>
 #include <dirent.h>
 #include <mutex>
+#include <pthread.h>
 #include <string>
 #include <sys/stat.h>
 #include <sys/param.h>
@@ -1606,6 +1610,285 @@ int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budge
 	return saved;
 }
 
+namespace
+{
+// The disc drives' entries on the shelf. A PS5 without a disc drive of its own can have a USB DVD or BD drive
+// (OrbisDiscDrive.h). The shelf's list holds an entry for each drive device there could be (/dev/cd0 to /dev/cd7, a drive
+// plugged in later included); an entry joins the shelf when a disc goes into its drive, shows a spinning disc while the
+// disc is read and checked, then the game, and leaves the shelf when the disc comes out or isn't a PS2 game.
+constexpr int kDriveSlots = 8;
+
+TexHttp g_drivehttp("pcsx2-disc-drive", "disc covers"); // the disc drives' cover downloads, on DriveWatch's thread
+
+// The game on a disc that reads: its serial, title (the game database's), region and size, and its badges. False, with
+// `why`, when the disc can't be read or isn't a PS2 game (no serial in a SYSTEM.CNF).
+bool DescribeDrive(const std::string& device, GameInfo& g, const OrbisFrontendPaths& paths, std::string& why)
+{
+	why.clear();
+	if (!ReadDriveDisc(device, g, &why))
+		return false;
+	if (g.serial.empty())
+	{
+		why = "the disc in it isn't a PS2 game";
+		return false;
+	}
+	ApplyGameDbTitle(g);
+	ReadBadges(g, paths.settings_dir, paths.gs_ini, paths.patches_dir);
+	return true;
+}
+
+// What's in each drive, looked at every second on a thread of its own: a drive spinning a disc up holds a read for seconds,
+// so the shelf only asks once a frame what changed (AppConfig::drive_changed). The pictures of an entry are made here: its
+// spine and placeholder, and the game's cover, on disk or downloaded as the shelf downloads covers.
+class DriveWatch
+{
+public:
+	~DriveWatch() { Stop(); }
+
+	void Start(const std::vector<GameInfo>& games, const Fonts* fonts, const OrbisFrontendPaths& paths, const CoverConfig& covers)
+	{
+		for (const GameInfo& g : games)
+			if (IsDrivePath(g.path))
+				m_drives.push_back({g.path, Phase::Empty, 0, false, {}, {}});
+		if (m_drives.empty())
+			return;
+		m_fonts = fonts;
+		m_paths = paths;
+		m_covers = covers;
+		pthread_attr_t attr;
+		pthread_attr_init(&attr);
+		pthread_attr_setstacksize(&attr, 1024 * 1024); // image decoding and font rasterizing, as the cover service's thread
+		m_started = pthread_create(&m_thread, &attr, &DriveWatch::ThreadMain, this) == 0;
+		pthread_attr_destroy(&attr);
+	}
+
+	void Stop()
+	{
+		if (!m_started)
+			return;
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			m_stop = true;
+		}
+		m_cv.notify_all();
+		g_drivehttp.Abort();
+		pthread_join(m_thread, nullptr);
+		g_drivehttp.Term();
+		m_started = false;
+	}
+
+	bool Changed(GameInfo& g, std::vector<CoverImage>& images)
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		for (Drive& d : m_drives)
+			if (d.device == g.path && d.changed)
+			{
+				d.changed = false;
+				g = d.game;
+				images.swap(d.images);
+				d.images.clear();
+				return true;
+			}
+		return false;
+	}
+
+private:
+	enum class Phase
+	{
+		Empty,   // no PS2 disc in it: not on the shelf
+		Reading, // a disc went in and is being read
+		Known,   // the disc was read: a game, or a disc that can't be read (on the shelf), or not a PS2 game (off it)
+	};
+	struct Drive
+	{
+		std::string device;
+		Phase phase;
+		int failures; // reads of a disc that failed in a row
+		bool changed;
+		GameInfo game;
+		std::vector<CoverImage> images;
+	};
+
+	static void* ThreadMain(void* self)
+	{
+		static_cast<DriveWatch*>(self)->Run();
+		return nullptr;
+	}
+
+	// Hands the shelf a new state of drive `i` (main thread's next frame), with its pictures when it's on the shelf.
+	void Publish(size_t i, GameInfo g, bool cover, std::unique_lock<std::mutex>& lock)
+	{
+		std::vector<CoverImage> images;
+		if (!g.absent)
+		{
+			lock.unlock();
+			images.resize(2);
+			CoverService::PaintSpine(*m_fonts, g, images[0]);
+			GameInfo front = g;
+			if (g.reading)
+				front.title.clear(); // the spinning disc goes there
+			CoverService::PaintPlaceholder(*m_fonts, front, images[1]);
+			images[0].kind = CoverImage::Spine;
+			images[1].kind = CoverImage::Placeholder;
+			CoverImage art;
+			if (cover && FindCover(g, art))
+				images.push_back(std::move(art));
+			lock.lock();
+		}
+		const std::string what = g.absent ? (g.damaged.empty() ? "no PS2 disc" : g.damaged) : g.reading ? "reading the disc" :
+			!g.damaged.empty() ? g.damaged : g.title + " (" + g.serial + ")";
+		std::printf("[frontend] disc drive %s: %s\n", g.path.c_str(), what.c_str());
+		std::fflush(stdout);
+		orbis_event_log(("shelf: disc drive " + g.path + ": " + what).c_str());
+		Drive& d = m_drives[i];
+		d.game = std::move(g);
+		d.images = std::move(images);
+		d.changed = true;
+	}
+
+	// The game's cover: a file on disk (CoverFinder: the user's, a drive's, the cache), else downloaded into the cache as the
+	// cover service does (<serial>.jpg, and <serial>.missing after a 404 so it isn't asked again for two weeks).
+	bool FindCover(const GameInfo& g, CoverImage& out)
+	{
+		CoverFinder finder(m_covers.manual_dir, m_covers.cache_dir);
+		std::vector<uint8_t> bytes;
+		auto read = [&bytes](const std::string& path) {
+			bytes.clear();
+			FILE* f = std::fopen(path.c_str(), "rb");
+			if (!f)
+				return false;
+			uint8_t buf[65536];
+			size_t n;
+			while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0 && bytes.size() < (32u << 20))
+				bytes.insert(bytes.end(), buf, buf + n);
+			std::fclose(f);
+			return true;
+		};
+		for (const CoverFile& f : finder.Find(g))
+			if (read(f.path) && CoverService::Decode(bytes, 1024, out))
+			{
+				out.kind = CoverImage::Cover;
+				out.source = f.source;
+				return true;
+			}
+		const std::string missing = m_covers.cache_dir + "/" + g.serial + ".missing";
+		struct stat st;
+		if (!m_covers.allow_download || m_covers.url_template.empty() ||
+			(stat(missing.c_str(), &st) == 0 && std::time(nullptr) - st.st_mtime < 14 * 24 * 3600))
+			return false;
+		std::string url = m_covers.url_template;
+		if (const size_t at = url.find("${serial}"); at != std::string::npos)
+			url.replace(at, 9, g.serial);
+		bytes.clear();
+		const int status = g_drivehttp.Get(url, false, 0, 0, [&bytes](const void* d, size_t n) {
+			if (bytes.size() + n > (16u << 20))
+				return false;
+			bytes.insert(bytes.end(), static_cast<const uint8_t*>(d), static_cast<const uint8_t*>(d) + n);
+			return true;
+		});
+		std::printf("[frontend] disc drive: cover %s -> %d\n", g.serial.c_str(), status);
+		std::fflush(stdout);
+		auto save = [](const std::string& path, const void* data, size_t size) {
+			const std::string tmp = path + ".tmp";
+			FILE* f = std::fopen(tmp.c_str(), "wb");
+			if (!f)
+				return;
+			const bool ok = std::fwrite(data, 1, size, f) == size;
+			std::fclose(f);
+			if (!ok || std::rename(tmp.c_str(), path.c_str()) != 0)
+				std::remove(tmp.c_str());
+		};
+		if (status == 200 && CoverService::Decode(bytes, 1024, out))
+		{
+			save(m_covers.cache_dir + "/" + g.serial + ".jpg", bytes.data(), bytes.size());
+			out.kind = CoverImage::Cover;
+			out.source = "download";
+			return true;
+		}
+		if (status == 404)
+			save(missing, "404\n", 4);
+		return false;
+	}
+
+	void Run()
+	{
+		std::unique_lock<std::mutex> lock(m_mutex);
+		bool first = true;
+		while (first || !m_cv.wait_for(lock, std::chrono::seconds(1), [this] { return m_stop; }))
+		{
+			first = false;
+			for (size_t i = 0; i < m_drives.size() && !m_stop; i++)
+			{
+				const std::string device = m_drives[i].device;
+				const Phase phase = m_drives[i].phase;
+				lock.unlock();
+				bool changed = false;
+				const OrbisDiscDrive::State state = OrbisDiscDrive::Probe(device, &changed);
+				lock.lock();
+				Drive& d = m_drives[i];
+				if (state == OrbisDiscDrive::State::NoDrive || state == OrbisDiscDrive::State::NoDisc)
+				{
+					if (phase != Phase::Empty)
+						Publish(i, EmptyDrive(device), false, lock);
+					d.phase = Phase::Empty;
+					d.failures = 0;
+					continue;
+				}
+				if (state == OrbisDiscDrive::State::SpinningUp || phase != Phase::Known || changed)
+				{
+					if (phase != Phase::Reading)
+						Publish(i, ReadingDrive(device), false, lock);
+					d.phase = Phase::Reading;
+				}
+				if (state != OrbisDiscDrive::State::Ready || d.phase != Phase::Reading)
+					continue;
+				// Ready, and not read yet: what's on it.
+				lock.unlock();
+				GameInfo g;
+				std::string why;
+				const bool game = DescribeDrive(device, g, m_paths, why);
+				lock.lock();
+				Drive& now = m_drives[i];
+				if (game)
+				{
+					now.phase = Phase::Known;
+					now.failures = 0;
+					Publish(i, std::move(g), true, lock);
+				}
+				else if (why.find("isn't a PS2") != std::string::npos)
+				{
+					// A film, music or a PC disc: it stays off the shelf, which says why once.
+					now.phase = Phase::Known;
+					GameInfo off = EmptyDrive(device);
+					off.damaged = why;
+					Publish(i, std::move(off), false, lock);
+				}
+				else if (++now.failures >= 3)
+				{
+					// A disc that keeps failing to read (scratched, dirty): on the shelf, saying so.
+					now.phase = Phase::Known;
+					GameInfo bad = ReadingDrive(device);
+					bad.reading = false;
+					bad.title = "Disc drive";
+					bad.damaged = why.empty() ? "the disc can't be read" : why;
+					Publish(i, std::move(bad), false, lock);
+				}
+			}
+		}
+	}
+
+	std::vector<Drive> m_drives;
+	const Fonts* m_fonts = nullptr;
+	OrbisFrontendPaths m_paths;
+	CoverConfig m_covers;
+	pthread_t m_thread{};
+	bool m_started = false;
+	bool m_stop = false;
+	std::mutex m_mutex;
+	std::condition_variable m_cv;
+};
+} // namespace
+
 std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* build_tag, bool* ran)
 {
 	*ran = false;
@@ -1646,6 +1929,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	std::printf("[frontend] %zu disc image(s), %d on USB, scanned in %.0f ms\n", games.size(), on_usb, (Now() - t0) * 1000.0);
 	std::fflush(stdout);
 	WriteUsbList(paths.usb_list, games);
+	// The disc drives' entries, at the front of the shelf: off it until DriveWatch finds a disc in their drive.
+	for (int i = kDriveSlots - 1; i >= 0; i--)
+		games.insert(games.begin(), EmptyDrive("/dev/cd" + std::to_string(i)));
 	// Keep the shelf available without games too, for settings and account sign-in.
 	const std::string last = ReadLastGame(paths.top_dir);
 	int preselect = 0;
@@ -1822,6 +2108,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.folder_places.push_back({"Extended storage", "/mnt/ext0"});
 	acfg.folder_places.push_back({"Extended storage 2", "/mnt/ext1"});
 	acfg.folder_places.push_back({"NFS shares", "/nfs"}); // OrbisNfs.cpp: a folder while shares are set
+	DriveWatch drive_watch; // the disc drives' entries follow the discs put in and taken out
+	drive_watch.Start(games, fonts, paths, cc);
+	acfg.drive_changed = [&drive_watch](GameInfo& g, std::vector<CoverImage>& images) { return drive_watch.Changed(g, images); };
 	acfg.bios_present = paths.bios_check; // vk-285-134
 	acfg.bios_problem = paths.bios_problem;
 	acfg.bios_dir = paths.bios_dir;
@@ -1948,6 +2237,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	const bool system_menu = app.SystemMenuChosen(); // 2026-10-08
 	renderer.WaitIdle();
 	app.Shutdown();
+	drive_watch.Stop();
 	// The worker may be inside a download: stop it from starting another, fail the one in flight,
 	// give it a moment, then leave it behind if need be.
 	covers->RequestStop();

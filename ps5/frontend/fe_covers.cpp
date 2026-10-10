@@ -738,11 +738,17 @@ int CoverService::Prefetch(const std::vector<GameInfo>& games, const std::vector
 void CoverService::Run()
 {
 	const size_t n = m_games.size();
+	// A disc drive's entries get their pictures from the drive's watcher (fe_ps5.cpp DriveWatch), none from here.
+	std::vector<bool> skip(n, false);
+	for (size_t i = 0; i < n; i++)
+		skip[i] = IsDrivePath(m_games[i].path);
 	// Spines and placeholders first: they make every box presentable at once.
-	std::vector<bool> done(n, false);
+	std::vector<bool> done = skip;
 	for (size_t k = 0; k < n && !m_stop; k++)
 	{
 		const int i = NextGame(done);
+		if (i < 0)
+			break;
 		done[static_cast<size_t>(i)] = true;
 		CoverImage spine, hold;
 		PaintSpine(*m_fonts, m_games[static_cast<size_t>(i)], spine);
@@ -765,10 +771,12 @@ void CoverService::Run()
 	int found = 0, wanted = 0;
 	std::string sources; // " (cache 11, beside 1)" for the log
 	std::vector<std::pair<std::string, int>> by_source;
-	done.assign(n, false);
+	done = skip;
 	for (size_t k = 0; k < n && !m_stop; k++)
 	{
 		const int i = NextGame(done);
+		if (i < 0)
+			break;
 		done[static_cast<size_t>(i)] = true;
 		CoverImage cover;
 		bool upgrade = true;

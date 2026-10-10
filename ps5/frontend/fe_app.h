@@ -58,6 +58,10 @@ struct AppConfig
 	// vk-285-135 (AI-assisted): the sheet for all games' Folders rows and their picker start from these places (label, path),
 	// those that are folders when it opens (the drives come and go); empty: no Folders rows.
 	std::vector<std::pair<std::string, std::string>> folder_places;
+	// A disc drive's entry on the shelf (fe_games.h IsDrivePath): asked once a frame for each such game, it says
+	// whether the disc in the drive changed since it last answered, with `g` described again and its pictures (spine,
+	// placeholder, and the cover when one is on disk) in `images`. Null: the entries stay as Init got them.
+	std::function<bool(GameInfo& g, std::vector<CoverImage>& images)> drive_changed;
 };
 
 class App
@@ -132,6 +136,10 @@ private:
 	std::string TexturePackHelp(const TexturePackStatus& s, int pick, const std::string& serial) const;
 	void BuildTexturePackActivity(std::vector<UiVertex>& ui, float x, float y, float k, uint32_t accent);
 	void PollCovers();
+	// A picture for a slot (PollCovers' images and the disc drives'), and the disc drives' changes (drive_changed).
+	void ApplyImage(Slot& s, const GameInfo& g, CoverImage& img);
+	void PollDrives();
+	int m_disc_selected = -1, m_before_disc = -1; // the disc drive selected when its disc went in, and the game before it
 	// vk-285-135 (AI-assisted; swordpdf: "i also want to pick a folder though the browser in the shelf"): the folder picker of the
 	// sheet's Folders rows (game folders, the BIOS folder) and the NFS share list, in the sheet's place while it is open.
 	struct PickerItem

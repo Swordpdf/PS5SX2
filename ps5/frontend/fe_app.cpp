@@ -63,6 +63,52 @@ void FadeRange(std::vector<UiVertex>& ui, size_t begin, size_t end, float f)
 	}
 }
 
+// A spinning disc on the front of a box (model `model`): a disc drive's box while its disc is read. Drawn as UI triangles
+// whose corners are the box's front points projected, so it lies on the box at any angle; `alpha` fades it on the boxes
+// beside the selected one.
+void AddDiscSpinner(std::vector<UiVertex>& ui, const Mat4& view_proj, const Mat4& model, float t, float alpha, float W, float H)
+{
+	if (alpha <= 0.01f)
+		return;
+	constexpr int kSegments = 72;
+	constexpr float kPi = 3.14159265f;
+	const float cx = 0.0f, cy = 0.05f, z = kBoxHalfD + 0.004f;
+	auto put = [&](float r, float a, uint32_t color) {
+		const Vec4 w = model * Vec4(cx + r * std::cos(a), cy + r * std::sin(a), z, 1.0f);
+		const Vec4 c = view_proj * w;
+		UiVertex v = {((c.x / c.w) * 0.5f + 0.5f) * W, ((c.y / c.w) * 0.5f + 0.5f) * H, 0, 0, color, 1e5f, 1e5f, 0, 1};
+		return v;
+	};
+	auto ring = [&](float r0, float r1, float from, float to, const auto& colour) {
+		const int n = std::max(2, static_cast<int>(kSegments * (to - from) / (2 * kPi)));
+		for (int k = 0; k < n; k++)
+		{
+			const float a0 = from + (to - from) * k / n, a1 = from + (to - from) * (k + 1) / n;
+			const UiVertex p0 = put(r0, a0, colour(a0, 0.0f)), p1 = put(r1, a0, colour(a0, 1.0f));
+			const UiVertex p2 = put(r1, a1, colour(a1, 1.0f)), p3 = put(r0, a1, colour(a1, 0.0f));
+			ui.insert(ui.end(), {p0, p1, p2, p0, p2, p3});
+		}
+	};
+	const float spin = t * 5.0f;
+	const auto a8 = [&](float a) { return static_cast<uint32_t>(Clamp(a, 0.0f, 1.0f) * 255.0f + 0.5f) << 24; };
+	// The disc: silver with two glints that turn with it and a faint rainbow, the clear hub, and the hole.
+	ring(0.13f, 0.40f, 0.0f, 2 * kPi, [&](float a, float outer) {
+		const float g1 = std::pow(std::max(0.0f, std::cos(a - spin)), 10.0f), g2 = std::pow(std::max(0.0f, std::cos(a - spin - kPi)), 10.0f);
+		const float glint = 0.55f * (g1 + g2) * (0.6f + 0.4f * outer);
+		const float hue = a * 2.0f - spin;
+		const float r = 0.62f + 0.10f * std::sin(hue) + glint, g = 0.64f + 0.10f * std::sin(hue + 2.1f) + glint,
+					bl = 0.72f + 0.10f * std::sin(hue + 4.2f) + glint;
+		return a8(alpha * 0.92f) | Rgba(Clamp(r, 0.0f, 1.0f), Clamp(g, 0.0f, 1.0f), Clamp(bl, 0.0f, 1.0f), 0) ;
+	});
+	ring(0.055f, 0.13f, 0.0f, 2 * kPi, [&](float, float) { return a8(alpha * 0.55f) | Rgba(0.85f, 0.88f, 0.95f, 0); });
+	// The loading arc around it, a quarter turn long, going round faster than the disc.
+	const float head = t * 3.2f;
+	ring(0.44f, 0.465f, head, head + kPi * 0.6f, [&](float a, float) {
+		const float tail = (a - head) / (kPi * 0.6f);
+		return a8(alpha * (0.15f + 0.85f * tail)) | Rgba(1.0f, 1.0f, 1.0f, 0);
+	});
+}
+
 // Screen position (0..1) of a world point.
 Vec2 Project(const Mat4& view_proj, const Vec3& p)
 {
@@ -228,7 +274,7 @@ bool App::ApplyHidden(int keep)
 	int at = -1, after = -1, before = -1;
 	for (Entry& e : all)
 	{
-		if (e.game.hidden && !m_show_hidden)
+		if ((e.game.hidden && !m_show_hidden) || e.game.absent) // a disc drive with no PS2 disc in it isn't shown at all
 		{
 			m_shelved.push_back({std::move(e.game), e.slot, e.index});
 			continue;
@@ -261,13 +307,105 @@ void App::Sound(Sfx sfx, float pan)
 		m_cfg.sound->Play(sfx, pan);
 }
 
+void App::ApplyImage(Slot& s, const GameInfo& g, CoverImage& img)
+{
+	Texture* t = m_renderer->CreateTexture(static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height),
+		VK_FORMAT_R8G8B8A8_UNORM, img.rgba.data());
+	if (!t)
+		return;
+	Texture** dst = img.kind == CoverImage::Spine ? &s.spine : img.kind == CoverImage::Placeholder ? &s.placeholder : &s.cover;
+	m_renderer->DestroyTexture(*dst);
+	*dst = t;
+	if (img.kind == CoverImage::Cover)
+	{
+		s.has_cover = true;
+		if (img.has_glow)
+		{
+			s.glow[0] = img.glow[0];
+			s.glow[1] = img.glow[1];
+			s.glow[2] = img.glow[2];
+			s.has_glow = true;
+		}
+		std::printf("[frontend] cover for %s (%s, %dx%d)\n", g.title.c_str(), img.source, img.width, img.height);
+	}
+	s.dirty = true;
+}
+
+// A disc drive's entry follows the disc in it (AppConfig::drive_changed): it joins the shelf when a disc goes in, shows a
+// spinning disc while the disc is read, then the game, and leaves the shelf when the disc comes out. Its pictures all come
+// from drive_changed (PollCovers leaves the cover service's alone).
+void App::PollDrives()
+{
+	if (!m_cfg.drive_changed || m_launching)
+		return;
+	int appeared = -1;
+	bool shelf_changed = false;
+	auto poll = [&](GameInfo& g, Slot& s, int index) {
+		if (!IsDrivePath(g.path))
+			return;
+		std::vector<CoverImage> images;
+		const bool was_absent = g.absent;
+		if (!m_cfg.drive_changed(g, images))
+			return;
+		if (!images.empty())
+		{
+			m_renderer->DestroyTexture(s.cover);
+			s.cover = nullptr;
+			s.has_cover = false;
+			s.has_glow = false;
+			s.cover_mix = 0;
+			for (CoverImage& img : images)
+				ApplyImage(s, g, img);
+		}
+		s.dirty = true;
+		if (g.absent && !g.damaged.empty()) // a disc that went in but isn't a PS2 game: said once, above the title
+		{
+			m_note_text = "The disc drive: " + g.damaged + ".";
+			m_note_time = m_time;
+		}
+		if (was_absent != g.absent)
+		{
+			shelf_changed = true;
+			if (!g.absent)
+				appeared = index;
+		}
+		std::printf("[frontend] disc drive %s: %s\n", g.path.c_str(),
+			g.absent ? "no PS2 disc" : g.reading ? "reading the disc" : !g.damaged.empty() ? g.damaged.c_str() :
+			(g.title + (g.serial.empty() ? "" : " (" + g.serial + ")")).c_str());
+		std::fflush(stdout);
+	};
+	for (size_t i = 0; i < m_games.size(); i++)
+		poll(m_games[i], m_slots[i], m_index[i]);
+	for (Shelved& h : m_shelved)
+		poll(h.game, h.slot, h.index);
+	if (!shelf_changed)
+		return;
+	// A disc that went in is selected, as a PS2 starts the disc it's given, unless a panel is open over the shelf; the
+	// game selected stays selected otherwise (or the next one, when its disc came out).
+	if (m_sheet_open && !m_games.empty() && m_games[static_cast<size_t>(m_selected)].absent)
+		CloseSheet(); // its disc came out
+	const bool busy = m_sheet_open || m_picker.open || m_account.open || m_qr_big;
+	const int current = m_games.empty() ? (m_shelved.empty() ? 0 : m_shelved.front().index) : m_index[static_cast<size_t>(m_selected)];
+	int keep = current;
+	if (appeared >= 0 && !busy)
+	{
+		m_before_disc = current; // where the selection goes back to if this disc comes out before another game is picked
+		m_disc_selected = appeared;
+		keep = appeared;
+	}
+	else if (current == m_disc_selected && m_before_disc >= 0 && PositionOf(current) >= 0 &&
+			 m_games[static_cast<size_t>(PositionOf(current))].absent)
+		keep = m_before_disc; // the disc selected came out: back to the game selected before it went in
+	ApplyHidden(keep);
+	if (appeared >= 0 && keep == appeared)
+		Sound(Sfx::Move, 0.0f);
+}
+
 void App::PollCovers()
 {
-	if (!m_covers)
-		return;
 	CoverImage img;
 	int budget = 4; // textures a frame
-	while (budget-- > 0 && m_covers->Poll(img))
+	while (m_covers && budget-- > 0 && m_covers->Poll(img))
 	{
 		// vk-285-137: img.game is an index in Init's list; the game may be off the shelf (its slot keeps the covers).
 		Slot* slot = nullptr;
@@ -285,30 +423,11 @@ void App::PollCovers()
 					game = &h.game;
 					break;
 				}
-		if (!slot)
+		if (!slot || IsDrivePath(game->path)) // a disc drive's pictures come from PollDrives
 			continue;
-		Slot& s = *slot;
-		Texture* t = m_renderer->CreateTexture(static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height),
-			VK_FORMAT_R8G8B8A8_UNORM, img.rgba.data());
-		if (!t)
-			continue;
-		Texture** dst = img.kind == CoverImage::Spine ? &s.spine : img.kind == CoverImage::Placeholder ? &s.placeholder : &s.cover;
-		m_renderer->DestroyTexture(*dst);
-		*dst = t;
-		if (img.kind == CoverImage::Cover)
-		{
-			s.has_cover = true;
-			if (img.has_glow)
-			{
-				s.glow[0] = img.glow[0];
-				s.glow[1] = img.glow[1];
-				s.glow[2] = img.glow[2];
-				s.has_glow = true;
-			}
-			std::printf("[frontend] cover for %s (%s, %dx%d)\n", game->title.c_str(), img.source, img.width, img.height);
-		}
-		s.dirty = true;
+		ApplyImage(*slot, *game, img);
 	}
+	PollDrives();
 	for (Slot& s : m_slots)
 		if (s.dirty && s.spine && s.placeholder)
 		{
@@ -426,10 +545,19 @@ void App::Update(double dt, const Input& in)
 			if (((in.cross && !m_prev.cross) || (in.options && !m_prev.options)) && !m_games.empty() && !m_qr_big)
 			{
 				const GameInfo& picked = m_games[static_cast<size_t>(m_selected)];
-				if (!picked.damaged.empty()) // vk-285-134: an image that can't be read stays on the shelf
+				if (picked.reading) // a disc still being read
 				{
-					m_refused_text = "This image can't be read (" + picked.damaged +
-					                 "): copy it again, or make the CHD again with chdman from a good copy.";
+					m_refused_text = "The disc is still being read.";
+					m_refused_time = m_time;
+					Sound(Sfx::Edge, 0.0f);
+				}
+				else if (!picked.damaged.empty()) // vk-285-134: an image that can't be read stays on the shelf
+				{
+					if (IsDrivePath(picked.path)) // a disc that went in but can't be read
+						m_refused_text = "The disc in the drive: " + picked.damaged + ".";
+					else
+						m_refused_text = "This image can't be read (" + picked.damaged +
+						                 "): copy it again, or make the CHD again with chdman from a good copy.";
 					m_refused_time = m_time;
 					std::printf("[frontend] %s can't be read (%s): not started\n", picked.file.c_str(), picked.damaged.c_str());
 					std::fflush(stdout);
@@ -599,6 +727,8 @@ void App::Build(FrameDesc& f, const std::string& clock)
 			b.sheen_strength = 0.16f * (1.0f - Smoothstep(0.6f, 1.2f, since));
 		}
 		f.boxes.push_back(b);
+		if (m_games[static_cast<size_t>(i)].reading)
+			AddDiscSpinner(f.ui, f.view_proj, b.model, t, std::max(0.0f, 1.0f - std::fabs(d) * 1.6f) * b.brightness, W, H);
 		BoxDraw r = b;
 		r.model = Mat4::Translate(0, 2 * kFloorY, 0) * Mat4::Scale(1, -1, 1) * b.model;
 		r.sheen_strength = 0;
@@ -724,9 +854,10 @@ void App::Build(FrameDesc& f, const std::string& clock)
 		};
 		add(g.serial);
 		add(Region(g.region)); // vk-285-110: the region names in the PS5's language
-		add(SizeText(g.bytes));
+		if (!g.reading) // a disc being read has no size yet
+			add(SizeText(g.bytes));
 		if (!g.damaged.empty())
-			add("can't be read"); // vk-285-134
+			add(IsDrivePath(g.path) ? g.damaged : "can't be read"); // vk-285-134
 		if (g.hidden)
 			add("hidden"); // vk-285-137
 		const float info_px = 44.0f * k, badge_px = 36.0f * k;

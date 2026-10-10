@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -134,6 +135,34 @@ private:
 	int m_fd;
 	uint32_t m_block = 2048;
 	uint32_t m_offset = 0;
+};
+
+// A disc in a disc drive: its device ("/dev/cd1") reads whole 2048-byte sectors only, at a sector's start
+// (the console's cd(4) refuses anything else with EINVAL), so a read goes through a sector-sized buffer.
+class DriveSectors final : public SectorReader
+{
+public:
+	explicit DriveSectors(int fd)
+		: m_fd(fd)
+	{
+	}
+	bool Read(uint32_t lba, void* buf, size_t len) override
+	{
+		uint8_t* p = static_cast<uint8_t*>(buf);
+		const size_t whole = len / 2048 * 2048;
+		if (whole && !ReadAt(m_fd, static_cast<uint64_t>(lba) * 2048, p, whole))
+			return false;
+		if (whole == len)
+			return true;
+		uint8_t sector[2048];
+		if (!ReadAt(m_fd, static_cast<uint64_t>(lba + whole / 2048) * 2048, sector, sizeof(sector)))
+			return false;
+		std::memcpy(p + whole, sector, len - whole);
+		return true;
+	}
+
+private:
+	int m_fd;
 };
 
 // vk-285-108: a CHD through libchdr. A DVD image (chdman createdvd) holds 2048-byte units; a CD image
@@ -560,6 +589,89 @@ bool IsElfName(const char* name)
 	return HasExtension(name, ".elf"); // 2026-10-08: a PS2 executable (homebrew, a patched game's executable)
 }
 
+bool IsDrivePath(const std::string& path)
+{
+	return path.compare(0, 7, "/dev/cd") == 0;
+}
+
+GameInfo EmptyDrive(const std::string& device)
+{
+	GameInfo g;
+	g.path = device;
+	g.file = device.substr(device.rfind('/') + 1);
+	g.stem = "Disc drive " + g.file;
+	g.title = "Disc drive";
+	g.absent = true;
+	return g;
+}
+
+GameInfo ReadingDrive(const std::string& device)
+{
+	GameInfo g = EmptyDrive(device);
+	g.title = "Reading the disc";
+	g.absent = false;
+	g.reading = true;
+	return g;
+}
+
+std::string RegionFromSerial(const std::string& serial)
+{
+	static const char* const kPrefixes[][2] = {{"SLUS", "USA"}, {"SCUS", "USA"}, {"PBPX", "Japan"}, {"SLES", "Europe"},
+		{"SCES", "Europe"}, {"SCED", "Europe"}, {"SLPS", "Japan"}, {"SLPM", "Japan"}, {"SCPS", "Japan"}, {"SCPM", "Japan"},
+		{"SLKA", "Korea"}, {"SCKA", "Korea"}, {"SCAJ", "Asia"}, {"SLAJ", "Asia"}};
+	for (const auto& p : kPrefixes)
+		if (serial.compare(0, 4, p[0]) == 0)
+			return p[1];
+	return {};
+}
+
+bool ReadDriveDisc(const std::string& device, GameInfo& g, std::string* why)
+{
+	g = GameInfo();
+	g.path = device;
+	g.file = device.substr(device.rfind('/') + 1);
+	g.stem = "Disc drive " + g.file;
+	g.title = "Disc drive";
+	const int fd = open(device.c_str(), O_RDONLY);
+	if (fd < 0)
+	{
+		if (why)
+			*why = errno == ENXIO || errno == EIO || errno == ENOENT ? "no disc in the drive" : std::string("the drive doesn't open: ") + std::strerror(errno);
+		return false;
+	}
+	DriveSectors drive(fd);
+	uint8_t pvd[2048];
+	if (!drive.Read(16, pvd, sizeof(pvd)))
+	{
+		const int e = errno;
+		close(fd);
+		if (why)
+			*why = e == ENXIO || e == EIO || e == 0 ? "no disc in the drive (or it's still spinning up)" : std::string("the disc can't be read: ") + std::strerror(e);
+		return false;
+	}
+	if (pvd[0] != 1 || std::memcmp(pvd + 1, "CD001", 5) != 0)
+	{
+		close(fd);
+		if (why)
+			*why = "the disc in the drive isn't a PS2 disc";
+		return false;
+	}
+	g.bytes = static_cast<uint64_t>(Le32(pvd + 80)) * 2048; // the volume's size
+	const std::string volume = Trim(std::string(reinterpret_cast<const char*>(pvd + 40), 32));
+	g.serial = SerialFromDisc(drive);
+	close(fd);
+	if (!g.serial.empty())
+	{
+		// Its settings file: named after the serial, so each game in the drive keeps its own (main-boot.cpp names it alike).
+		g.stem = g.serial;
+		g.title = "PS2 disc"; // the info row shows the serial; ApplyGameDbTitle gives the game's name where the database is
+		g.region = RegionFromSerial(g.serial);
+	}
+	if (!volume.empty())
+		g.title = volume;
+	return true;
+}
+
 void SetSerialCacheFile(const std::string& path)
 {
 	std::lock_guard<std::mutex> lock(s_serial_mutex);
@@ -577,6 +689,13 @@ std::string ReadSerial(const std::string& image_path)
 	const int fd = open(image_path.c_str(), O_RDONLY);
 	if (fd < 0)
 		return {};
+	if (IsDrivePath(image_path))
+	{
+		DriveSectors drive(fd);
+		const std::string serial = SerialFromDisc(drive);
+		close(fd);
+		return serial;
+	}
 	IsoSectors disc(fd);
 	disc.Detect(); // 2026-10-08: a raw .bin/.img's sector layout
 	const std::string serial = SerialFromDisc(disc);
@@ -690,6 +809,13 @@ bool ReadAchievementExecutable(const std::string& path, std::string& name, std::
 	const int fd = open(path.c_str(), O_RDONLY);
 	if (fd < 0)
 		return false;
+	if (IsDrivePath(path))
+	{
+		DriveSectors drive(fd);
+		const bool ok = read(drive);
+		close(fd);
+		return ok;
+	}
 	IsoSectors disc(fd);
 	disc.Detect(); // 2026-10-08: a raw .bin/.img's sector layout
 	const bool ok = read(disc);
@@ -1219,6 +1345,8 @@ int DiscNumber(const std::string& name, std::string* rest)
 
 std::vector<std::string> DiscSet(const std::string& path)
 {
+	if (IsDrivePath(path))
+		return {path}; // a disc drive: the disc in it (another goes in by hand)
 	const size_t slash = path.rfind('/');
 	const std::string dir = slash == std::string::npos ? std::string(".") : path.substr(0, slash);
 	const std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
