@@ -409,18 +409,67 @@ namespace
 		}
 		else
 			Log("%s: open: errno %d", p0, errno);
-		// The device's endpoint nodes. One with endpoint numbers above 7 or more than 6 of them is an internal module (the
-		// wireless one): never read.
+		// vk-285-161 (AI-assisted): when the device descriptor answered (it does on 12.40), go by it instead of guessing. The
+		// GH2 freeze log (live-18, 12.40) had ugen0.2 = 1286:2059, class 0xE0/01/01: the console's own Bluetooth radio. Its
+		// endpoints are 1-6 on that firmware, so the endpoint-count test below let it through, and /dev/usb/0.2.4 (HCI ACL
+		// in) and 0.2.5 (HCI events) were read: the wireless DualSense's input reports (a1 31) and the stack's
+		// Number-of-Completed-Packets events were taken from the system's Bluetooth stack, and the DualSense froze until
+		// rest mode reset the radio. Needs proper testing on 13.60, where these ioctls may not answer.
+		uint8_t devd[18] = {};
+		bool have_devd = false;
+		if (r_dd == 0)
+		{
+			memcpy(devd, &dd, std::min(sizeof(devd), sizeof(dd)));
+			have_devd = true;
+		}
+		else if (r_req && actual >= sizeof(devd))
+		{
+			memcpy(devd, raw, sizeof(devd));
+			have_devd = true;
+		}
+		int only_ep = -1; // >0: the descriptor names the gamepad's interrupt IN endpoint; only that node is read
+		if (have_devd)
+		{
+			const uint8_t cls = devd[4];
+			const uint16_t vid = static_cast<uint16_t>(devd[8] | (devd[9] << 8));
+			const uint16_t pid = static_cast<uint16_t>(devd[10] | (devd[11] << 8));
+			// 0xE0 wireless (Bluetooth / Wi-Fi radio), 0x09 hub, 0x08 storage, 0x01 audio, 0x0E video, and Sony's own pads.
+			if (cls == 0xE0 || cls == 0x09 || cls == 0x08 || cls == 0x01 || cls == 0x0E || SystemOwned(vid, pid))
+			{
+				Log("/dev/%s: %04x:%04x, device class %#x: not a gamepad (a radio, hub, drive, audio/video device or the "
+					"system's controller): left alone", node.c_str(), vid, pid, cls);
+				return;
+			}
+			// Its configuration through the same control request: only a HID gamepad / XInput interface's IN endpoint is
+			// read (not an audio device's stream, which one 32-byte packet of made "a PS3 pad" in the same log).
+			uint8_t cfg[1024] = {};
+			uint16_t cfg_len = 0;
+			if (UgenRequest(fd, 0x80, 0x06, 0x0200, 0, cfg, sizeof(cfg), &cfg_len) && cfg_len >= 9)
+			{
+				const Target t = FindTarget(cfg, std::min<size_t>(cfg_len, sizeof(cfg)));
+				if (!t.ok || (t.ep_in & 0x0F) == 0)
+				{
+					Log("/dev/%s: %04x:%04x, configuration %u bytes: no gamepad interface: left alone", node.c_str(), vid, pid,
+						cfg_len);
+					return;
+				}
+				only_ep = t.ep_in & 0x0F;
+				Log("/dev/%s: %04x:%04x: gamepad interface %u, endpoint %#x", node.c_str(), vid, pid, t.iface, t.ep_in);
+			}
+		}
+		// The device's endpoint nodes. One with endpoint numbers above 7 or 6 or more of them is taken for an internal
+		// module (the wireless one: 0.2.{1,2,3,10..15} on 13.60, 0.2.{1..6} on 12.40): never read.
 		char prefix[24];
 		snprintf(prefix, sizeof(prefix), "%u.%u.", bus, addr);
 		std::vector<unsigned> eps;
 		for (const std::string& n : s_usb_nodes)
 		{
 			unsigned e = 0;
-			if (n.rfind(prefix, 0) == 0 && sscanf(n.c_str() + strlen(prefix), "%u", &e) == 1 && e > 0)
+			if (n.rfind(prefix, 0) == 0 && sscanf(n.c_str() + strlen(prefix), "%u", &e) == 1 && e > 0 &&
+				(only_ep < 0 || e == static_cast<unsigned>(only_ep)))
 				eps.push_back(e);
 		}
-		const bool internal = eps.size() > 6 || std::any_of(eps.begin(), eps.end(), [](unsigned e) { return e > 7; });
+		const bool internal = only_ep < 0 && (eps.size() >= 6 || std::any_of(eps.begin(), eps.end(), [](unsigned e) { return e > 7; }));
 		if (internal)
 		{
 			Log("/dev/%s: %zu endpoint nodes, numbers above 7: an internal device, not read", node.c_str(), eps.size());
