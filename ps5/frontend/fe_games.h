@@ -24,6 +24,7 @@ struct GameInfo
 	std::string extra;  // the other bracketed parts of the name, e.g. "En,Ja"
 	std::string serial; // "SLUS-21351" (empty when the disc could not be read)
 	uint64_t bytes = 0;
+	int64_t mtime = 0; // 2.02: the file's st_mtime (ScanGames), for the serial cache's key without another stat
 	std::vector<std::string> badges; // "6x", "16:9", "60 FPS"
 	// vk-285-134 (AI-assisted): why the image can't be read ("invalid data": a CHD libchdr can't open, damaged or cut short;
 	// build 130's logs: 10 such starts on 4 consoles); empty when it reads. The shelf marks it and won't start it.
@@ -46,6 +47,10 @@ std::vector<GameInfo> ScanGames(const std::vector<std::string>& dirs);
 // (zlib, LZ4). A .chd is read through libchdr
 // (a DVD's 2048-byte units or a CD's raw frames); one that needs a parent CHD reads as empty.
 std::string ReadSerial(const std::string& image_path);
+// 2.02 (AI-assisted): the same for a game ScanGames listed, keyed by the size and mtime it already has (no second stat:
+// each one is a network round trip on an NFS share). Every format's serial is now kept in the serial cache file (2.01
+// read every ISO/BIN at every start: 2,287 games on an NFS share took 104 s before the shelf showed).
+std::string ReadSerial(const GameInfo& g);
 
 // Read the BOOT2 executable for the RA hash. Supports the shelf image formats. (AI-assisted)
 bool ReadAchievementExecutable(const std::string& path, std::string& name, std::vector<uint8_t>& bytes);

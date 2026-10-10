@@ -1580,7 +1580,7 @@ int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budge
 	dirs.insert(dirs.end(), paths.usb_dirs.begin(), paths.usb_dirs.end()); // test build 1: USB drives, when visible here
 	std::vector<GameInfo> games = ScanGames(dirs);
 	for (GameInfo& g : games)
-		g.serial = ReadSerial(g.path);
+		g.serial = ReadSerial(g); // 2.02: through the serial cache, keyed by what ScanGames already has
 	// Test build 1: the USB games seen after the jailbreak last time (the drives may not be visible here).
 	const int listed = AddUsbListGames(paths.usb_list, games);
 	CoverConfig cc;
@@ -1656,7 +1656,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	int on_usb = 0, on_nfs = 0;
 	for (GameInfo& g : games)
 	{
-		g.serial = ReadSerial(g.path);
+		g.serial = ReadSerial(g); // 2.02: through the serial cache, keyed by what ScanGames already has
 		// vk-285-113: a CHD (or an ISO) named after its file shows the game's name from the game database.
 		const std::string file_title = g.title;
 		const bool renamed = ApplyGameDbTitle(g);

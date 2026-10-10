@@ -1,15 +1,19 @@
 // PS5SX2 cooperative privilege elevation.
 // SPDX-License-Identifier: GPL-3.0-or-later
-// live-15: the etaHEN marker broker is replaced by the Lapy owned-root daemon
-// protocol (see ProsperoHenJailbreak.cpp). The old hen_jailbreak::Broker and the
-// /download0/etahen_jailbreak write are gone.
+// live-15: the Lapy owned-root daemon protocol (see ProsperoHenJailbreak.cpp).
+// 2.02: the /download0/etahen_jailbreak request is back beside it (orbis_elevate).
 #pragma once
 
-// Cooperative elevation through the Lapy owned-root daemon. Must be called on the
-// main thread before any other thread is created. True only when /data is verified
-// writable after acknowledgement; false means the caller should take the existing
-// no-jailbreak fallback. Runs at most once per process.
-bool orbis_lapy_jailbreak();
+// 2.02: elevation by whichever answers -- the Lapy owned-root daemon
+// (/download0/elevate_proc) or etaHEN/OnionHEN/the PS5SX2 Helper
+// (/download0/etahen_jailbreak) -- then try_ports (main-boot's CMD ports 9028/9069).
+// hint: what worked at the last start ("lapy", "etahen", "ports", "none", or ""
+// when not known); that method goes first with its long wait, the others get
+// short probes. Must be called on the main thread before any other thread is
+// created (the Lapy daemon rejects a multi-threaded target). Returns "already"
+// (euid 0 at the call: nothing requested), "lapy", "etahen", "ports" or "none".
+// Runs at most once per process.
+const char* orbis_elevate(const char* hint, bool (*try_ports)());
 
 // One-page JIT allocatability probe. True root makes this succeed even when
 // geteuid() keeps reporting 1.

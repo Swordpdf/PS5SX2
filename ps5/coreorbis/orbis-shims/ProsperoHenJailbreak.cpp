@@ -6,6 +6,8 @@
 // answerer is the Lapy owned-root daemon (blackbearreloaded/PS5-Lapy-JB-Daemon
 // PR #50). Nothing watches the old /download0/etahen_jailbreak name any more;
 // that write is gone (the old broker that produced it is removed below).
+// [2.02: not so -- etaHEN, OnionHEN and the PS5SX2 Helper still watch it; the
+// request is back as etahen_request(), see the 2.02 note below.]
 //
 // Protocol (orbis_lapy_jailbreak, called once from main-boot.cpp BEFORE any
 // thread other than the main thread exists -- the daemon rejects a target with
@@ -29,7 +31,8 @@
 //      markers older than its own start time), so an acknowledgement timeout is
 //      not a failure: rewrite the marker and wait again, up to 4 attempts
 //      (~40 s). After the last attempt, the caller takes the no-jailbreak
-//      fallback unchanged.
+//      fallback unchanged. [2.02: 2 x 10 s when Lapy worked at the last start,
+//      else one attempt of 10 s (nothing known) or 2.5 s (a probe).]
 //   7. At most one request per process: after elevation the process's root is
 //      the system root and a second request would be rejected and consumed, so
 //      the whole request+wait sequence runs exactly once.
@@ -39,13 +42,26 @@
 // log shows the full sequence even on a console whose boot log is held until
 // after elevation (main-boot defers the boot-log pump thread to keep this
 // request single-threaded).
+//
+// 2.02 (AI-assisted; users: "the black screen before the shelf is extra long"
+// since 2.01): live-15 made the Lapy daemon the ONLY elevation, so every console
+// without it (etaHEN, OnionHEN, the PS5SX2 Helper: every 2.00 log has their
+// /download0/etahen_jailbreak taken in 1-2 polls, ~30 ms) sat 4 x 10 s on a
+// black screen and then ran unelevated. orbis_elevate() below tries both
+// protocols, one after the other on the main thread (neither starts a thread,
+// so the Lapy request stays single-threaded), the one that worked at the last
+// start first with its long wait, the other with a short probe. Nothing is
+// requested when the process is already root. main-boot.cpp keeps the method
+// that worked in cache/elevation.txt and logs how long elevation took.
 #include "ProsperoHenJailbreak.h"
 
 #include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fcntl.h>
+#include <string>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -59,8 +75,18 @@ namespace {
 constexpr char kRequestPath[] = "/download0/elevate_proc";
 constexpr char kResultPath[] = "/download0/lapy_owned_result";
 constexpr int kPollUs = 50 * 1000;      // 50 ms
-constexpr int kPollsPerAttempt = 200;   // 200 * 50 ms = 10 s
-constexpr int kMaxAttempts = 4;         // ~40 s total
+// 2.02: the attempts and the wait per attempt come from orbis_elevate (were 4 x 10 s).
+
+// 2.02: the etaHEN/OnionHEN/PS5SX2 Helper request (the 2.00 broker's files).
+constexpr char kEtaHenRequestPath[] = "/download0/etahen_jailbreak";
+constexpr char kEtaHenStagedPath[] = "/download0/etahen_jailbreak.tmp";
+constexpr int kEtaHenPollUs = 16667;    // the 2.00 broker's cadence
+
+double mono_ms() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<double>(ts.tv_sec) * 1000.0 + static_cast<double>(ts.tv_nsec) / 1e6;
+}
 
 void lapy_log(const char* fmt, ...) {
     char buf[256];
@@ -109,8 +135,10 @@ bool write_request(int pid, int* err) {
 }
 
 // Step 3: wait for the daemon to take (unlink) the marker. True on acknowledgement.
-bool wait_for_ack() {
-    for (int i = 0; i < kPollsPerAttempt; ++i) {
+// 2.02: for up to wait_ms (was a fixed 10 s).
+bool wait_for_ack(int wait_ms) {
+    const int polls = wait_ms / (kPollUs / 1000) + 1;
+    for (int i = 0; i < polls; ++i) {
         if (access(kRequestPath, F_OK) == -1 && errno == ENOENT)
             return true;
         usleep(kPollUs);
@@ -162,60 +190,159 @@ void write_result(int data_ok, int open_errno) {
     close(fd);
 }
 
-} // namespace
-
-// True only when the /data round trip after acknowledgement succeeds. Runs the
-// whole request+wait sequence at most once per process (step 7).
-bool orbis_lapy_jailbreak() {
-    static bool s_done = false;
-    static bool s_result = false;
-    if (s_done) {
-        lapy_log("[lapy] elevation already requested this process: not requesting again");
-        return s_result;
+// 2.02: the etaHEN-style request, as the 2.00 broker sent it (staged file, 0666,
+// fsync, rename into place). True when the process is root afterwards. Taken =
+// access() fails with ENOENT only (an EPERM before elevation is not "taken": the
+// 2.00 broker read it as taken and then waited its whole 7.5 s grace).
+bool etahen_request(int consume_ms, int grace_ms) {
+    const int pid = static_cast<int>(getpid());
+    char body[32];
+    const int n = std::snprintf(body, sizeof(body), "{\"PID\":%d}\n", pid);
+    if (n <= 0 || n >= static_cast<int>(sizeof(body)))
+        return false;
+    unlink(kEtaHenRequestPath);
+    unlink(kEtaHenStagedPath);
+    const int fd = open(kEtaHenStagedPath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+    if (fd < 0) {
+        lapy_log("[elevate] etaHEN request: cannot create %s (errno %d)", kEtaHenStagedPath, errno);
+        return false;
     }
-    s_done = true;
+    bool ok = fchmod(fd, 0666) == 0;
+    size_t written = 0;
+    while (ok && written < static_cast<size_t>(n)) {
+        const ssize_t w = write(fd, body + written, static_cast<size_t>(n) - written);
+        if (w <= 0)
+            ok = false;
+        else
+            written += static_cast<size_t>(w);
+    }
+    if (ok && fsync(fd) != 0)
+        ok = false;
+    if (close(fd) != 0)
+        ok = false;
+    if (!ok || rename(kEtaHenStagedPath, kEtaHenRequestPath) != 0) {
+        lapy_log("[elevate] etaHEN request: write/publish failed (errno %d)", errno);
+        unlink(kEtaHenStagedPath);
+        return false;
+    }
+    const double t0 = mono_ms();
+    double taken_at = -1.0;
+    for (;;) {
+        usleep(kEtaHenPollUs);
+        const double now = mono_ms();
+        if (geteuid() == 0) {
+            lapy_log("[elevate] etaHEN request: root %.0f ms after the request (%s)", now - t0,
+                     taken_at >= 0 ? "taken, then root" : "root before the file was seen gone");
+            return true;
+        }
+        if (taken_at < 0) {
+            if (access(kEtaHenRequestPath, F_OK) == -1 && errno == ENOENT) {
+                taken_at = now;
+                lapy_log("[elevate] etaHEN request: taken after %.0f ms; waiting up to %d ms for root", now - t0, grace_ms);
+            } else if (now - t0 >= consume_ms) {
+                unlink(kEtaHenRequestPath);
+                lapy_log("[elevate] etaHEN request: not taken within %d ms (no etaHEN/OnionHEN/Helper answering)", consume_ms);
+                return false;
+            }
+        } else if (now - taken_at >= grace_ms) {
+            lapy_log("[elevate] etaHEN request: taken, but still uid %d %d ms later", static_cast<int>(geteuid()), grace_ms);
+            return false;
+        }
+    }
+}
 
+// The Lapy request (live-15's steps 1-6), with the attempts and the wait per
+// attempt given. True only when the /data round trip after acknowledgement
+// succeeds.
+bool lapy_request(int attempts, int wait_ms) {
     const int pid = static_cast<int>(getpid());
 
     // Step 1: clone the credential. seteuid(geteuid()) gives a private ucred;
     // the daemon requires it. On failure, do not write a request.
     const int euid = static_cast<int>(geteuid());
     if (seteuid(euid) != 0) {
-        lapy_log("[lapy] seteuid(%d) failed (errno %d): not requesting elevation, taking the fallback", euid, errno);
+        lapy_log("[lapy] seteuid(%d) failed (errno %d): not requesting elevation", euid, errno);
         return false;
     }
-    lapy_log("[lapy] credential clone ok (euid %d, pid %d); requesting via %s", euid, pid, kRequestPath);
+    lapy_log("[lapy] credential clone ok (euid %d, pid %d); requesting via %s (%d x %d ms)", euid, pid, kRequestPath,
+             attempts, wait_ms);
 
-    for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+    const double t0 = mono_ms();
+    for (int attempt = 1; attempt <= attempts; ++attempt) {
         int err = 0;
         if (!write_request(pid, &err)) {
-            lapy_log("[lapy] request write failed (errno %d): taking the fallback", err);
+            lapy_log("[lapy] request write failed (errno %d)", err);
             return false; // a marker we cannot write will not write on a retry either
         }
-        lapy_log("[lapy] request written (attempt %d of %d): {\"PID\":%d}", attempt, kMaxAttempts, pid);
+        lapy_log("[lapy] request written (attempt %d of %d): {\"PID\":%d}", attempt, attempts, pid);
 
-        if (wait_for_ack()) {
+        if (wait_for_ack(wait_ms)) {
             // Acknowledged: the daemon took the marker. Do not request again even
             // if /data turns out unusable (step 7) -- a second marker would be
             // consumed and lost.
+            const double acked = mono_ms() - t0;
             int open_errno = 0;
             const int data_ok = verify_data(&open_errno);
             write_result(data_ok, open_errno);
-            lapy_log("[lapy] acknowledged on attempt %d; data_rw ok=%d (open errno %d); result written to %s",
-                     attempt, data_ok, open_errno, kResultPath);
-            s_result = (data_ok == 1);
-            if (!s_result)
-                lapy_log("[lapy] acknowledged but /data round trip failed: not treating as elevated, taking the fallback");
-            return s_result;
+            lapy_log("[lapy] acknowledged on attempt %d after %.0f ms; data_rw ok=%d (open errno %d); result written to %s",
+                     attempt, acked, data_ok, open_errno, kResultPath);
+            if (data_ok != 1)
+                lapy_log("[lapy] acknowledged but /data round trip failed: not treating as elevated");
+            return data_ok == 1;
         }
 
-        lapy_log("[lapy] no acknowledgement within 10 s on attempt %d%s", attempt,
-                 attempt < kMaxAttempts ? " (marker may predate the daemon; rewriting)" : "");
-        unlink(kRequestPath); // drop the stale marker before the next attempt
+        unlink(kRequestPath); // drop the stale marker before the next attempt (or for good)
+        lapy_log("[lapy] no acknowledgement within %d ms on attempt %d%s", wait_ms, attempt,
+                 attempt < attempts ? " (marker may predate the daemon; rewriting)" : "");
     }
-
-    lapy_log("[lapy] no acknowledgement after %d attempts (~40 s): taking the no-jailbreak fallback", kMaxAttempts);
     return false;
+}
+
+} // namespace
+
+// 2.02: see the top of this file. hint is what worked at the last start
+// ("lapy", "etahen", "ports", "none"; "" when not known, e.g. /data not
+// readable yet). try_ports is main-boot's 9028/9069 CMD-port jailbreak. Returns
+// "already", "lapy", "etahen", "ports", or "none". Runs once per process.
+const char* orbis_elevate(const char* hint, bool (*try_ports)()) {
+    static const char* s_method = nullptr;
+    if (s_method) {
+        lapy_log("[elevate] elevation already requested this process: not requesting again");
+        return s_method;
+    }
+    const std::string h = hint ? hint : "";
+    if (geteuid() == 0) {
+        lapy_log("[elevate] already root (euid 0): nothing requested");
+        return s_method = "already";
+    }
+    const bool known_lapy = h == "lapy", known_etahen = h == "etahen";
+    // The method that worked last time gets its long wait; the other a short probe. With nothing known (a first start, or
+    // a console whose /data shows only after elevation), etaHEN's probe first (every 2.00 log: taken in ~30 ms), then one
+    // full Lapy attempt. "ports"/"none" last time: short probes of both.
+    const int eta_consume_ms = known_etahen ? 5000 : 1500;
+    const int lapy_attempts = known_lapy ? 2 : 1;
+    const int lapy_wait_ms = (known_lapy || h.empty()) ? 10000 : 2500;
+    lapy_log("[elevate] last start: %s; order: %s", h.empty() ? "not known" : h.c_str(),
+             known_lapy ? "Lapy, etaHEN, ports" : h == "ports" ? "ports, etaHEN, Lapy" : "etaHEN, Lapy, ports");
+
+    if (h == "ports" && try_ports && try_ports())
+        return s_method = "ports";
+    if (known_lapy) {
+        if (lapy_request(lapy_attempts, lapy_wait_ms))
+            return s_method = "lapy";
+        if (geteuid() == 0 || etahen_request(eta_consume_ms, 5000))
+            return s_method = "etahen";
+    } else {
+        if (etahen_request(eta_consume_ms, 5000))
+            return s_method = "etahen";
+        if (geteuid() == 0) // the etaHEN request was taken just after its window
+            return s_method = "etahen";
+        if (lapy_request(lapy_attempts, lapy_wait_ms))
+            return s_method = "lapy";
+    }
+    if (h != "ports" && try_ports && try_ports())
+        return s_method = "ports";
+    return s_method = "none";
 }
 
 // Privilege probe: root is the only thing that makes JIT shared memory work

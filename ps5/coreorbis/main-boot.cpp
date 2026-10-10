@@ -468,6 +468,22 @@ static double orbis_mono_seconds()
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// 2.02 (AI-assisted; users: the black screen before the shelf got longer in 2.01): "[boot] t+N ms: <phase>" for each
+// startup phase, from main()'s first line, so a log shows where the time before the shelf goes. Through
+// orbis_boot_early_log, so the lines before elevation are kept on a console whose boot log starts only after it.
+static double g_boot_t0 = 0.0;
+static void orbis_boot_phase(const char* fmt, ...)
+{
+  char what[200];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(what, sizeof(what), fmt, ap);
+  va_end(ap);
+  char line[240];
+  snprintf(line, sizeof(line), "[boot] t+%.0f ms: %s", (orbis_mono_seconds() - g_boot_t0) * 1000.0, what);
+  orbis_boot_early_log(line);
+}
+
 static void orbis_browser_qr_fallback(const char* why)
 {
   printf("[browser] %s: the settings page's QR code goes over the game instead\n", why);
@@ -1265,7 +1281,7 @@ static void orbis_output_default()
 
 // etaHEN non-whitelist jailbreak: send JAILBREAK_CMD to the legacy CMD server
 // (127.0.0.1:9028). Grants the process full ucred/caps (JIT, direct memory...).
-static void orbis_try_jailbreak()
+static bool orbis_try_jailbreak() // 2.02: true when a port answered (orbis_elevate's last resort)
 {
     struct HijackerCommand
     {
@@ -1292,7 +1308,7 @@ static void orbis_try_jailbreak()
         {
             printf("[jailbreak] socket failed errno=%d\n", errno);
             fflush(stdout);
-            return;
+            return false;
         }
         sockaddr_in sa = {};
         sa.sin_family = AF_INET;
@@ -1326,11 +1342,12 @@ static void orbis_try_jailbreak()
         if (cmd.ret == 0 || cmd.ret == -1337)
         {
             g_jailbreak_ok = 1;
-            return;
+            return true;
         }
     }
     printf("[jailbreak] all ports failed\n");
     fflush(stdout);
+    return false;
 }
 
 extern "C" void orbis_stage(const char* stage)
@@ -2764,6 +2781,7 @@ static void orbis_vk_environment()
 
 int main()
 {
+  g_boot_t0 = orbis_mono_seconds(); // 2.02: the origin of the [boot] t+ lines
   // Bigapp: no elfldr socket. Log to file (read back over FTP) + notify.
   // vk-285-33: in logs/ when that folder exists (OrbisPaths.h).
   // vk-285-113: a broken pipe (a network peer that went away) is an error return, not the end of the app.
@@ -2793,6 +2811,7 @@ int main()
   fprintf(stderr, "[boot] stderr-ok\n");
   printf("[boot] main=%p\n", (void*)&main);
   orbis_boot_early_log("[boot] build=" ORBIS_BUILD_TAG); // live-15: kept in memory on the deferred-log path
+  orbis_boot_phase("main started%s", g_boot_defer_hold ? " (boot log held until after elevation)" : "");
   {
     // vk-285-91: what VZEROUPPER costs on this CPU. The GS thread's profiles (vk-285-89/90) had 5-7% of
     // their samples on the instruction right after one, so the eboot is now built with -mno-vzeroupper
@@ -2887,24 +2906,49 @@ int main()
 #ifdef ORBIS_VULKAN
   orbis_log_flag_access("before the jailbreak");
   orbis_scan_usb("before the jailbreak"); // test build 1: whether the sandbox shows USB drives yet
+  orbis_boot_phase("cover prefetch starting");
   if (!orbis_flag("nofrontend") && !orbis_flag("nomenu") && !orbis_flag("nocoverdl"))
     orbis_frontend_prefetch_covers(orbis_frontend_paths(true), 30.0, sys_notify);
+  orbis_boot_phase("cover prefetch done");
 #endif
 
-  // Primary: the Lapy owned-root daemon cooperative elevation (live-15; see
-  // orbis-shims/ProsperoHenJailbreak.cpp). This runs here, after the single-
-  // threaded cover prefetch and BEFORE the deferred boot-log pump below, so the
-  // request is sent with only the main thread alive -- the daemon rejects a
-  // multi-threaded target and consumes the marker either way. On failure it
-  // takes the existing no-jailbreak fallback (orbis_try_jailbreak), unchanged.
-  extern bool orbis_lapy_jailbreak();
+  // Elevation (live-15, 2.02; see orbis-shims/ProsperoHenJailbreak.cpp). This runs
+  // here, after the single-threaded cover prefetch and BEFORE the deferred boot-log
+  // pump below, so a Lapy request is sent with only the main thread alive -- the
+  // daemon rejects a multi-threaded target and consumes the marker either way.
+  // 2.02 (AI-assisted): orbis_elevate tries the Lapy daemon AND the etaHEN/OnionHEN/Helper request (2.01 had only Lapy:
+  // 4 x 10 s of black screen on every other console, then no elevation), the one that worked last time first, and nothing
+  // when already root; the ports (orbis_try_jailbreak) are its last resort. cache/elevation.txt keeps what worked.
+  extern const char* orbis_elevate(const char* hint, bool (*try_ports)());
   extern bool orbis_probe_jit();
   extern void orbis_log_hen_config();
   orbis_log_hen_config();
-  if (orbis_lapy_jailbreak())
-    g_jailbreak_ok = 1;
-  else
-    orbis_try_jailbreak();
+  {
+    const std::string cache_path = OrbisDir("cache") + "/elevation.txt";
+    char last[32] = {};
+    if (FILE* f = fopen(cache_path.c_str(), "r"))
+    {
+      if (!fgets(last, sizeof(last), f))
+        last[0] = 0;
+      fclose(f);
+      last[strcspn(last, "\r\n \t")] = 0;
+    }
+    const double t_elev = orbis_mono_seconds();
+    const char* method = orbis_elevate(last, orbis_try_jailbreak);
+    if (std::strcmp(method, "none") != 0)
+      g_jailbreak_ok = 1;
+    orbis_boot_phase("elevation took %.0f ms via %s (last start: %s)", (orbis_mono_seconds() - t_elev) * 1000.0, method,
+      last[0] ? last : "not known");
+    // "already" says nothing about which one answers; keep what was there.
+    if (std::strcmp(method, "already") != 0 && std::strcmp(method, last) != 0)
+    {
+      if (FILE* f = fopen(cache_path.c_str(), "w"))
+      {
+        fprintf(f, "%s\n", method);
+        fclose(f);
+      }
+    }
+  }
   // live-15: elevation is done (the request window is over), so it is safe to
   // start the boot-log pump thread on the console where /data showed only now;
   // the early lines kept in memory are flushed into boot.log here.
@@ -2925,6 +2969,7 @@ int main()
   const bool jit_probe_ok = orbis_probe_jit();
   if (jit_probe_ok)
     g_jailbreak_ok = 1;
+  orbis_boot_phase("boot log live, console surveyed, JIT probe %s", jit_probe_ok ? "ok" : "failed");
   // vk-285-62: the memory probe (orbis-shims/orbis_memprobe.cpp): what direct memory can hold
   // (executable code, aliased guest pages, fixed mappings), with the flag file memprobe.
   if (orbis_flag("memprobe"))
@@ -3069,13 +3114,17 @@ int main()
   // with the nofrontend flag.
   // vk-285-50: the settings page (frontend/fe_web.cpp) for phones and PCs, before the shelf that
   // shows its QR code; it keeps running in the game. The nowebui flag leaves it off.
+  orbis_boot_phase("looking at USB drives and NFS shares");
   orbis_scan_usb("after the jailbreak"); // test build 1: games on USB drives
+  orbis_boot_phase("USB drives and NFS shares looked at; checking the BIOS");
   orbis_check_bios(); // vk-285-134: after the drives are seen, before the shelf
+  orbis_boot_phase("BIOS checked");
   orbis_boot_log_release("before the settings page starts"); // vk-285-113: still holding? (the folder can show up late)
   // vk-285-144 (AI-assisted): a PS2 DVD in the drive, copied to games/ and started (orbis-shims/ProsperoDiscDump.cpp).
   OrbisDiscDumpStart();
   if (!orbis_flag("nowebui"))
     orbis_web_start(orbis_frontend_paths(false), orbis_build_label().c_str());
+  orbis_boot_phase("settings page started");
   // vk-285-110: the shelf tries the missing covers of games on USB drives (the prefetch above can't see
   // the drives) in the background, after the covers on disk. Nothing else downloads after the jailbreak.
   // HTTPS failed there on vk-285-41/42, with etaHEN's jailbreak; with the PS5SX2 Helper's it hasn't been
@@ -3136,6 +3185,7 @@ int main()
           unlink(dlp.c_str());
       }
   }
+  orbis_boot_phase("shelf starting (its game scan and first frame are timed in its own [frontend] lines)");
   if (s_game_path.empty() && !orbis_flag("nofrontend") && !orbis_flag("nomenu"))
     s_game_path = orbis_frontend_run(orbis_frontend_paths(!orbis_flag("nocoverdl")), ORBIS_BUILD_TAG, &frontend_ran);
 #endif

@@ -709,7 +709,7 @@ std::vector<GameInfo> WebServer::Games()
 				g.serial = it->second.second;
 			else
 			{
-				g.serial = ReadSerial(g.path);
+				g.serial = ReadSerial(g); // 2.02: the serial cache file too
 				m_serials[g.path] = {g.bytes, g.serial};
 			}
 			ApplyGameDbTitle(g); // vk-285-113: the game's name from the game database, as on the shelf
