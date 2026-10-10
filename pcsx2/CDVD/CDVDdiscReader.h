@@ -42,6 +42,17 @@ class IOCtlSrc
 #else
 	int m_device = -1;
 #endif
+#ifdef __PROSPERO__
+	// PS5SX2 (ps5/coreorbis/orbis-shims/OrbisIOCtlSrc.cpp): the drive's CAM pass-through device (raw CD sectors, the
+	// sub-channel, TEST UNIT READY), the lock that keeps Reopen from closing the descriptors under a read on another
+	// thread (the CDVD thread, its keep-alive thread, the CPU thread's sub-channel reads), and DiscReady's last answer.
+	int m_pass = -1;
+	mutable std::mutex m_lock;
+	s64 m_ready_checked_ms = -1;
+	bool m_ready = false;
+	bool m_said_unreadable = false;
+	mutable bool m_raw_off = false; // READ CD didn't work on this disc: its sectors are made from their 2048 bytes
+#endif
 
 	s32 m_media_type = 0;
 	u32 m_sectors = 0;

@@ -8,6 +8,8 @@
 // STREAMING (0xB6) with a performance descriptor; GET PERFORMANCE (0xAC) and the capabilities page (MODE SENSE 0x2A) say
 // what the drive offers. Needs proper testing on a console.
 //
+// From PR #34 (Heyde Moura): TEST UNIT READY, READ CD and READ SUB-CHANNEL, for a PS2 disc played from a drive.
+//
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
@@ -170,6 +172,60 @@ namespace orbis_mmc
 		else
 			std::snprintf(b, sizeof(b), "%u.%ux", (speed >> 4) & 15, speed & 15);
 		return b;
+	}
+
+	// PR #34 (Heyde Moura; AI-assisted port): what PCSX2's disc reader needs from a drive that cd(4) doesn't give
+	// (OrbisDiscDrive.cpp, OrbisIOCtlSrc.cpp). TEST UNIT READY: no data; GOOD when a disc is in and spun up.
+	inline std::vector<uint8_t> TestUnitReady() { return {0x00, 0, 0, 0, 0, 0}; }
+
+	// READ CD: `count` raw 2352-byte sectors from `lba`, any sector type, the whole frame (sync, header and sub-header,
+	// user data, EDC/ECC: byte 9 = 0xF8), no sub-channel.
+	inline std::vector<uint8_t> ReadCd(uint32_t lba, uint32_t count)
+	{
+		std::vector<uint8_t> c(12, 0);
+		c[0] = 0xBE;
+		Be32(&c[2], lba);
+		c[6] = static_cast<uint8_t>(count >> 16);
+		Be16(&c[7], count & 0xFFFF);
+		c[9] = 0xF8;
+		return c;
+	}
+	// A raw CD data sector starts with the sync pattern 00 FF*10 00; a buffer the drive didn't fill doesn't.
+	inline bool CdSyncOk(const uint8_t* sector)
+	{
+		static const uint8_t sync[12] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00};
+		return std::memcmp(sector, sync, sizeof(sync)) == 0;
+	}
+
+	// READ SUB-CHANNEL, the current position's Q data in MSF (SubQ on, format 01), `len` bytes.
+	inline std::vector<uint8_t> ReadSubChannelQ(uint16_t len = 16)
+	{
+		std::vector<uint8_t> c(10, 0);
+		c[0] = 0x42;
+		c[1] = 0x02; // MSF
+		c[2] = 0x40; // SubQ
+		c[3] = 0x01; // current position
+		Be16(&c[7], len);
+		return c;
+	}
+	struct SubQ
+	{
+		bool ok = false;
+		uint8_t adr = 0, control = 0, track = 0, index = 0;
+	};
+	// The answer: a 4-byte header (its length field, bytes 2-3, counts what follows) then the current position block,
+	// format code 01 at byte 4. Anything shorter or of another format isn't taken (an unfilled buffer is all zeros).
+	inline SubQ ParseSubChannelQ(const uint8_t* d, size_t n)
+	{
+		SubQ q;
+		if (n < 8 || Get16(d + 2) < 4 || d[4] != 0x01)
+			return q;
+		q.ok = true;
+		q.adr = d[5] >> 4;
+		q.control = d[5] & 0x0f;
+		q.track = d[6];
+		q.index = d[7];
+		return q;
 	}
 
 	// Sense data, fixed (0x70/0x71) or descriptor (0x72/0x73) format: "key/asc/ascq".

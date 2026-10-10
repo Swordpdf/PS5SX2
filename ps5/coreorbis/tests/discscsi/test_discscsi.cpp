@@ -4,6 +4,7 @@
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../../orbis-shims/OrbisDiscScsi.h"
+#include "../../orbis-shims/OrbisDiscDrive.h" // PR #34 port: IsDrivePath, SafeSerial (inline)
 #include <cstdio>
 using namespace orbis_mmc;
 static int fails = 0;
@@ -83,6 +84,43 @@ int main()
 		Check(SieSetReadSpeed(0, 0xFFFF)[2] == 0xFF && SieSetReadSpeed(0, 0xFFFF)[3] == 0xFF, "max: FF FF");
 		Check(SieSpeedText(0x20) == "2.0x" && SieSpeedText(0x80) == "8.0x" && SieSpeedText(0x32) == "3.2x" && SieSpeedText(0xFFFF) == "max",
 			"speed text as SceShellCore logs it");
+	}
+	// PR #34 port (AI-assisted): what a PS2 disc played from a drive needs (OrbisDiscDrive.cpp, OrbisIOCtlSrc.cpp).
+	Check(TestUnitReady() == std::vector<uint8_t>({0, 0, 0, 0, 0, 0}), "TEST UNIT READY: six zero bytes");
+	{
+		const auto c = ReadCd(0x00012345, 16);
+		Check(c == std::vector<uint8_t>({0xBE, 0, 0x00, 0x01, 0x23, 0x45, 0, 0, 16, 0xF8, 0, 0}), "READ CD: LBA, 16 sectors, whole frame (F8)");
+		const auto d = ReadCd(1, 0x012345);
+		Check(d[6] == 0x01 && d[7] == 0x23 && d[8] == 0x45, "READ CD: a 24-bit sector count");
+		uint8_t sec[2352] = {};
+		Check(!CdSyncOk(sec), "an unfilled (zero) sector has no sync pattern");
+		std::memset(sec + 1, 0xFF, 10);
+		Check(CdSyncOk(sec), "00 FF*10 00 is a raw sector's sync");
+		sec[11] = 0xFF;
+		Check(!CdSyncOk(sec), "a sync of 11 FF bytes isn't");
+	}
+	{
+		const auto c = ReadSubChannelQ(16);
+		Check(c == std::vector<uint8_t>({0x42, 0x02, 0x40, 0x01, 0, 0, 0, 0, 16, 0}), "READ SUB-CHANNEL: MSF, SubQ, current position, 16 bytes");
+		uint8_t d[16] = {0x00, 0x15, 0x00, 0x0C, 0x01, 0x14, 0x02, 0x01};
+		const SubQ q = ParseSubChannelQ(d, sizeof(d));
+		Check(q.ok && q.adr == 1 && q.control == 4 && q.track == 2 && q.index == 1, "sub-channel Q: ADR, control, track, index");
+		uint8_t z[16] = {};
+		Check(!ParseSubChannelQ(z, sizeof(z)).ok, "an unfilled answer (all zeros) isn't taken");
+		Check(!ParseSubChannelQ(d, 6).ok, "a short answer isn't taken");
+	}
+	{
+		using OrbisDiscDrive::IsDrivePath;
+		using OrbisDiscDrive::SafeSerial;
+		Check(IsDrivePath("/dev/cd0") && IsDrivePath("/dev/cd1") && IsDrivePath("/dev/cd12"), "drive paths: /dev/cdN");
+		Check(!IsDrivePath("/dev/cd") && !IsDrivePath("/dev/cdx") && !IsDrivePath("/dev/cd1/x") && !IsDrivePath("/data/PCSX2/games/cd1.iso") &&
+				!IsDrivePath("/dev/pass0"),
+			"not drive paths: /dev/cd, /dev/cdx, /dev/cd1/x, an image, a pass device");
+		Check(SafeSerial("SLUS-21351") && SafeSerial("SCES_501.39") == false && SafeSerial("PBPX-95503") && SafeSerial("ab_12-CD"),
+			"serials fit for a file name: letters, digits, - and _");
+		Check(!SafeSerial("") && !SafeSerial("../x") && !SafeSerial("SLUS 21351") && !SafeSerial("A/B") && !SafeSerial("A\\B") &&
+				!SafeSerial(std::string(33, 'A')) && !SafeSerial("SLUS\xC3\xA9"),
+			"not fit: empty, dots, slashes, spaces, over 32, non-ASCII");
 	}
 	std::printf(fails ? "%d FAILED\n" : "all passed\n", fails);
 	return fails ? 1 : 0;

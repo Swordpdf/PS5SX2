@@ -98,6 +98,7 @@
 #include <pthread.h>
 #include <string>
 #include <map>
+#include <mutex>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -106,6 +107,29 @@ namespace
 {
 	std::atomic<bool> s_started{false};
 	std::atomic<bool> s_busy{false};
+
+	// PR #34 port (AI-assisted): the drive a game plays from (OrbisDiscDumpClaim) and the drive being copied now, under
+	// one lock so that a claim and the start of a copy can't cross.
+	std::mutex s_drive_mutex;
+	std::string s_claimed, s_copying;
+	bool Claimed(const std::string& path)
+	{
+		std::lock_guard<std::mutex> lock(s_drive_mutex);
+		return path == s_claimed;
+	}
+	bool BeginCopy(const std::string& path)
+	{
+		std::lock_guard<std::mutex> lock(s_drive_mutex);
+		if (path == s_claimed)
+			return false;
+		s_copying = path;
+		return true;
+	}
+	void EndCopy()
+	{
+		std::lock_guard<std::mutex> lock(s_drive_mutex);
+		s_copying.clear();
+	}
 
 	void Log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 	void Log(const char* fmt, ...)
@@ -699,6 +723,14 @@ namespace
 			bool any_ps2 = false;
 			for (const std::string& path : nodes)
 			{
+				// PR #34 port: a game plays from this drive (OrbisDiscDumpClaim): not looked at, not copied. A PS2 disc
+				// it held counts as still in, so its game isn't started again when the drive is given back.
+				if (Claimed(path))
+				{
+					const auto it = probes.find(path);
+					any_ps2 = any_ps2 || (it != probes.end() && it->second.iso && !it->second.serial.empty());
+					continue;
+				}
 				const bool log = std::find(logged.begin(), logged.end(), path) == logged.end();
 				// vk-285-160l: reuse the last probe while the media size is unchanged (no disc reads, so the drive can rest).
 				const uint64_t media = QuietMediaSize(path);
@@ -741,9 +773,12 @@ namespace
 					TryReForeground(serial); // under flag disc_refg this re-execs and doesn't return
 				}
 				bool clean = true;
+				if (!BeginCopy(path))
+					continue; // PR #34 port: claimed for a game just now
 				s_busy.store(true);
 				const std::string copy = Dump(node, serial, clean);
 				s_busy.store(false);
+				EndCopy();
 				if (copy.empty())
 				{
 					// vk-285-155: don't re-read the disc and rewrite gigabytes every 3 s; wait for it to leave.
@@ -844,4 +879,27 @@ void OrbisDiscDumpStart()
 bool OrbisDiscDumpBusy()
 {
 	return s_busy.load();
+}
+
+bool OrbisDiscDumpClaim(const std::string& device)
+{
+	std::lock_guard<std::mutex> lock(s_drive_mutex);
+	if (device == s_copying)
+	{
+		Log("%s: its disc is being copied now: no game plays from it until the copy ends", device.c_str());
+		return false;
+	}
+	if (s_claimed != device)
+		Log("%s: a game plays from this drive: the disc watcher leaves it alone", device.c_str());
+	s_claimed = device;
+	return true;
+}
+
+void OrbisDiscDumpRelease(const std::string& device)
+{
+	std::lock_guard<std::mutex> lock(s_drive_mutex);
+	if (s_claimed != device)
+		return;
+	s_claimed.clear();
+	Log("%s: no game plays from this drive now: the disc watcher may copy its disc", device.c_str());
 }

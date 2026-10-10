@@ -65,6 +65,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/OrbisPadMap.h"     // vk-285-116: the controller remapping
 #include "orbis-shims/ProsperoUsbPad.h"  // vk-285-140: USB guitars and pads the PS5 doesn't take as controllers
 #include "orbis-shims/ProsperoDiscDump.h" // vk-285-144: PS2 discs in the drive
+#include "orbis-shims/OrbisDiscDrive.h"   // PR #34: PS2 discs played straight from a drive (flag bootdisc)
 #include "SIO/Pad/PadGuitar.h"
 #include "OrbisNfs.h"                     // vk-285-135: games on NFS shares
 #include <mutex>
@@ -2287,7 +2288,7 @@ static std::string orbis_find_image(const std::string& want, const char* what)
   const auto is_file = [&](const std::string& p) { return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode); };
   if (want.find('/') != std::string::npos)
   {
-    if (is_file(want))
+    if (is_file(want) || (OrbisDiscDrive::IsDrivePath(want) && stat(want.c_str(), &st) == 0)) // PR #34: or a drive, "/dev/cd1"
       return want;
     printf("[boot] %s %s isn't there\n", what, want.c_str());
     return {};
@@ -2385,7 +2386,18 @@ void OrbisChangeDiscCpu(int req)
   }
   if (to.empty())
     return;
-  const bool ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, to);
+  // PR #34 (AI-assisted port): to or from a disc drive's disc too (the cheat disc's game, in the drive), played from the
+  // disc itself; the disc watcher leaves that drive alone from then on (ProsperoDiscDump.cpp), so changing back to it
+  // never meets a copy.
+  const bool to_drive = OrbisDiscDrive::IsDrivePath(to);
+  if (to_drive && !OrbisDiscDumpClaim(to))
+  {
+    OrbisOSDLabel("DISC BEING COPIED");
+    printf("[disc] change disc: %s: its disc is being copied; try again when the copy ends\n", to.c_str());
+    fflush(stdout);
+    return;
+  }
+  const bool ok = VMManager::ChangeDisc(to_drive ? CDVD_SourceType::Disc : CDVD_SourceType::Iso, to);
   if (ok)
   {
     std::lock_guard<std::mutex> lock(s_disc_mutex);
@@ -2407,7 +2419,8 @@ void OrbisChangeDiscCpu(int req)
 // At the game's start: the set, and the disc it starts from (the cheat disc, when it's on and found).
 static std::string orbis_disc_boot(const std::string& game)
 {
-  std::vector<std::string> set = fe::DiscSet(game);
+  // PR #34: a drive is the disc in it (another goes in by hand); fe::DiscSet would look through /dev for "(Disc N)".
+  std::vector<std::string> set = OrbisDiscDrive::IsDrivePath(game) ? std::vector<std::string>{game} : fe::DiscSet(game);
   std::string start = game;
   MemorySettingsInterface peek;
   orbis_apply_ini_file(peek, "/data/PCSX2/gs.ini", "gs.ini", true);
@@ -3185,6 +3198,45 @@ int main()
           unlink(dlp.c_str());
       }
   }
+  // PR #34 (Heyde Moura; AI-assisted port): the bootdisc flag (flags/bootdisc). A PS2 disc in a disc drive (a USB DVD or BD
+  // drive on a PS5 without one of its own, or the PS5's drive) starts straight away, without the shelf, and plays from the
+  // disc itself (orbis-shims/OrbisIOCtlSrc.cpp), as a PS2 starts the disc it holds. A disc-launch request above goes first
+  // (it names a copy already made); with no PS2 disc in a drive the shelf opens as usual. The drives are looked at here
+  // only, once, because the flag asks for it; the disc watcher (ProsperoDiscDump.cpp) then leaves the drive alone. Not
+  // frontend_ran: a start that fails closes the app rather than coming back here in a loop.
+  if (s_game_path.empty() && orbis_flag("bootdisc"))
+  {
+    const std::vector<std::string> drives = OrbisDiscDrive::List();
+    if (drives.empty())
+      printf("[disc] bootdisc: no disc drive (/dev/cd0 to /dev/cd7); the shelf opens\n");
+    for (const std::string& drive : drives)
+    {
+      std::string why;
+      if (!OrbisDiscDrive::WaitReady(drive, 10000, &why))
+      {
+        printf("[disc] bootdisc: %s: %s\n", drive.c_str(), why.c_str());
+        continue;
+      }
+      if (!OrbisDiscDumpClaim(drive))
+      {
+        printf("[disc] bootdisc: %s: its disc is being copied; not started from the drive\n", drive.c_str());
+        continue;
+      }
+      const std::string serial = fe::ReadSerial(drive);
+      if (serial.empty())
+      {
+        printf("[disc] bootdisc: %s: the disc in it isn't a PS2 game (no SYSTEM.CNF naming its executable)\n", drive.c_str());
+        OrbisDiscDumpRelease(drive);
+        continue;
+      }
+      s_game_path = drive;
+      const char* shown = OrbisDiscDrive::SafeSerial(serial) ? serial.c_str() : "a PS2 game";
+      printf("[disc] bootdisc: %s holds %s; starting it from the drive without the shelf\n", drive.c_str(), shown);
+      orbis_eventf("bootdisc: starting the disc in %s (%s) without the shelf", drive.c_str(), shown);
+      break;
+    }
+    fflush(stdout);
+  }
   orbis_boot_phase("shelf starting (its game scan and first frame are timed in its own [frontend] lines)");
   if (s_game_path.empty() && !orbis_flag("nofrontend") && !orbis_flag("nomenu"))
     s_game_path = orbis_frontend_run(orbis_frontend_paths(!orbis_flag("nocoverdl")), ORBIS_BUILD_TAG, &frontend_ran);
@@ -3231,6 +3283,18 @@ int main()
     const size_t dot = stem.rfind('.');
     if (dot != std::string::npos && dot > 0)
       stem.erase(dot);
+    // PR #34: a game played from a drive ("/dev/cd1"): its settings file named after the disc's serial (checked fit for a
+    // file name), so each game put in the drive keeps its own. The disc watcher leaves the drive alone from here on.
+    if (OrbisDiscDrive::IsDrivePath(s_game_path))
+    {
+      if (!OrbisDiscDumpClaim(s_game_path))
+        printf("[disc] %s: started while its disc is being copied: both read the drive\n", s_game_path.c_str());
+      const std::string serial = fe::ReadSerial(s_game_path);
+      const bool safe = OrbisDiscDrive::SafeSerial(serial);
+      stem = safe ? serial : "Disc drive " + stem;
+      printf("[disc] game from the drive %s: %s\n", s_game_path.c_str(),
+        safe ? serial.c_str() : serial.empty() ? "no serial read" : "a serial unfit for a file name (not used)");
+    }
     s_game_ini_path = "/data/PCSX2/settings/" + stem + ".ini";
   }
 #ifdef ORBIS_VULKAN
@@ -3674,7 +3738,10 @@ int main()
   if (!s_game_path.empty() && !(s_game_path.size() > 4 && strcasecmp(s_game_path.c_str() + s_game_path.size() - 4, ".elf") == 0))
   {
     params.filename = orbis_disc_boot(s_game_path);
-    if (params.filename != s_game_path)
+    // PR #34: a disc drive plays from the disc itself, through PCSX2's disc reader (orbis-shims/OrbisIOCtlSrc.cpp).
+    if (OrbisDiscDrive::IsDrivePath(params.filename))
+      params.source_type = CDVD_SourceType::Disc;
+    else if (params.filename != s_game_path)
       params.source_type = CDVD_SourceType::Iso;
   }
   // 2026-10-08 (AI-assisted; testers: "mount ELFs", "ELF properties: disc path"): an .elf from the shelf boots as PCSX2 boots
@@ -3688,7 +3755,11 @@ int main()
     if (!disc.empty())
     {
       params.filename = disc;
-      params.source_type = CDVD_SourceType::Iso;
+      // PR #34: the ELF's disc in a drive ("/dev/cd1"), played from the drive
+      const bool drive = OrbisDiscDrive::IsDrivePath(disc);
+      if (drive && !OrbisDiscDumpClaim(disc))
+        printf("[disc] %s: started while its disc is being copied: both read the drive\n", disc.c_str());
+      params.source_type = drive ? CDVD_SourceType::Disc : CDVD_SourceType::Iso;
       std::lock_guard<std::mutex> lock(s_disc_mutex); // vk-285-139: the page can change it
       s_disc_set = {disc};
       s_disc_current = disc;
