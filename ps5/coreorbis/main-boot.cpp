@@ -1693,6 +1693,16 @@ void orbis_reload_gs_ini_cpu()
     printf("[gsini] the renderer, GS device options and MTVU keep their running values until the next launch\n");
     kept = true;
   }
+#ifdef ORBIS_VULKAN
+  // 2026-10-10: frame generation is read once, before the GS opens (the boot's "frame generation" block; the 120 Hz mode is
+  // picked with the swapchain), so a change to PS5SX2/FrameGeneration waits for the next launch: say so rather than "applied"
+  // (a GoW II tester turned it off mid-game and frames went on being generated for the rest of the session).
+  if ((trial.GetBoolValue("PS5SX2", "FrameGeneration", false) && !g_sw_renderer) != g_orbis_fg_wanted)
+  {
+    printf("[gsini] frame generation stays %s until the next launch\n", g_orbis_fg_wanted ? "on" : "off");
+    kept = true;
+  }
+#endif
   {
     std::unique_lock<std::mutex> lock = Host::GetSettingsLock();
     s_base_si = trial;
@@ -1723,7 +1733,7 @@ void orbis_reload_gs_ini_cpu()
       g_orbis_mtvu_batch.load(std::memory_order_relaxed), g_orbis_mtvu_ring_kb.load(std::memory_order_relaxed)); // vk-285-84/90
   }
   fflush(stdout);
-  orbis_eventf(kept ? "live apply: applied in the running game; MTVU and the other relaunch-only options wait for the next launch" :
+  orbis_eventf(kept ? "live apply: applied in the running game; MTVU, frame generation and the other relaunch-only options wait for the next launch" :
                       "live apply: applied in the running game");
   OrbisOSDLabel(kept ? "APPLIED (SOME AT NEXT LAUNCH)" : "GS.INI APPLIED");
 }
