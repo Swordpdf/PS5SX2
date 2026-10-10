@@ -527,6 +527,26 @@ extern unsigned long long g_orbis_sw_sync_n[8], g_orbis_sw_sync_ticks[8]; // vk-
 extern std::atomic<u64> g_orbis_vu1_cycles, g_orbis_vu1_runs; // vk-285-74 (MTVU.cpp)
 extern std::atomic<int> g_orbis_vu1_dump_request;
 static OrbisLoadMeasure s_orbis_load_measure;
+extern std::atomic<u64> g_orbis_vu_wait_since; // vk-285-140 (MTVU.cpp)
+extern std::atomic<u32> g_orbis_vu_idle_seq;
+
+// vk-285-140: the VU thread's idle ticks up to tsc, the wait in progress included (MTVU.cpp adds a wait to
+// g_orbis_vu_idle_ticks only when it ends, which made a sleeping VU thread read as 100% busy).
+static unsigned long long OrbisVUIdleNow(unsigned long long tsc)
+{
+	for (;;)
+	{
+		const u32 seq = g_orbis_vu_idle_seq.load(std::memory_order_acquire);
+		if (seq & 1)
+			continue;
+		const unsigned long long idle = *static_cast<volatile unsigned long long*>(&g_orbis_vu_idle_ticks);
+		const u64 since = g_orbis_vu_wait_since.load(std::memory_order_relaxed);
+		std::atomic_thread_fence(std::memory_order_acquire);
+		if (g_orbis_vu_idle_seq.load(std::memory_order_relaxed) != seq)
+			continue;
+		return idle + ((since != 0 && tsc > since) ? (tsc - since) : 0);
+	}
+}
 
 static void OrbisMeasureLoad()
 {
@@ -537,7 +557,7 @@ static void OrbisMeasureLoad()
 	const double sec = std::chrono::duration<double>(now - s_t).count();
 	const unsigned long long cur[10] = {g_orbis_ee_waitgs_ticks, g_orbis_ee_stall_ticks, g_orbis_ee_vsyncq_ticks,
 		g_orbis_ee_waitvu_ticks, g_orbis_ee_vuring_ticks, g_orbis_ee_throttle_ticks, g_orbis_gs_idle_ticks,
-		g_orbis_gs_swsync_ticks, g_orbis_vu_idle_ticks, 0};
+		g_orbis_gs_swsync_ticks, OrbisVUIdleNow(tsc), 0};
 	OrbisLoadMeasure& m = s_orbis_load_measure;
 	OrbisTickerWatch(); // vk-285-108
 	m.nsw = std::min<u32>(PerformanceMetrics::GetGSSWThreadCount(), 16);

@@ -14,6 +14,12 @@
 
 VU_Thread vu1Thread;
 unsigned long long g_orbis_vu_idle_ticks, g_orbis_ee_waitvu_ticks, g_orbis_ee_vuring_ticks; // eerec-281
+// vk-285-140: the wait in progress, for the [load] line and the info box's VU. g_orbis_vu_idle_ticks only grows when a
+// wait ends, so a VU thread asleep for seconds (no VU1 work: NBA Street's frozen screen, "runs=0") read as busy=1000
+// (VU 100%), and the wake then landed all those seconds in one ("vu: busy=-7376"). The GS thread adds the wait so far
+// (OrbisVUIdleNow, GSRenderer.cpp); the sequence (odd while the VU thread updates the pair) keeps the two consistent.
+std::atomic<u64> g_orbis_vu_wait_since{0}; // TSC when the current wait began, 0 while the thread runs
+std::atomic<u32> g_orbis_vu_idle_seq{0};
 void OrbisCpuSample(int slot); // eerec-285 (GSRenderer.cpp)
 void OrbisVUProfStart(); // vk-285-29 (orbis_eeprof.cpp)
 std::atomic<int> g_orbis_vu_waiting{0}; // vk-285-29: the VU1 profiler skips the ring waits
@@ -247,12 +253,21 @@ void VU_Thread::ExecuteRingBuffer()
 		{
 			const unsigned long long t0 = __builtin_ia32_rdtsc(); // eerec-281
 			g_orbis_vu_waiting.store(1, std::memory_order_relaxed); // vk-285-29
+			g_orbis_vu_wait_since.store(t0, std::memory_order_release); // vk-285-140
 			if (g_orbis_mtvu_spin.load(std::memory_order_relaxed)) // vk-285-84
 				semaEvent.WaitForWorkWithSpin();
 			else
 				semaEvent.WaitForWork();
 			g_orbis_vu_waiting.store(0, std::memory_order_relaxed);
-			g_orbis_vu_idle_ticks += __builtin_ia32_rdtsc() - t0;
+			{
+				// vk-285-140: the ended wait moves from "in progress" to the total in one step for the reader.
+				const u32 seq = g_orbis_vu_idle_seq.load(std::memory_order_relaxed);
+				g_orbis_vu_idle_seq.store(seq + 1, std::memory_order_relaxed);
+				std::atomic_thread_fence(std::memory_order_release);
+				g_orbis_vu_idle_ticks += __builtin_ia32_rdtsc() - t0;
+				g_orbis_vu_wait_since.store(0, std::memory_order_relaxed);
+				g_orbis_vu_idle_seq.store(seq + 2, std::memory_order_release);
+			}
 			OrbisCpuSample(2); // eerec-285
 			OrbisVUProfStart(); // vk-285-29
 		}
