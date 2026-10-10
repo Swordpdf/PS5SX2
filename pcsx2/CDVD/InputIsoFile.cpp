@@ -21,6 +21,11 @@
 #include <chrono>
 #include <cstdio>
 
+// PS5 port (2.02, AI-assisted): the boot watchdog (main-boot.cpp) names the step a stuck start is in. 2.01's
+// "black screen at every start, PS5 crashes when closed" log stopped at "Opening CDVD..." with nothing after it:
+// the first read of an image on a USB drive that never returned, with no line saying so.
+extern "C" void orbis_stage(const char* stage) __attribute__((weak));
+
 static const char* nameFromType(int type)
 {
 	switch (type)
@@ -206,14 +211,24 @@ bool InputIsoFile::Open(std::string srcfile, Error* error)
 {
 	Close();
 	m_filename = std::move(srcfile);
+	if (orbis_stage) orbis_stage("DoCDVDopen: reader thread");
 	m_reader = GetFileReader(m_filename);
+	if (orbis_stage) orbis_stage("DoCDVDopen: opening the image file");
 	if (!m_reader->Open(m_filename, error))
 	{
 		m_reader.reset();
 		return false;
 	}
 
-	if (!Detect())
+	if (orbis_stage) orbis_stage("DoCDVDopen: first read of the image (type detection)");
+	const auto detect_start = std::chrono::steady_clock::now();
+	const bool detected = Detect();
+	const auto detect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - detect_start).count();
+	if (detect_ms >= 1000)
+		Console.Warning("isoFile: the image's first reads took %lld ms (a slow or stalling drive?)", static_cast<long long>(detect_ms));
+	if (orbis_stage) orbis_stage("DoCDVDopen: image open");
+
+	if (!detected)
 	{
 		Error::SetStringFmt(error, "Unable to identify the ISO image type for '{}'", Path::GetFileName(m_filename));
 		Close();

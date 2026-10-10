@@ -1,5 +1,6 @@
 // pcsx2-orbis boot smoke: VMManager init + Execute on worker + pc sampling.
 #include <atomic>
+#include <memory> // 2.02: orbis_probe_game_read
 #include <cstdarg>
 #include <vector>
 #include <algorithm>
@@ -1351,8 +1352,19 @@ static bool orbis_try_jailbreak() // 2.02: true when a port answered (orbis_elev
     return false;
 }
 
+// 2.02 (AI-assisted): the step VMManager::Initialize is in, and since when, for the boot watchdog's lines. A 2.01 tester's
+// starts all hung after "Opening CDVD..." and the watchdog could only say "still in Initialize". Callers pass string
+// literals, so keeping the pointer is safe.
+static std::atomic<const char*> s_orbis_stage{nullptr};
+static std::atomic<long long> s_orbis_stage_ms{0};
+static long long orbis_now_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 extern "C" void orbis_stage(const char* stage)
 {
+    s_orbis_stage_ms.store(orbis_now_ms(), std::memory_order_relaxed);
+    s_orbis_stage.store(stage, std::memory_order_release);
     ps5::debug::set_line(5, "stage: %s", stage);
 }
 
@@ -2652,6 +2664,68 @@ static void orbis_wait_for_game_file(const std::string& path)
   fflush(stdout);
 }
 
+// 2.02 (AI-assisted): a 2.01 tester's games on a USB drive (bridge 14cd:1661) all hung at a black screen from one minute on,
+// across app restarts and reboots: emulog.txt (flushed every line) stopped at "Opening CDVD...", i.e. inside the image's
+// first read, and closing the app then crashed the PS5 (a thread can't leave a read the drive never answers). Before the VM
+// starts, the image's first 128 KiB are read here on a thread of their own: if they haven't come in 5 s, boot.log and
+// settings.log say so and a notification asks for the drive to be unplugged and plugged back in (a removed drive fails the
+// read, which lets the start carry on to a proper error). The read also leaves those sectors in the cache for the VM's own.
+static void orbis_probe_game_read(const std::string& path)
+{
+  struct stat st = {};
+  if (path.empty() || path[0] != '/' || stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+    return;
+  struct Probe
+  {
+    std::atomic<bool> done{false};
+    ssize_t got = 0;
+    int err = 0;
+  };
+  auto probe = std::make_shared<Probe>();
+  const long long t0 = orbis_now_ms();
+  std::thread([probe, path]() {
+    const int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0)
+      probe->err = errno;
+    else
+    {
+      std::vector<char> buf(128 * 1024);
+      probe->got = pread(fd, buf.data(), buf.size(), 0);
+      if (probe->got < 0)
+        probe->err = errno;
+      close(fd);
+    }
+    probe->done.store(true, std::memory_order_release);
+  }).detach();
+  long long next_warn = t0 + 5000;
+  bool notified = false;
+  while (!probe->done.load(std::memory_order_acquire))
+  {
+    usleep(50000);
+    const long long now = orbis_now_ms();
+    if (now < next_warn)
+      continue;
+    next_warn = now + 30000;
+    printf("[boot] game file: its first 128 KiB haven't come in %lld s: the drive isn't answering (%s)\n", (now - t0) / 1000,
+      path.c_str());
+    fflush(stdout);
+    if (!notified)
+    {
+      notified = true;
+      orbis_eventf("the game's drive isn't answering: the image's first read hasn't returned (%s)", path.c_str());
+      sys_notify("PS5SX2: the drive with this game isn't answering. Unplug it and plug it back in (don't close PS5SX2 while "
+                 "it waits).");
+    }
+  }
+  const long long took = orbis_now_ms() - t0;
+  if (probe->got <= 0 || took >= 1000 || notified)
+  {
+    printf("[boot] game file: first read %s in %lld ms (%zd bytes, errno %d)\n", probe->got > 0 ? "done" : "failed", took,
+      probe->got, probe->err);
+    fflush(stdout);
+  }
+}
+
 static void orbis_vk_param_json()
 {
   static const char* const paths[] = {"/mnt/sandbox/PPSA99203_000/app0/sce_sys/param.json", "/app0/sce_sys/param.json",
@@ -3806,7 +3880,11 @@ int main()
       std::this_thread::sleep_for(std::chrono::seconds(5));
       if (!init_done.load())
       {
-        printf("[boot] watchdog t+%ds: still in Initialize\n", (i + 1) * 5);
+        // 2.02: the step it's in (orbis_stage), so a stuck start's log names the call.
+        const char* stage = s_orbis_stage.load(std::memory_order_acquire);
+        const long long in_ms = orbis_now_ms() - s_orbis_stage_ms.load(std::memory_order_relaxed);
+        printf("[boot] watchdog t+%ds: still in Initialize, step: %s (for %lld s)\n", (i + 1) * 5,
+          stage ? stage : "before the first step", stage ? in_ms / 1000 : 0ll);
         fflush(stdout);
       }
     }
@@ -3928,6 +4006,8 @@ int main()
   printf("[boot] SysMemory::Reset done\n");
   fflush(stdout);
   orbis_wait_for_game_file(params.filename); // vk-285-134
+  orbis_stage("game file: first read");
+  orbis_probe_game_read(params.filename); // 2.02
   const VMBootResult res = VMManager::Initialize(params, &err);
   init_done = true;
   printf("[boot] Initialize=%d err=%s\n", (int)res, err.GetDescription().c_str());

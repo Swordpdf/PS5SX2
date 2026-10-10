@@ -390,6 +390,18 @@ namespace
 		int cfg_no = -1;
 		const int r_cfg = ioctl(fd, USB_GET_CONFIG, &cfg_no);
 		std::string s_cfg = IoctlResult(r_cfg);
+		// 2.02 (AI-assisted): for a game that isn't after a USB guitar or pad, stop at what the kernel already knows (the two
+		// ioctls above answer from its copy of the descriptors): no control transfer on the device's own bus, and no
+		// /dev/usb/B.A.0. On the 2.01 log of "every game black-screens, closing crashes the PS5", the device probed this
+		// way at each start (ugen1.2, 14cd:1661) was the USB drive the games load from, and its next read never returned.
+		// The same scan was 155's black screen. Every ~30 s the scan looks again, so this ran during play as well.
+		if (!DeepScanAllowed())
+		{
+			Log("/dev/%s: USB_GET_DEVICE_DESC %s%s, USB_GET_CONFIG %s (%d); not a guitar game: left alone (flag usbpadscan probes it)",
+				node.c_str(), s_dd, r_dd == 0 ? (" " + Hex(reinterpret_cast<const uint8_t*>(&dd), sizeof(dd))).c_str() : "",
+				s_cfg.c_str(), cfg_no);
+			return;
+		}
 		uint8_t raw[18] = {};
 		uint16_t actual = 0;
 		const bool r_req = UgenRequest(fd, 0x80, 0x06, 0x0100, 0, raw, sizeof(raw), &actual);
