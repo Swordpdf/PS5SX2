@@ -456,10 +456,10 @@ extern "C" void orbis_pad_vibration(unsigned pad_index, float large, float small
 // vk-285-113: the settings page's QR code over the game (GSRenderer.cpp): the fallback when the PS5's browser can't be opened.
 extern std::atomic<int> g_orbis_qr_show;
 
-// vk-285-113: L2 + D-pad down held for 2 s opens the settings page in the PS5's own web browser (SceShellCore's launcher,
-// libSceSystemService). The game keeps running behind it (the page is served by this app's own web thread). The thread
-// below logs what the console answers and then whether the page loads and how often it asks; if the console refuses to
-// open the browser, the page's QR code goes over the game instead (the same hold hides it again).
+// The settings-page combo (PS5SX2/WebButton1/2, default L2 + D-pad down, held 2 s) opens the settings page in the PS5's
+// own web browser (SceShellCore's launcher, libSceSystemService). The game keeps running behind it (the page is served by
+// this app's own web thread). The thread below logs what the console answers and then whether the page loads and how often
+// it asks; if the console refuses to open the browser, the page's QR code goes over the game instead (the same hold hides it).
 extern "C" int sceSystemServiceLaunchWebBrowser(const char* url, const void* param);
 static std::atomic<bool> g_orbis_browser_busy{false};
 
@@ -733,6 +733,12 @@ static void orbis_pad_apply(OrbisPadPort &p, const OrbisPadData &d)
   st.ly = d.ly;
   st.rx = d.rx;
   st.ry = d.ry;
+  {
+    const unsigned touches = d.rest[40];
+    uint16_t tx = 0xffffu;
+    memcpy(&tx, &d.rest[48], sizeof(tx));
+    st.touch = (touches == 0 || tx >= 4096u) ? 0 : (tx < 640u) ? 1 : (tx >= 1280u) ? 2 : 0;
+  }
   const Out o = Apply(cfg, st);
   for (int t = 0; t < T_COUNT; t++)
   {
@@ -974,7 +980,7 @@ static void *orbis_pad_thread(void *)
       bool state_fired = false;
       {
         const orbis_padmap::Config &cfg = orbis_padmap_current();
-        static orbis_padmap::ComboWatch s_save, s_load, s_fast, s_disc;
+        static orbis_padmap::ComboWatch s_save, s_load, s_fast, s_disc, s_web;
         orbis_padmap::ComboState cs;
         cs.buttons = d.buttons;
         cs.l2 = d.l2;
@@ -992,6 +998,27 @@ static void *orbis_pad_thread(void *)
         const bool fast = s_fast.Update(cfg.fast, cfg.hold_ms, cs, now_ms, block) && !save && !load;
         // vk-285-139: the change disc combo (the next disc of the game's set; StubHost.cpp runs it on the CPU thread).
         const bool disc = s_disc.Update(cfg.disc, cfg.hold_ms, cs, now_ms, block) && !save && !load && !fast;
+        // the open-settings-page combo (WebButton1/2, 2 s hold fixed): replaces the old hardcoded L2+D-pad down.
+        {
+          uint32_t web_block = 0;
+          if (s_web.Update(cfg.web, 2000, cs, now_ms, web_block))
+          {
+            if (g_orbis_qr_show.load(std::memory_order_relaxed))
+            {
+              g_orbis_qr_show.store(0, std::memory_order_relaxed);
+              printf("[pad] web combo: settings QR hidden (%s)\n", orbis_padmap::DescribeCombo(cfg.web, 2000).c_str());
+              fflush(stdout);
+              orbis_eventf("settings page QR code hidden (%s)", orbis_padmap::DescribeCombo(cfg.web, 2000).c_str());
+            }
+            else if (!g_orbis_browser_busy.exchange(true))
+            {
+              printf("[pad] web combo: opening the settings page (%s)\n", orbis_padmap::DescribeCombo(cfg.web, 2000).c_str());
+              fflush(stdout);
+              orbis_eventf("settings page: opening it in the PS5's browser (%s)", orbis_padmap::DescribeCombo(cfg.web, 2000).c_str());
+              orbis_open_settings_browser();
+            }
+          }
+        }
         if (disc)
         {
           g_orbis_state_request.store(6, std::memory_order_release);
@@ -1059,44 +1086,6 @@ static void *orbis_pad_thread(void *)
         s_prev_click = click;
         if (s_click_consumed)
           d.buttons &= ~0x00100000u;
-      }
-      // vk-285-113: L2 + D-pad down held for 2 s: the settings page in the PS5's own browser (or, with the QR code up,
-      // takes the QR code down). The game keeps running (and sees the buttons: a 2 s hold is nobody's move).
-      {
-        static bool s_holding = false, s_fired = false;
-        static std::chrono::steady_clock::time_point s_since;
-        const bool l2 = (d.buttons & 0x00000100u) != 0 || d.l2 >= 200u;
-        const bool down = (d.buttons & 0x00000040u) != 0;
-        if (l2 && down)
-        {
-          const auto now = std::chrono::steady_clock::now();
-          if (!s_holding)
-          {
-            s_holding = true;
-            s_fired = false;
-            s_since = now;
-          }
-          else if (!s_fired && now - s_since >= std::chrono::seconds(2))
-          {
-            s_fired = true;
-            if (g_orbis_qr_show.load(std::memory_order_relaxed))
-            {
-              g_orbis_qr_show.store(0, std::memory_order_relaxed);
-              printf("[pad] L2 + D-pad down held for 2 s: settings QR hidden\n");
-              fflush(stdout);
-              orbis_eventf("settings page QR code hidden (L2 + D-pad down held for 2 s)");
-            }
-            else if (!g_orbis_browser_busy.exchange(true))
-            {
-              printf("[pad] L2 + D-pad down held for 2 s: opening the settings page in the PS5's browser\n");
-              fflush(stdout);
-              orbis_eventf("settings page: opening it in the PS5's browser (L2 + D-pad down held for 2 s)");
-              orbis_open_settings_browser();
-            }
-          }
-        }
-        else
-          s_holding = false;
       }
       if (g_orbis_port1_guitar.load(std::memory_order_relaxed))
         orbis_pad_apply_guitar(port1, d, have_usb ? &usb_now : nullptr); // vk-285-140

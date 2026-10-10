@@ -137,6 +137,8 @@ std::vector<OptionDef> ButtonRows()
 		{"PS5SX2/ButtonR3", icon::Blank, "R3", "R3"},
 		{"PS5SX2/ButtonOptions", icon::Blank, "Options", "Start"},
 		{"PS5SX2/ButtonTouchpad", icon::Blank, "Touchpad click", "Select"},
+		{"PS5SX2/ButtonTouchLeft", icon::Blank, "Touchpad left", "None"},
+		{"PS5SX2/ButtonTouchRight", icon::Blank, "Touchpad right", "None"},
 		{"PS5SX2/ButtonUp", icon::DpadUp, "D-pad up", "Up"},
 		{"PS5SX2/ButtonDown", icon::DpadDown, "D-pad down", "Down"},
 		{"PS5SX2/ButtonLeft", icon::DpadLeft, "D-pad left", "Left"},
@@ -246,6 +248,10 @@ std::vector<OptionDef> ButtonsGroup()
 		// vk-285-139: change disc, for games on more than one disc.
 		Seg("PS5SX2/DiscButton1", "Change disc: button 1", "L3R3", "", ComboChoices(), disc_hint),
 		Seg("PS5SX2/DiscButton2", "Change disc: button 2", "Right", "", ComboChoices(), disc_hint),
+		Seg("PS5SX2/WebButton1", "Settings page: button 1", "L2", "", ComboChoices(),
+			"Opens this game's settings page in the PS5's web browser (held for 2 seconds). Default: L2 + D-pad down."),
+		Seg("PS5SX2/WebButton2", "Settings page: button 2", "Down", "", ComboChoices(),
+			"Opens this game's settings page in the PS5's web browser (held for 2 seconds). Default: L2 + D-pad down."),
 	};
 	for (OptionDef& d : ButtonRows())
 		out.push_back(std::move(d));
@@ -472,7 +478,7 @@ const std::vector<OptionGroup>& OptionGroups()
 			{
 				Toggle("PS5SX2/Rumble", "Rumble", "true", "Rumble %",
 					"The game's vibration on the controller. In a game, hold L2 and D-pad down for 2 seconds to open the settings page in the "
-					"PS5's own web browser; the game keeps running behind it."),
+					"PS5's own web browser (hold the Settings page combo for 2 seconds, default L2 + D-pad down); the game keeps running behind it."),
 				Seg("PS5SX2/RumbleStrength", "Rumble strength", "1", "",
 					{{"0.25", "25%"}, {"0.5", "50%"}, {"0.75", "75%"}, {"1", "100%"}, {"1.25", "125%"}, {"1.5", "150%"}, {"2", "200%"}},
 					"How strongly the controller vibrates, as a share of what the game asks for. Above 100% lifts weak rumble; it never goes past the motors' full strength."),

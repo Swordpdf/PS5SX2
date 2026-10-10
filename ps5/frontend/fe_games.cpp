@@ -1027,7 +1027,7 @@ void ScanDir(const std::string& dir, std::vector<GameInfo>& games, std::vector<s
 	{
 		if (!IsDiscImageName(e->d_name))
 		{
-			if (subdirs && subdirs->size() < 64 && !SkipSubfolder(e->d_name))
+			if (subdirs && subdirs->size() < 4096 && !SkipSubfolder(e->d_name))
 			{
 				bool is_dir = e->d_type == DT_DIR;
 				if (e->d_type == DT_UNKNOWN)

@@ -66,6 +66,8 @@ enum Source : uint8_t
 	S_R3,
 	S_OPTIONS,
 	S_TOUCHPAD,
+	S_TOUCHLEFT,  // a finger on the touchpad's left third
+	S_TOUCHRIGHT, // a finger on the touchpad's right third
 	S_UP,
 	S_DOWN,
 	S_LEFT,
@@ -100,6 +102,8 @@ inline const SourceInfo& SourceAt(int s)
 		{"ButtonR3", "R3", 0x00000004u, T_R3},
 		{"ButtonOptions", "Options", 0x00000008u, T_START},
 		{"ButtonTouchpad", "the touchpad's click", 0x40100000u, T_SELECT},
+		{"ButtonTouchLeft", "the touchpad's left side", 0u, T_NONE},
+		{"ButtonTouchRight", "the touchpad's right side", 0u, T_NONE},
 		{"ButtonUp", "D-pad up", 0x00000010u, T_UP},
 		{"ButtonDown", "D-pad down", 0x00000040u, T_DOWN},
 		{"ButtonLeft", "D-pad left", 0x00000080u, T_LEFT},
@@ -260,6 +264,8 @@ struct Config
 	ComboButton fast[2] = {CB_NONE, CB_NONE};
 	// vk-285-139: the change disc combo (PS5SX2/DiscButton1/2): the next disc of the game's set ("(Disc 2)" beside it).
 	ComboButton disc[2] = {CB_L3R3, CB_RIGHT};
+	// the open-settings-page combo (PS5SX2/WebButton1/2): opens this game's settings page in the PS5's browser (2 s hold, fixed).
+	ComboButton web[2] = {CB_L2, CB_DOWN};
 
 	Config()
 	{
@@ -278,7 +284,8 @@ struct Config
 		return swap_sticks == o.swap_sticks && left_dpad == o.left_dpad && deadzone_left == o.deadzone_left &&
 		       deadzone_right == o.deadzone_right && invert_left == o.invert_left && invert_right == o.invert_right &&
 		       save[0] == o.save[0] && save[1] == o.save[1] && load[0] == o.load[0] && load[1] == o.load[1] && hold_ms == o.hold_ms &&
-		       fast[0] == o.fast[0] && fast[1] == o.fast[1] && disc[0] == o.disc[0] && disc[1] == o.disc[1];
+		       fast[0] == o.fast[0] && fast[1] == o.fast[1] && disc[0] == o.disc[0] && disc[1] == o.disc[1] &&
+		       web[0] == o.web[0] && web[1] == o.web[1];
 	}
 	bool operator!=(const Config& o) const { return !(*this == o); }
 	bool IsDefault() const { return *this == Config(); }
@@ -347,10 +354,11 @@ inline Config FromSettings(Get get)
 	if (get("InvertRight", v))
 		c.invert_right = SmallInt(v, 3);
 	// vk-285-117: the save and load combos; a value that isn't a button leaves that one at its default.
-	static const char* const combo_keys[8] = {"SaveButton1", "SaveButton2", "LoadButton1", "LoadButton2", "FastButton1", "FastButton2",
-		"DiscButton1", "DiscButton2"};
-	ComboButton* const combo[8] = {&c.save[0], &c.save[1], &c.load[0], &c.load[1], &c.fast[0], &c.fast[1], &c.disc[0], &c.disc[1]};
-	for (int i = 0; i < 8; i++)
+	static const char* const combo_keys[10] = {"SaveButton1", "SaveButton2", "LoadButton1", "LoadButton2", "FastButton1", "FastButton2",
+		"DiscButton1", "DiscButton2", "WebButton1", "WebButton2"};
+	ComboButton* const combo[10] = {&c.save[0], &c.save[1], &c.load[0], &c.load[1], &c.fast[0], &c.fast[1], &c.disc[0], &c.disc[1],
+		&c.web[0], &c.web[1]};
+	for (int i = 0; i < 10; i++)
 	{
 		v.clear();
 		ComboButton b;
@@ -489,6 +497,7 @@ struct State
 	uint32_t buttons = 0;
 	uint8_t l2 = 0, r2 = 0;
 	uint8_t lx = 128, ly = 128, rx = 128, ry = 128;
+	int touch = 0; // 0 no finger or middle third, 1 left third, 2 right third
 };
 
 // What the PS2 controller gets: each input's value (0 released .. 1 fully pressed; the face buttons, the D-pad and the
@@ -546,6 +555,10 @@ inline Out Apply(const Config& c, const State& s)
 			const bool to_trigger = t == T_L2 || t == T_R2;
 			v = (to_trigger || raw >= kTriggerPress) ? raw / 255.0f * c.pressure[src] : 0.0f;
 		}
+		else if (src == S_TOUCHLEFT)
+			v = (s.touch == 1) ? c.pressure[src] : 0.0f;
+		else if (src == S_TOUCHRIGHT)
+			v = (s.touch == 2) ? c.pressure[src] : 0.0f;
 		else
 			v = (s.buttons & SourceAt(src).bits) ? c.pressure[src] : 0.0f;
 		// PCSX2 reads the analog button and the pressure modifier as on or off (it acts when they change).
@@ -630,6 +643,8 @@ inline std::string Describe(const Config& c)
 		states = "save state on " + DescribeCombo(c.save, c.hold_ms) + ", load on " + DescribeCombo(c.load, c.hold_ms);
 	if (c.fast[0] != CB_NONE || c.fast[1] != CB_NONE)
 		states += (states.empty() ? "" : ", ") + std::string("fast forward on ") + DescribeCombo(c.fast, c.hold_ms);
+	if (c.web[0] != def.web[0] || c.web[1] != def.web[1])
+		states += (states.empty() ? "" : ", ") + std::string("settings page on ") + DescribeCombo(c.web, 2000);
 	std::string out = buttons;
 	for (const std::string* part : {&sticks, &states})
 		if (!part->empty())
