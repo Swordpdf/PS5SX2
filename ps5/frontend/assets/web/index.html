@@ -476,7 +476,7 @@ const GROUPS = [
   // vk-285-116 (AI-assisted): the Controls tab: the remapping, (vk-285-117) the save and load combos and their hold time
   // (main-boot.cpp orbis_ps5opts_from, orbis-shims/OrbisPadMap.h), the sticks, rumble, the keyboard and mouse.
   { title: "Buttons", tab: "controls",
-    hint: "Save and load: hold the two buttons together (slot 1). L3 + R3 is both sticks pressed in; Touchpad left or right is a finger on that side. Fast forward (experimental, for skipping videos): hold its two buttons to speed the game up, and again for full speed; Nothing on both turns it off. Change disc: hold its two buttons for the game's next disc (\"(Disc 2)\" beside it, or an .m3u list); any image goes in from the Disc section while you play. Settings page: hold its two buttons for 2 seconds to open this page in the PS5's browser (default: L2 + D-pad down). Below: what each button presses in games (Light press: the other buttons press at half strength, for Metal Gear Solid 2 and 3). Touchpad left and right: a finger resting on that side; default is Nothing (pick any PS2 button). PS5SX2's own combos always use the real buttons.",
+    hint: "Save and load: hold the two buttons together (slot 1). L3 + R3 is both sticks pressed in; Touchpad left or right is a finger on that side. Fast forward (experimental, for skipping videos): hold its two buttons to speed the game up, and again for full speed; Nothing on both turns it off. Change disc: hold its two buttons for the game's next disc (\"(Disc 2)\" beside it, or an .m3u list); any image goes in from the Disc section while you play. Settings page: hold its two buttons for 2 seconds to open this page in the PS5's browser (default: L2 + D-pad down). Below: what each button presses in games (Light press: the other buttons press at half strength, for Metal Gear Solid 2 and 3). Touchpad left and right click: clicking the touchpad on that half; default is Nothing (pick any PS2 button). When a side has a button, a click there presses only that one, not the touchpad click's. PS5SX2's own combos always use the real buttons.",
     items: [
     combo("SaveButton1", "Save: button 1", "L3R3", "Save state"), combo("SaveButton2", "Save: button 2", "Up"),
     combo("LoadButton1", "Load: button 1", "L3R3", "Load state"), combo("LoadButton2", "Load: button 2", "Down"),
@@ -492,7 +492,7 @@ const GROUPS = [
     button("Cross", "Cross", "Cross"), button("Circle", "Circle", "Circle"), button("Square", "Square", "Square"),
     button("Triangle", "Triangle", "Triangle"), button("L1", "L1", "L1"), button("R1", "R1", "R1"), button("L2", "L2", "L2"),
     button("R2", "R2", "R2"), button("L3", "L3", "L3"), button("R3", "R3", "R3"), button("Options", "Options", "Start"),
-    button("Touchpad", "Touchpad click", "Select"), button("TouchLeft", "Touchpad left", "None"), button("TouchRight", "Touchpad right", "None"),
+    button("Touchpad", "Touchpad click", "Select"), button("TouchLeft", "Touchpad left click", "None"), button("TouchRight", "Touchpad right click", "None"),
     button("Up", "D-pad up", "Up"), button("Down", "D-pad down", "Down"),
     button("Left", "D-pad left", "Left"), button("Right", "D-pad right", "Right"),
   ]},

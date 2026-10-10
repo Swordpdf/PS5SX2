@@ -756,6 +756,7 @@ static void orbis_pad_apply(OrbisPadPort &p, const OrbisPadData &d)
     uint16_t tx = 0xffffu;
     memcpy(&tx, &d.rest[48], sizeof(tx));
     st.touch = (touches == 0 || tx >= 4096u) ? 0 : (tx < 640u) ? 1 : (tx >= 1280u) ? 2 : 0;
+    st.half = (touches == 0 || tx >= 4096u) ? 0 : (tx < 960u) ? 1 : 2; // 2.02: a click's side (the pad is 1920 wide)
   }
   const Out o = Apply(cfg, st);
   for (int t = 0; t < T_COUNT; t++)
