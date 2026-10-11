@@ -306,4 +306,3 @@ static constexpr std::array<std::array<int16_t, 4>, 256> interpTable = {{
 	{-0x0001, 0x1347, 0x59B2, 0x1288},
 	{-0x0001, 0x1307, 0x59B3, 0x12C7},
 }};
-

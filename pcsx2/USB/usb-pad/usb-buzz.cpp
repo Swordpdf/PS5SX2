@@ -343,4 +343,3 @@ namespace usb_pad
 		return {};
 	}
 } // namespace usb_pad
-

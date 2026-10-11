@@ -85,4 +85,3 @@ namespace Path
 	/// Returns a URL for a given path. The path should be absolute.
 	std::string CreateFileURL(std::string_view path);
 } // namespace Path
-

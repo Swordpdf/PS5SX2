@@ -441,4 +441,3 @@ wil::com_ptr_nothrow<ID3DBlob> D3D11ShaderCache::CompileAndAddShaderBlob(const C
 	m_index.emplace(key, data);
 	return blob;
 }
-

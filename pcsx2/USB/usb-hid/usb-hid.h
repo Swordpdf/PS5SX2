@@ -34,4 +34,3 @@ namespace usb_hid
 		bool Freeze(USBDevice* dev, StateWrapper& sw) const override;
 	};
 } // namespace usb_hid
-

@@ -632,4 +632,3 @@ void normJump(mV, microFlagCycles& mFC)
 		normJumpCompile(mVU, mFC, false);
 	}
 }
-

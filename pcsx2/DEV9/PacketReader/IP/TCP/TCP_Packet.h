@@ -85,4 +85,3 @@ namespace PacketReader::IP::TCP
 		void ReComputeHeaderLen();
 	};
 } // namespace PacketReader::IP::TCP
-

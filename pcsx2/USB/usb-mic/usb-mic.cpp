@@ -1306,4 +1306,3 @@ std::vector<std::pair<std::string, std::string>> AudioDevice::GetOutputDeviceLis
 {
 	return usb_mic::audiodev_cubeb::CubebAudioDevice::GetDeviceList(false);
 }
-

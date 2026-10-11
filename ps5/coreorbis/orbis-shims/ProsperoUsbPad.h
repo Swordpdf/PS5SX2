@@ -25,4 +25,3 @@ struct OrbisUsbPadOut
 	orbis_usbpad::GuitarOut strings; // as a guitar (guitar == true)
 };
 bool OrbisUsbPadState(OrbisUsbPadOut& out);
-

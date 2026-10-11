@@ -124,4 +124,3 @@ bool ApplyRecommended(const std::string& path, const std::string& presets, const
 // accepts, the name is taken, or the file could not be written.
 bool CreateCard(const std::string& dir, uint64_t mb, std::string name, std::string& made, std::string& error);
 } // namespace fe::settings
-

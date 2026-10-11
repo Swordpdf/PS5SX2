@@ -96,4 +96,3 @@ void DockUtils::insertDockWidgetAtPreferredLocation(
 		window->addDockWidget(dock_view, KDDockWidgets::Location_OnTop);
 	}
 }
-

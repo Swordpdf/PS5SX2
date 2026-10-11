@@ -361,4 +361,3 @@ bool Mixer::Idle()
 	return m_voices.empty();
 }
 } // namespace fe
-

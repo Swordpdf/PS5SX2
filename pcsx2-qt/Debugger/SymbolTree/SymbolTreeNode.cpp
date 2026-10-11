@@ -865,4 +865,3 @@ QString SymbolTreeDisplayOptions::signedIntegerToString(s64 value, s32 size_bits
 
 	return QStringLiteral("%1").arg(value, field_width, m_integer_base, QLatin1Char('0'));
 }
-

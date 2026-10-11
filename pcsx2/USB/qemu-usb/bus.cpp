@@ -119,4 +119,3 @@ void usb_device_free_streams(USBDevice* dev, USBEndpoint** eps, int nr_eps)
 		klass->free_streams(dev, eps, nr_eps);
 	}
 }
-

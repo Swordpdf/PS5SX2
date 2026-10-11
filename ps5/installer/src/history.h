@@ -12,4 +12,3 @@ extern const shipped_file g_shipped_files[];
 extern const size_t g_shipped_files_n;
 extern const char *const g_shipped_flags[];
 extern const size_t g_shipped_flags_n;
-

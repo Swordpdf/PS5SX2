@@ -93,4 +93,3 @@ public:
 };
 
 MULTI_ISA_UNSHARED_END
-

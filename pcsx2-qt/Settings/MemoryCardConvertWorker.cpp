@@ -165,4 +165,3 @@ bool MemoryCardConvertWorker::ConvertToFolder(const std::string& srcFileName, co
 
 	return true;
 }
-

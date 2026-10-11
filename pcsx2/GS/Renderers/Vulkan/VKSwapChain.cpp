@@ -829,4 +829,3 @@ void VKSwapChain::DestroySurface()
 	DestroyVulkanSurface(GSDeviceVK::GetInstance()->GetVulkanInstance(), &m_window_info, m_surface);
 	m_surface = VK_NULL_HANDLE;
 }
-

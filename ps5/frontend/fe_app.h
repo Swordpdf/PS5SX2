@@ -312,4 +312,3 @@ private:
 	void BuildGameAchievements(std::vector<UiVertex>& ui, float x, float y, float width, float height, float k, uint32_t accent);
 };
 } // namespace fe
-

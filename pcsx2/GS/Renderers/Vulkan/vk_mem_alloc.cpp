@@ -4,4 +4,3 @@
 #define VMA_IMPLEMENTATION 1
 
 #include "GS/Renderers/Vulkan/VKLoader.h"
-

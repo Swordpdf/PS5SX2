@@ -144,4 +144,3 @@ void WriteFIFO_GIF(const mem128_t* value)
 		}
 	}
 }
-

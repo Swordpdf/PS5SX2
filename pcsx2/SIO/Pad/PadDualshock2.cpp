@@ -947,4 +947,3 @@ u8 PadDualshock2::SendCommandByte(u8 commandByte)
 	this->commandBytesReceived++;
 	return ret;
 }
-

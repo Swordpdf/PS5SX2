@@ -69,4 +69,3 @@ alignas(__pagealignsize) extern u8 iopHw[Ps2MemSize::IopHardware];
 
 extern EEVM_MemoryAllocMess* eeMem;
 extern IopVM_MemoryAllocMess* iopMem;
-

@@ -53,4 +53,3 @@ EGLSurface GLContextEGLX11::CreatePlatformSurface(EGLConfig config, void* win, E
 
 	return surface;
 }
-

@@ -84,4 +84,3 @@ struct Image
 [[nodiscard]] Bytes strip_sections(std::span<const std::uint8_t> elf);
 
 } // namespace ps5::self
-

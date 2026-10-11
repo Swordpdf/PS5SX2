@@ -441,4 +441,3 @@ public:
 	GLuint GetSamplerID(PSSamplerSelector ssel);
 	GLuint GetPaletteSamplerID();
 };
-

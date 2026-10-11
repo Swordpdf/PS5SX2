@@ -83,4 +83,3 @@ if [[ -n ${TEXPACKS_REAL:-} ]]; then
   real=("${TEXPACKS_REAL%:*}" "${TEXPACKS_REAL##*:}")
 fi
 ASAN_OPTIONS=detect_leaks=1 "$work/texpacks_test" "$work/fixtures" "$work/run" "${real[@]}"
-

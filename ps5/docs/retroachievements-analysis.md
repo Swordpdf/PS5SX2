@@ -237,4 +237,3 @@ followed by token reuse, and client identification through the User-Agent.
 The hash, submission, callback and missing-service details above were checked
 against the vendored version in this repository, which may differ from the
 latest version covered by the guide.
-

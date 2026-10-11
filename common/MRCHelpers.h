@@ -83,4 +83,3 @@ static inline MRCOwned<T> MRCRetain(T ptr)
 	return MRCOwned<T>::Retain(ptr);
 }
 
-

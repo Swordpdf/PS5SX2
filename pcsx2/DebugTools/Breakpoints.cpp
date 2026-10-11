@@ -506,4 +506,3 @@ void CBreakPoints::Update(BreakPointCpu cpu, u32 addr)
 	if (resume)
 		r5900Debug.resumeCpu();
 }
-

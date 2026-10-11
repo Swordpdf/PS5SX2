@@ -145,4 +145,3 @@ void ad_reset();
 void InitNet();
 void ReconfigureLiveNet(const Pcsx2Config& old_config);
 void TermNet();
-

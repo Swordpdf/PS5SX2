@@ -18,4 +18,3 @@ namespace CrashHandler
 	void CrashSignalHandler(int signal, siginfo_t* siginfo, void* ctx);
 #endif
 } // namespace CrashHandler
-

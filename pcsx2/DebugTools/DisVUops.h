@@ -179,4 +179,3 @@ MakeDisF(dis##VU##MI_ITOF12, 	dNameU("ITOF12"); dCP2128f(_Ft_); dCP2128f(_Fs_);)
 MakeDisF(dis##VU##MI_ITOF15, 	dNameU("ITOF15"); dCP2128f(_Ft_); dCP2128f(_Fs_);) \
 MakeDisF(dis##VU##MI_CLIP, 		dNameU("CLIP");   dCP2128f(_Fs_); dCP232w(_Ft_);) \
 
-

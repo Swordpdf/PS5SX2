@@ -62,4 +62,3 @@ done
 if [[ -n ${HTTPS_REAL:-} ]]; then
   "$work/https_test" real
 fi
-

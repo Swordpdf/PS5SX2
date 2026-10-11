@@ -151,4 +151,3 @@ static inline bool ExtractUpdater(const char* archive_path, const char* destinat
 	return false;
 #endif
 }
-

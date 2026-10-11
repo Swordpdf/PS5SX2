@@ -81,4 +81,3 @@ int main()
 	std::printf(s_failed ? "function map: %d FAILED\n" : "function map: all passed\n", s_failed);
 	return s_failed ? 1 : 0;
 }
-

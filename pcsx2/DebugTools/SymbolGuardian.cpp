@@ -237,4 +237,3 @@ const char* SymbolGuardian::TranslateSymbolSourceName(const char* name)
 
 	return name;
 }
-

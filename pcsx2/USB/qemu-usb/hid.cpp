@@ -802,4 +802,3 @@ void hid_init(HIDState* hs, int kind, HIDEventFunc event)
 		hs->ptr.eh_sync = hid_pointer_sync;
 	}
 }
-

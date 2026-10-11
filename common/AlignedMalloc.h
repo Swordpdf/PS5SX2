@@ -30,4 +30,3 @@ extern void _aligned_free(void* pmem);
 #define pcsx2_aligned_realloc(handle, new_size, align, old_size) \
 	_aligned_realloc(handle, new_size, align)
 #endif
-

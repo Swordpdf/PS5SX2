@@ -47,4 +47,3 @@ private:
 	DebugInterface& m_cpu;
 	std::vector<MipsStackWalk::StackFrame> m_stackFrames;
 };
-

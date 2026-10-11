@@ -209,4 +209,3 @@ private:
 // The case's half extents in world units (1 unit = 100 mm): a PS2 DVD case is 135 x 190 x 14 mm.
 constexpr float kBoxHalfW = 0.675f, kBoxHalfH = 0.95f, kBoxHalfD = 0.07f;
 } // namespace fe
-

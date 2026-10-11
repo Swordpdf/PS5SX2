@@ -36,4 +36,3 @@ std::string ExtractBiosFromArchives(const std::vector<std::string>& dirs, const 
 std::string DescribeBiosProblem(const std::string& bios_dir, const std::string& top_dir, const std::vector<std::string>& dirs,
 	const std::function<bool(const std::string&)>& is_bios);
 } // namespace fe
-

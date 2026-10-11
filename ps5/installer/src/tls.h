@@ -15,4 +15,3 @@ int tls_write_all(tls_conn *c, const void *buf, size_t len);
 /* >0 bytes, 0 = the server closed, -1 = error. */
 ssize_t tls_read(tls_conn *c, void *buf, size_t len);
 void tls_close(tls_conn *c);
-

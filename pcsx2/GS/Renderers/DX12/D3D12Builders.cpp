@@ -388,4 +388,3 @@ void D3D12::SetObjectName(ID3D12Object* object, std::string_view name)
 }
 
 #endif
-

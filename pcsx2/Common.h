@@ -22,4 +22,3 @@ extern u32 PSXCLK;	/* 36.864 MHz */
 
 extern std::string ShiftJIS_ConvertString( const char* src );
 extern std::string ShiftJIS_ConvertString( const char* src, int maxlen );
-

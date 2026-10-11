@@ -29,4 +29,3 @@ namespace usb_mic
 		std::span<const SettingInfo> Settings(u32 subtype) const override;
 	};
 } // namespace usb_mic
-

@@ -264,4 +264,3 @@ extern void psxDma2GpuW(u32 addr, u32 data);
 //this must be less than 16, otherwise the PS1DRV will never read from the FIFO.
 //At one point (in Linked-List DMA), PS1DRV will expect at least a certain number of elements, that is sent as argument to the func.
 #define PGIF_DAT_RB_LEAVE_FREE 1
-

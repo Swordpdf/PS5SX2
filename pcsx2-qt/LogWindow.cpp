@@ -505,4 +505,3 @@ void LogWindow::restoreSize()
 }
 
 #include "moc_LogWindow.cpp"
-

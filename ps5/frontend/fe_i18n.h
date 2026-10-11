@@ -153,4 +153,3 @@ const char* Ps2LanguageName(int ps2_language);
 // True when `a` and `b` use the same printf conversions in the same order (a translation must).
 bool SameFormat(const char* a, const char* b);
 } // namespace fe
-

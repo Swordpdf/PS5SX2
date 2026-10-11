@@ -313,4 +313,3 @@ struct alignas(64) GSScanlineConstantData128B
 
 extern const GSScanlineConstantData256B g_const_256b;
 extern const GSScanlineConstantData128B g_const_128b;
-

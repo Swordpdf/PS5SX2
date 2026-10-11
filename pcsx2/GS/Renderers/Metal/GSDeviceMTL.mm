@@ -2825,4 +2825,3 @@ void GSDeviceMTL::RenderImGui(ImDrawData* data)
 }
 
 #endif // __APPLE__
-

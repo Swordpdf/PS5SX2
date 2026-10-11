@@ -24,4 +24,3 @@ void sendTTYP(u16 protocol, u8 source, char *data){
 		memcpy(&tmp[sizeof(DECI2_TTYP_HEADER)], data, strlen(data));
 	//writeData(tmp);
 }
-

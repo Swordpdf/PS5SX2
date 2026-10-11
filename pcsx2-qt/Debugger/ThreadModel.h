@@ -89,4 +89,3 @@ private:
 	DebugInterface& m_cpu;
 	std::vector<std::unique_ptr<BiosThread>> m_threads;
 };
-

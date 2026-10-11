@@ -1191,4 +1191,3 @@ bool OrbisUsbPadState(OrbisUsbPadOut& out)
 	out = s_out;
 	return true;
 }
-

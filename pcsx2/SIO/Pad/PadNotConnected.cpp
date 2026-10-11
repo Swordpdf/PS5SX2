@@ -125,4 +125,3 @@ u8 PadNotConnected::SendCommandByte(u8 commandByte)
 {
 	return 0xff;
 }
-

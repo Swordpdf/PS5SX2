@@ -77,4 +77,3 @@ Thanks to:
 - BlackBearReloaded (ps5-native-app-boilerplate);
 - John Törnblom (the ps5-payload-dev SDK);
 - xlenore/ps2-covers, the covers the app downloads at first run (not included here).
-

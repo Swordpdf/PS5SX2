@@ -545,4 +545,3 @@ bool ChdFileReader::ParseTOC(u64* out_frame_count)
 	*out_frame_count = total_frames;
 	return true;
 }
-

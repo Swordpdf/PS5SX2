@@ -126,4 +126,3 @@ private:
 	D3D::ShaderModel m_shader_model = D3D::ShaderModel::SM51;
 	bool m_debug = false;
 };
-

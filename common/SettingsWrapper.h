@@ -135,4 +135,3 @@ protected:
 #define SettingsWrapParsedEnum(varname, textname, parse_func, name_func) wrap.EnumEntry(CURRENT_SETTINGS_SECTION, textname, varname, parse_func, name_func, varname)
 #define SettingsWrapIntEnumEx(varname, textname) varname = static_cast<decltype(varname)>(wrap.EntryBitfield(CURRENT_SETTINGS_SECTION, textname, static_cast<int>(varname), static_cast<int>(varname)))
 
-

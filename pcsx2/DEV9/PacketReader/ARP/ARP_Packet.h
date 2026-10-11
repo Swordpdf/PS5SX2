@@ -30,4 +30,3 @@ namespace PacketReader::ARP
 		virtual ARP_Packet* Clone() const;
 	};
 } // namespace PacketReader::ARP
-

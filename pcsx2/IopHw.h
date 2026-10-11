@@ -325,4 +325,3 @@ extern void psxHw4Write8(u32 add, u8  value);
 
 extern void psxDmaInterrupt(int n);
 extern void psxDmaInterrupt2(int n);
-

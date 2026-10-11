@@ -476,4 +476,3 @@ void main()
 #endif // VS_EXPAND
 
 #endif // VERTEX_SHADER
-

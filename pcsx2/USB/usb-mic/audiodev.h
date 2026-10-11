@@ -67,4 +67,3 @@ public:
 	static std::vector<std::pair<std::string, std::string>> GetInputDeviceList();
 	static std::vector<std::pair<std::string, std::string>> GetOutputDeviceList();
 };
-

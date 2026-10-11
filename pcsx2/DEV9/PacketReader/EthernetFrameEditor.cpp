@@ -50,4 +50,3 @@ namespace PacketReader
 		return payload.get();
 	}
 } // namespace PacketReader
-

@@ -370,4 +370,3 @@ bool hwDmacSrcChain(DMACh& dma, int id)
 	return false;
 }
 
-

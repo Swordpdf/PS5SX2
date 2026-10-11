@@ -38,4 +38,3 @@ private:
 
 	HINTERNET m_hSession = NULL;
 };
-

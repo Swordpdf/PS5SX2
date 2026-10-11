@@ -241,4 +241,3 @@ private:
 	double m_rate_time = 0;
 };
 } // namespace fe
-

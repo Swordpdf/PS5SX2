@@ -1315,4 +1315,3 @@ void GraphicsSettingsWidget::onUpscaleMultiplierChanged()
 }
 
 #include "moc_GraphicsSettingsWidget.cpp"
-

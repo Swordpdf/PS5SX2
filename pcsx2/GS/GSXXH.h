@@ -33,4 +33,3 @@ static inline u64 __forceinline GSXXH3_64bits_digest(XXH3_state_t* state)
 {
 	return MultiISAFunctions::GSXXH3_64_Digest(static_cast<void*>(state));
 }
-

@@ -318,4 +318,3 @@ void EmulationSettingsWidget::onUseSystemLocaleFormatChanged()
 }
 
 #include "moc_EmulationSettingsWidget.cpp"
-

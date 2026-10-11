@@ -218,4 +218,3 @@ namespace ps5::framegen
 		std::uint32_t m_gpu_count = 0;
 	};
 }
-

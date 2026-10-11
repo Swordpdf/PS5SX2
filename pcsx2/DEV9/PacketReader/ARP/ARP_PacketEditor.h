@@ -29,4 +29,3 @@ namespace PacketReader::ARP
 		int GetLength() const;
 	};
 } // namespace PacketReader::ARP
-

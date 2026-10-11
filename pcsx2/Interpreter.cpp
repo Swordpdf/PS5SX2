@@ -730,4 +730,3 @@ R5900cpu intCpu =
 
 	intClear
 };
-

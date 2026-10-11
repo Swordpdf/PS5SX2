@@ -24,4 +24,3 @@ namespace InternalServers
 		void LogPacket(PacketReader::IP::UDP::DNS::DNS_Packet* payload);
 	};
 } // namespace InternalServers
-

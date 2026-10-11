@@ -269,4 +269,3 @@ public:
 	template <class T, class... _Args>
 	typename _unique_if<T>::_unique_array_known_bound make_unique(_Args&&...) = delete;
 };
-

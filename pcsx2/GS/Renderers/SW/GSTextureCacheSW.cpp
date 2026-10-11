@@ -343,4 +343,3 @@ bool GSTextureCacheSW::Texture::Save(const std::string& fn) const
 			w, h, w * sizeof(u32), GSConfig.PNGCompressionLevel);
 	}
 }
-

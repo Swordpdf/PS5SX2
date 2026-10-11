@@ -659,4 +659,3 @@ inline std::string Describe(const Config& c)
 	return out.empty() ? "as on the controller" : out;
 }
 } // namespace orbis_padmap
-

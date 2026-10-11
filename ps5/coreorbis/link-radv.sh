@@ -202,4 +202,3 @@ python3 "$PREPARE" --input "$OUT/build/eboot.elf" --output "$OUT/build/eboot-con
 "$TOOL" self --inspect --file "$OUT/app/eboot.bin"
 sha256sum "$OUT/app/eboot.bin" "$OUT/build/eboot-console-ready.elf"
 echo "[link-radv] signed eboot OK ($TAG, RADV)"
-

@@ -133,4 +133,3 @@ namespace PacketReader::IP
 		void CalculateChecksum();
 	};
 } // namespace PacketReader::IP
-

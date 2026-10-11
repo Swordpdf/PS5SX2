@@ -110,4 +110,3 @@ private:
 	std::optional<VkResult> m_image_acquire_result;
 	std::optional<bool> m_exclusive_fullscreen_control;
 };
-

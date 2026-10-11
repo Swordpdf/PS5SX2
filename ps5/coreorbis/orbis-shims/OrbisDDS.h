@@ -437,4 +437,3 @@ inline bool Decode(const uint8_t* file, size_t size, bool only_base, std::vector
 	return !levels.empty();
 }
 } // namespace OrbisDDS
-

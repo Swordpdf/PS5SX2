@@ -574,4 +574,3 @@ int usb_device_alloc_streams(USBDevice* dev, USBEndpoint** eps, int nr_eps,
 void usb_device_free_streams(USBDevice* dev, USBEndpoint** eps, int nr_eps);
 
 const USBDesc* usb_device_get_usb_desc(USBDevice* dev);
-

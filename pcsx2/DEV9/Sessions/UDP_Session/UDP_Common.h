@@ -29,4 +29,3 @@ namespace Sessions::UDP_Common
 	std::tuple<std::optional<ReceivedPayload>, bool> RecvFrom(int client, u16 port);
 #endif
 } // namespace Sessions::UDP_Common
-

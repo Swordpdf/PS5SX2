@@ -268,4 +268,3 @@ namespace x86Emitter
 	const xImpl_Set xSETPO = {Jcc_ParityOdd};
 
 } // end namespace x86Emitter
-

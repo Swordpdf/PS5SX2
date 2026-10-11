@@ -63,4 +63,3 @@ namespace PerformanceMetrics
 	const FrameTimeHistory& GetFrameTimeHistory();
 	u32 GetFrameTimeHistoryPos();
 } // namespace PerformanceMetrics
-

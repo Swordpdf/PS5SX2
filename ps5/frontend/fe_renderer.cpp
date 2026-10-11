@@ -1146,4 +1146,3 @@ void Renderer::Shutdown()
 	m_dev = VK_NULL_HANDLE;
 }
 } // namespace fe
-

@@ -95,4 +95,3 @@ void HotkeySettingsWidget::createButtons()
 }
 
 #include "moc_HotkeySettingsWidget.cpp"
-

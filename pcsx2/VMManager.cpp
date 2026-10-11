@@ -3937,4 +3937,3 @@ bool VMManager::WriteBytesToEESIORXFIFO(const std::span<const u8> data)
 	ee_sio_rx_fifo.insert(ee_sio_rx_fifo.end(), data.begin(), data.end());
 	return true;
 }
-

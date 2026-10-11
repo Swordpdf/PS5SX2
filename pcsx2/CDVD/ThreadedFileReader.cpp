@@ -415,4 +415,3 @@ void ThreadedFileReader::SetDataOffset(u32 bytes)
 {
 	m_dataoffset = bytes;
 }
-

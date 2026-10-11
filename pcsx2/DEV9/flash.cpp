@@ -325,4 +325,3 @@ static void xfromman_call20_calculateXors(unsigned char buffer[128], unsigned ch
 	blah[1] = (~b) & 0x7F;
 	blah[2] = (~c) & 0x7F;
 }
-

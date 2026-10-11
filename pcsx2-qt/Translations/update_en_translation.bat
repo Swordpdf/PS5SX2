@@ -7,4 +7,3 @@ set OPTS=-tr-function-alias QT_TRANSLATE_NOOP+=TRANSLATE,QT_TRANSLATE_NOOP+=TRAN
 
 "%QTBIN%\lupdate.exe" %SRCDIRS% %OPTS% -no-obsolete -source-language en_US -ts pcsx2-qt_en-US.ts
 start %QTBIN%\linguist.exe %~dp0\pcsx2-qt_en-US.ts
-

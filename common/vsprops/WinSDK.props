@@ -7,4 +7,3 @@
     <TargetPlatformVersion>$(LatestTargetPlatformVersion)</TargetPlatformVersion>
   </PropertyGroup>
 </Project>
-

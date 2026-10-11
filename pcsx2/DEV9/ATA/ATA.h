@@ -283,4 +283,3 @@ private:
 	static void WriteUInt64(u8* data, int* index, u64 value);
 	static void WritePaddedString(u8* data, int* index, const std::string& value, u32 len);
 };
-

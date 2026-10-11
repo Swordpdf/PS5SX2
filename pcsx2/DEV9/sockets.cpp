@@ -628,4 +628,3 @@ SocketAdapter::~SocketAdapter()
 		delete retPay;
 	}
 }
-

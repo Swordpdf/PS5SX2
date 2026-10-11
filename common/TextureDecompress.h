@@ -196,4 +196,3 @@ bool unpack_bc7(const void *pBlock, color_rgba *pPixels);
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
-

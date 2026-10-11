@@ -69,4 +69,3 @@ void main()
     CasFilter(c.r, c.g, c.b, gxy, const0, const1, sharpenOnly != 0);
     imageStore(imgDst, ASU2(gxy), c);
 }
-

@@ -661,4 +661,3 @@ namespace orbis_usbpad
 		return best;
 	}
 } // namespace orbis_usbpad
-

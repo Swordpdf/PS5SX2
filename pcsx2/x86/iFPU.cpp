@@ -1915,4 +1915,3 @@ FPURECOMPILE_CONSTCODE(RSQRT_S, XMMINFO_WRITED | XMMINFO_READS | XMMINFO_READT);
 } // namespace OpcodeImpl
 } // namespace Dynarec
 } // namespace R5900
-

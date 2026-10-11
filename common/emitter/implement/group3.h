@@ -64,4 +64,3 @@ namespace x86Emitter
 		const xImplSimd_3Arg SD;
 	};
 } // namespace x86Emitter
-

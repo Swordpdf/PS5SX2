@@ -108,4 +108,3 @@ namespace Pad
 	// Number of macro buttons per controller.
 	static constexpr u32 NUM_MACRO_BUTTONS_PER_CONTROLLER = 16;
 } // namespace Pad
-

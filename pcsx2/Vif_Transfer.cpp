@@ -199,4 +199,3 @@ bool VIF0transfer(u32 *data, int size, bool TTE) {
 bool VIF1transfer(u32 *data, int size, bool TTE) {
 	return vifTransfer<1>(data, size, TTE);
 }
-

@@ -216,4 +216,3 @@ void ReadbackSpinManager::SpinCompleted(u32 cycles, u32 begin_time, u32 end_time
 	m_total_spin_time = m_total_spin_time * decay + elapsed;
 	m_spins_per_unit_time = m_total_spin_cycles / m_total_spin_time;
 }
-

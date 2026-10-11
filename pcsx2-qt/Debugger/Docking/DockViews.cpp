@@ -316,4 +316,3 @@ void DockTabBar::mouseDoubleClickEvent(QMouseEvent* event)
 }
 
 #include "moc_DockViews.cpp"
-

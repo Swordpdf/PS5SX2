@@ -108,4 +108,3 @@ private:
 
 	static constexpr u32 STARTING_ADDRESS = 0x100000;
 };
-

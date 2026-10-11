@@ -34,4 +34,3 @@ bool OrbisKbdMousePadState(OrbisKbdMousePad& out);
 // The keyboard shortcuts of the controller mode, one per press, taken once: 0 none, 1 F1 (save the state), 2 F3 (load
 // it), 3 Esc held for a second (back to the menu). The same numbers as g_orbis_state_request.
 int OrbisKbdMouseTakeHotkey();
-

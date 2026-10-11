@@ -518,4 +518,3 @@ void Log::WriteFmtArgs(LOGLEVEL level, ConsoleColors color, fmt::string_view fmt
 
 	ExecuteCallbacks(level, color, std::string_view(buffer.data(), buffer.size()));
 }
-

@@ -497,4 +497,3 @@ extract_ret:
 
 	return ret;
 }
-

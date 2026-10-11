@@ -22,4 +22,3 @@ const js_node *js_get(const js_node *obj, const char *key);
 const char *js_str(const js_node *n); /* NULL unless a string without NUL bytes */
 int js_int64(const js_node *n, long long *out); /* 0 if an integer */
 int js_is_true(const js_node *n);
-

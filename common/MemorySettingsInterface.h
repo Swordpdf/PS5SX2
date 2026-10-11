@@ -63,4 +63,3 @@ private:
 
 	SectionMap m_sections;
 };
-

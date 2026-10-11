@@ -303,4 +303,3 @@ void OSDSettingsWidget::onDeselectAllClicked()
 }
 
 #include "moc_OSDSettingsWidget.cpp"
-

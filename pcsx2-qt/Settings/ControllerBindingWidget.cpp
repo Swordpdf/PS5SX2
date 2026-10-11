@@ -1477,4 +1477,3 @@ USBBindingWidget* USBBindingWidget::createInstance(
 }
 
 #include "moc_ControllerBindingWidget.cpp"
-

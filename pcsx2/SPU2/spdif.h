@@ -93,4 +93,3 @@ typedef struct _chstatus
 	u8 category;
 	u8 reservd2[22];
 } chstatus;
-

@@ -200,4 +200,3 @@ GSVector4i GSVector4i::fit(int preset) const
 
 	return r;
 }
-

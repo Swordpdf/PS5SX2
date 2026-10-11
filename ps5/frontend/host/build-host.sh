@@ -44,4 +44,3 @@ done
 "$CXX" -std=c++20 "${flags[@]}" -c "$here/fe_host.cpp" -o "$obj/fe_host.o"
 "$CXX" -o "$here/fe_host" "$obj/fe_host.o" "${objs[@]}" "$obj/qrcodegen.o" "$obj/lz4.o" "$obj/chd_stub.o" "${la_objs[@]}" -lz -ldl -lpthread
 echo "built $here/fe_host"
-

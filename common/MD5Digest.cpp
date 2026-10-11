@@ -208,4 +208,3 @@ void MD5Digest::Final(u8 Digest[16])
   MD5Transform(this->buf, (u32*)this->in);
   std::memcpy(Digest, this->buf, 16);
 }
-

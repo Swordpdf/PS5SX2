@@ -164,4 +164,3 @@ void PadData::LogPadData() const
 	const std::string finalLog = fmt::format("[PAD {}:{}]\n\t[Buttons]: {}\n\t[Analogs]: {}\n", m_port, m_slot, pressedButtons, analogs);
 	controlLog(finalLog);
 }
-

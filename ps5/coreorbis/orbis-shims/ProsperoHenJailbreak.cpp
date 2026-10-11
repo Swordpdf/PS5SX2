@@ -404,4 +404,3 @@ void orbis_log_hen_config()
         fflush(stdout);
     }
 }
-

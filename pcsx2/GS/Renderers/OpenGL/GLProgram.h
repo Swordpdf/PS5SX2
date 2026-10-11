@@ -89,4 +89,3 @@ private:
 
 	std::vector<GLint> m_uniform_locations;
 };
-

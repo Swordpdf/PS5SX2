@@ -7,4 +7,3 @@
 #include "deci2.h"
 
 void D2_ILOADP(const u8 *inbuffer, u8 *outbuffer, char *message);
-

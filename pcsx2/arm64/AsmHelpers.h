@@ -144,4 +144,3 @@ private:
 	u32 m_capacity = 0;
 	u32 m_used = 0;
 };
-

@@ -3373,4 +3373,3 @@ void GSDrawScanlineCodeGenerator::ReadTexelImpl(const Xmm& dst, const Xmm& addr,
 	else
 		pinsrd(dst, src, i);
 }
-

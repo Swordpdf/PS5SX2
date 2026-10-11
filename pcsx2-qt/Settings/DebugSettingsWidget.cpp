@@ -313,4 +313,3 @@ void DebugSettingsWidget::onLoggingEnableChanged()
 #endif
 
 #include "moc_DebugSettingsWidget.cpp"
-

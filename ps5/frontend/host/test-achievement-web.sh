@@ -19,4 +19,3 @@ cc=${CC:-clang}
 UBSAN_OPTIONS=halt_on_error=1 "$work/web-test" "$work"
 node "$here/achievement_web_test.js" "$root/ps5/frontend/assets/web/index.html"
 echo "PASS: in-game achievement API access control, live updates, image validation and browser filters/pagination"
-

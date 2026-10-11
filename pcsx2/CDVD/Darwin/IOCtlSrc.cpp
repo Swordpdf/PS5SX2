@@ -262,4 +262,3 @@ bool IOCtlSrc::DiscReady()
 	return false;
 #endif
 }
-

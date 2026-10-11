@@ -103,4 +103,3 @@ private:
 	Type m_type = Type::None;
 	std::string m_description;
 };
-

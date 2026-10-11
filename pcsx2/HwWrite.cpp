@@ -511,4 +511,3 @@ InstantizeHwWrite(0x04);	InstantizeHwWrite(0x0c);
 InstantizeHwWrite(0x05);	InstantizeHwWrite(0x0d);
 InstantizeHwWrite(0x06);	InstantizeHwWrite(0x0e);
 InstantizeHwWrite(0x07);	InstantizeHwWrite(0x0f);
-

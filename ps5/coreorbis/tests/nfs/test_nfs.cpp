@@ -416,4 +416,3 @@ int main(int argc, char** argv)
 	std::printf("%s: %d of %d checks passed (games on NFS shares)\n", s_fails ? "FAIL" : "PASS", s_checks - s_fails, s_checks);
 	return s_fails ? 1 : 0;
 }
-

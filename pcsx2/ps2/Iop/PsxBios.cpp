@@ -98,4 +98,3 @@ bool psxBiosCall()
 
     return false;
 }
-

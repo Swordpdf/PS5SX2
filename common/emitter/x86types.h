@@ -1066,4 +1066,3 @@ static constexpr const xAddressReg& RTEXTPTR = rbx;
 
 #include "implement/bmi.h"
 #include "implement/avx.h"
-

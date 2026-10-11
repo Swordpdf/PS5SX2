@@ -391,4 +391,3 @@ bool VKStreamBuffer::WaitForClearSpace(u32 num_bytes)
 	m_current_gpu_position = new_gpu_position;
 	return true;
 }
-

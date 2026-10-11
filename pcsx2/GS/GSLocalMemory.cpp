@@ -814,4 +814,3 @@ GSOffset::PageLooper GSOffset::pageLooperForRect(const GSVector4i& rect) const
 	}
 	return out;
 }
-

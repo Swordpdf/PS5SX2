@@ -17,4 +17,3 @@ extern void DMA7LogWrite(void* lpData, u32 ulSize);
 extern void DMALogClose();
 
 #endif
-

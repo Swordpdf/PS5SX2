@@ -76,4 +76,3 @@ namespace Pad
 	void SetMacroButtonState(InputBindingKey& key, u32 pad, u32 index, bool state);
 	void UpdateMacroButtons();
 }; // namespace Pad
-

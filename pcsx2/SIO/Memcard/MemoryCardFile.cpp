@@ -1341,4 +1341,3 @@ bool FileMcd_DeleteCard(const std::string_view name)
 
 	return true;
 }
-

@@ -10,4 +10,3 @@
 #pragma once
 
 [[noreturn]] void OrbisExitApp(int status);
-

@@ -386,4 +386,3 @@ void InputBindingDialog::ReloadBindNames()
 }
 
 #include "moc_InputBindingDialog.cpp"
-

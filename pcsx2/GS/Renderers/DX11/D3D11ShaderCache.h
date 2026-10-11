@@ -91,4 +91,3 @@ private:
 	D3D::ShaderModel m_shader_model = D3D::ShaderModel::SM50;
 	bool m_debug = false;
 };
-

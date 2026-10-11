@@ -374,4 +374,3 @@ std::string orbis_select_game(const char* games_dir, const char* top_dir, const 
 	scePadClose(pad);
 	return chosen("picked");
 }
-

@@ -212,4 +212,3 @@ static void hashString(const char* string, u32& hash)
 	for (u32 i = 0; i < size; i++)
 		hash = hash * 31 + string[i];
 }
-

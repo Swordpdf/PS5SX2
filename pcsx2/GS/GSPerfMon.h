@@ -72,4 +72,3 @@ public:
 };
 
 extern GSPerfMon g_perfmon;
-

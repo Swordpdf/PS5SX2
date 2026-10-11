@@ -19,4 +19,3 @@ target_link_libraries(pcsx2-gsrunner PRIVATE
 	PCSX2_FLAGS
 	PCSX2
 )
-

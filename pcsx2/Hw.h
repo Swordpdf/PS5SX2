@@ -360,4 +360,3 @@ extern int rdram_sdevid;
 
 extern std::deque<u8> ee_sio_rx_fifo;
 extern std::deque<u8> ee_sio_tx_fifo;
-

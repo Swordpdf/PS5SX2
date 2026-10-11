@@ -571,4 +571,3 @@ const CDVD_API CDVDapi_Disc =
 		DISCreadSector,
 		DISCgetDualInfo,
 };
-

@@ -62,4 +62,3 @@ struct GSMTLDevice
 const char* to_string(GSMTLDevice::MetalVersion ver);
 
 #endif // __APPLE__
-

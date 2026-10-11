@@ -68,4 +68,3 @@ public:
 extern std::deque<u8> g_Sio2FifoIn;
 extern std::deque<u8> g_Sio2FifoOut;
 extern Sio2 g_Sio2;
-

@@ -182,4 +182,3 @@ void FWwrite32(u32 addr, u32 value)
 	}
 	DevCon.WriteLn("FW: write mem 0x%x: 0x%x", addr, value);
 }
-

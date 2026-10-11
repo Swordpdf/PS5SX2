@@ -1348,4 +1348,3 @@ void GSLocalMemoryFunctions::ReadTextureBlock4HHP(const GSLocalMemory& mem, u32 
 
 	GSBlock::ReadBlock4HHP(mem.BlockPtr(bp), dst, dstpitch);
 }
-

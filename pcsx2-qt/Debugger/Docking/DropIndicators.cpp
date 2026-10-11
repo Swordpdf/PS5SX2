@@ -573,4 +573,3 @@ void DockSegmentedDropIndicatorOverlay::drawMinimalistic()
 }
 
 #include "moc_DropIndicators.cpp"
-

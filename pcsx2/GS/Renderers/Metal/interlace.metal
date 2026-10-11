@@ -196,4 +196,3 @@ fragment float4 ps_interlace4(ConvertShaderData data [[stage_in]], ConvertPSRes 
 
 	return float4(0.0f, 0.0f, 0.0f, 0.0f);
 }
-

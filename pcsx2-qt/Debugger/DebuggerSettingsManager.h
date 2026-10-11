@@ -27,4 +27,3 @@ private:
 	static QJsonObject loadGameSettingsJSON();
 	const static QString settingsFileVersion;
 };
-

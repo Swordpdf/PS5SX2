@@ -36,4 +36,3 @@ typedef struct {
 extern paths_t g_p;
 
 int paths_init(void);
-

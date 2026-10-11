@@ -25,4 +25,3 @@ void disc_hash_update(disc_hash_ctx *c, const void *data, size_t n);
 void disc_hash_final(disc_hash_ctx *c, char crc_hex[9], char md5_hex[33], char sha1_hex[41]);
 
 #endif
-

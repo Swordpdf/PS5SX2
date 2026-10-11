@@ -114,4 +114,3 @@ private:
 	bool m_enable_mfi_driver = false;
 #endif
 };
-

@@ -106,4 +106,3 @@ void USBwrite16(u32 addr, u16 value);
 void USBwrite32(u32 addr, u32 value);
 
 void USBsetRAM(void* mem);
-

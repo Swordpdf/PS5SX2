@@ -14,4 +14,3 @@ const head = [
 require("fs").writeFileSync("cacert.pem", head.join("\n") + certs.join("\n\n") + "\n");
 '
 grep -c 'BEGIN CERTIFICATE' cacert.pem
-

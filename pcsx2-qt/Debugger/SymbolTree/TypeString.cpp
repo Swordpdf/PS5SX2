@@ -160,4 +160,3 @@ QString typeToString(const ccc::ast::Node* type, const ccc::SymbolDatabase& data
 
 	return name + suffix;
 }
-

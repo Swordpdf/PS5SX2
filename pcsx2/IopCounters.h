@@ -66,4 +66,3 @@ extern void psxHBlankStart();
 extern void psxHBlankEnd();
 extern void psxVBlankStart();
 extern void psxVBlankEnd();
-

@@ -64,4 +64,3 @@ private:
 	void HandleConnectionClosed(Sessions::BaseSession* sender);
 	void HandleFixedPortClosed(Sessions::BaseSession* sender);
 };
-

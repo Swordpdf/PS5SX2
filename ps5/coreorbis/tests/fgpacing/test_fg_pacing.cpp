@@ -398,4 +398,3 @@ int main()
 	printf("%s: %d of %d checks passed (frame generation's pacing)\n", s_failures ? "FAIL" : "PASS", s_checks - s_failures, s_checks);
 	return s_failures ? 1 : 0;
 }
-

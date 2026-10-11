@@ -699,4 +699,3 @@ bool CreateCard(const std::string& dir, uint64_t mb, std::string name, std::stri
 	return true;
 }
 } // namespace fe::settings
-

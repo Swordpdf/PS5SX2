@@ -354,4 +354,3 @@ void AsyncDialogs::critical(
 {
 	openAsyncMessageBox(parent, QMessageBox::Critical, title, text, buttons, default_button, std::move(callback));
 }
-

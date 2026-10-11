@@ -4398,4 +4398,3 @@ bool Achievements::IsUsingRAIntegration()
 }
 
 #endif // ENABLE_RAINTEGRATION
-

@@ -698,4 +698,3 @@ void CMipsInstruction::Encode()
 {
 	encodeNormal();
 }
-

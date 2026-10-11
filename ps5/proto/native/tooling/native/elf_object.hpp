@@ -150,4 +150,3 @@ struct Stub
 [[nodiscard]] Stub read_stub(std::span<const std::uint8_t> data, std::string origin);
 
 } // namespace ps5::elf
-

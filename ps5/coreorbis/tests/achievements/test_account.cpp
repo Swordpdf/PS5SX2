@@ -170,4 +170,3 @@ int main(int argc, char** argv)
 	assert(cleared.GetStringValue("Achievements", "Username", "").empty());
 	assert(cleared.GetStringValue("Achievements", "Token", "").empty());
 }
-

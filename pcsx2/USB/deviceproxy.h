@@ -131,4 +131,3 @@ public:
 private:
 	RegisterDeviceMap registerDeviceMap;
 };
-

@@ -42,4 +42,3 @@ namespace PacketReader
 		void WritePacket(NetPacket* pkt);
 	};
 } // namespace PacketReader
-

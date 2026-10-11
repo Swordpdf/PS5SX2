@@ -263,4 +263,3 @@ void HddCreate::SetCanceled()
 {
 	canceled.store(true);
 }
-

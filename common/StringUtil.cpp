@@ -542,4 +542,3 @@ namespace StringUtil
 		return s;
 	}
 } // namespace StringUtil
-

@@ -18,4 +18,3 @@ private:
   u32 bits[2];
   u8 in[64];
 };
-

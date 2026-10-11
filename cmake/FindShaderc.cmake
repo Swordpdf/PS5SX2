@@ -29,4 +29,3 @@ if(SHADERC_FOUND)
 endif()
 
 mark_as_advanced(SHADERC_INCLUDE_DIR SHADERC_LIBRARY)
-

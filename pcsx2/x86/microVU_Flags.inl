@@ -473,4 +473,3 @@ void mVUsetFlagInfo(mV)
 		mVUregs.needExactMatch &= 0x7;
 	}
 }
-

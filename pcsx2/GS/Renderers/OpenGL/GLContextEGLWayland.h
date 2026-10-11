@@ -32,4 +32,3 @@ private:
 	void (*m_wl_egl_window_destroy)(struct wl_egl_window* egl_window);
 	void (*m_wl_egl_window_resize)(struct wl_egl_window* egl_window, int width, int height, int dx, int dy);
 };
-

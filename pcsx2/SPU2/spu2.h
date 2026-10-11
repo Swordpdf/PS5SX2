@@ -84,4 +84,3 @@ extern void CounterUpdate(u32 DMAICounter);
 extern void TimeUpdate(u64 cClocks);
 extern void SPU2_FastWrite(u32 rmem, u16 value);
 
-

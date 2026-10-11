@@ -504,4 +504,3 @@ void ATA::HDD_SetErrorAtTransferEnd()
 		Console.Error("DEV9: ATA: Transfer from invalid LBA %lu", currSect);
 	}
 }
-

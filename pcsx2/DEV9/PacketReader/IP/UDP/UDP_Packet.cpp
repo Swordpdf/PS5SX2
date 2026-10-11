@@ -128,4 +128,3 @@ namespace PacketReader::IP::UDP
 		return (csumCal == 0);
 	}
 } // namespace PacketReader::IP::UDP
-

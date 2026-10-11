@@ -84,4 +84,3 @@ static inline double OrbisCoreCyclesPerTsc()
 
 void OrbisEEDiagSecond(bool print); // GS thread, once a second: the flags; with print, [cpuclk] every 5 s and the lines
 void OrbisEEVsyncClock(); // EE thread, once a vsync: measures the EE core's clock every 300 vsyncs
-

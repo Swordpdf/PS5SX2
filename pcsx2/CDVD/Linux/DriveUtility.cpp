@@ -66,4 +66,3 @@ void GetValidDrive(std::string& drive)
 	if (!drive.empty())
 		printf(" * CDVD: Opening drive '%s'...\n", drive.c_str());
 }
-

@@ -132,4 +132,3 @@ bool DEV9DnsHostDialog::eventFilter(QObject* object, QEvent* event)
 DEV9DnsHostDialog::~DEV9DnsHostDialog() = default;
 
 #include "moc_DEV9DnsHostDialog.cpp"
-

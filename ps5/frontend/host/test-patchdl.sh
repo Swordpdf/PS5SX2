@@ -28,4 +28,3 @@ done
 "$CC" -O1 -I"$pcsx2/3rdparty/libchdr/include" -c "$here/chd_stub.c" -o "$work/chd_stub.o"
 "$CXX" -std=c++20 "${flags[@]}" "$here/patchdl_test.cpp" "${objs[@]}" "$work/lz4.o" "$work/chd_stub.o" -o "$work/patchdl_test" -lz -lpthread
 "$work/patchdl_test" "$work/root"
-

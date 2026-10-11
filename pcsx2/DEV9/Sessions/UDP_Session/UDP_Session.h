@@ -54,4 +54,3 @@ namespace Sessions
 		virtual ~UDP_Session();
 	};
 } // namespace Sessions
-

@@ -91,4 +91,3 @@ should set -DCMAKE_OSX_ARCHITECTURES=x86_64 for now,
 unless you want to work on the recompilers.
 *********************************************************")
 endif()
-

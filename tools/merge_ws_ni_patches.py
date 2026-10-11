@@ -71,4 +71,3 @@ if __name__ == "__main__":
 
     merge_patches(sys.argv[1], outdir, "Widescreen 16:9", "Renders the game in 16:9 aspect ratio, instead of 4:3.", "gsaspectratio=16:9")
     merge_patches(sys.argv[2], outdir, "No-Interlacing", "Attempts to disable interlaced offset rendering.", "gsinterlacemode=1")
-

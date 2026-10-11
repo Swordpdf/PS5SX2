@@ -712,4 +712,3 @@ const MipsArchDefinition mipsArchs[] = {
 	// MARCH_INVALID
 	{ "Invalid",	0,									0,			0 },
 };
-

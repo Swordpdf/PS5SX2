@@ -15,4 +15,3 @@ bool OrbisDiscDumpBusy();
 // changes) when that drive's disc is being copied right now. OrbisDiscDumpRelease gives the drive back to the watcher.
 bool OrbisDiscDumpClaim(const std::string& device);
 void OrbisDiscDumpRelease(const std::string& device);
-

@@ -323,4 +323,3 @@ bool Sio0::DoState(StateWrapper& sw)
 
 	return sw.IsGood();
 }
-

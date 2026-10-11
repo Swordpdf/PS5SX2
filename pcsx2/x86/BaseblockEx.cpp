@@ -66,4 +66,3 @@ void BaseBlocks::Link(u32 pc, s32* jumpptr)
 		*jumpptr = (s32)(recompiler - (sptr)(jumpptr + 1));
 	links.insert(std::pair<u32, uptr>(pc, (uptr)jumpptr));
 }
-

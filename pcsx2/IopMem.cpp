@@ -616,4 +616,3 @@ bool IOPMemoryInterface::CompareBytes(u32 address, const void* src, u32 size)
 {
 	return iopMemSafeCmpBytes(address, src, size) == 0;
 }
-

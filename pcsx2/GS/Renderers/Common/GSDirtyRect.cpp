@@ -89,4 +89,3 @@ GSVector4i GSDirtyRectList::GetDirtyRect(size_t index, GIFRegTEX0 TEX0, const GS
 	return r.rintersect(clamp);
 }
 
-

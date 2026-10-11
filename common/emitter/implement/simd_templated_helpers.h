@@ -24,4 +24,3 @@ public:
 
 	SimdImpl_DestRegSSE() {} //GCWho?
 };
-

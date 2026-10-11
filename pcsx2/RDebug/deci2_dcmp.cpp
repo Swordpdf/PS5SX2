@@ -66,4 +66,3 @@ void sendDCMP(u16 protocol, u8 source, u8 destination, u8 type, u8 code, char *d
 	memcpy(&tmp[sizeof(DECI2_DCMP_HEADER)], data, size);
 	writeData(tmp);
 }
-

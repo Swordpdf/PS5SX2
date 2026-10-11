@@ -302,4 +302,3 @@ __fi void ipu1Interrupt()
 	hwDmacIrq(DMAC_TO_IPU);
 	CPU_SET_DMASTALL(DMAC_TO_IPU, false);
 }
-

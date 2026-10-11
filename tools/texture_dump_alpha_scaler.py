@@ -161,4 +161,3 @@ if __name__ == "__main__":
     else:
         print("Unknown command, should be scale or unscale")
         sys.exit(1)
-

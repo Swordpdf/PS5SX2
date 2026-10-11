@@ -18,4 +18,3 @@ std::unique_ptr<ccc::ast::Node> stringToType(std::string_view string, const ccc:
 
 // Opposite of stringToType. Takes an AST node and converts it to a string.
 QString typeToString(const ccc::ast::Node* type, const ccc::SymbolDatabase& database);
-

@@ -56,4 +56,3 @@ private:
 
 	static std::map<BreakPointCpu, SavedAddressesModel*> s_instances;
 };
-

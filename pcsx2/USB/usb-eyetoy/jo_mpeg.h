@@ -23,4 +23,3 @@ unsigned long jo_write_mpeg(unsigned char *mpeg_buf, const unsigned char *rgbx, 
 #ifdef __cplusplus
 }
 #endif
-

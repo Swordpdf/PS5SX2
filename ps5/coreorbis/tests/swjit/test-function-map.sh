@@ -15,4 +15,3 @@ flags=(-std=c++20 -O1 -g -mavx2 -mbmi2 -Wall -Wno-unused-function -Wno-attribute
   -I"$root/3rdparty/fmt/include" -I"$root/3rdparty/include" -I"$root/3rdparty/xbyak" -I"$root/3rdparty/fast_float/include")
 "$CXX" "${flags[@]}" "$here/test_function_map.cpp" "$root/pcsx2/GS/Renderers/Common/GSFunctionMap.cpp" -o "$work/test_function_map"
 "$work/test_function_map"
-

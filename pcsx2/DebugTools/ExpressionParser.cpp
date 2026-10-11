@@ -614,4 +614,3 @@ bool parseExpression(const char* exp, IExpressionFunctions* funcs, u64& dest, st
 	if (!initPostfixExpression(exp,funcs,postfix,error)) return false;
 	return parsePostfixExpression(postfix,funcs,dest,error);
 }
-

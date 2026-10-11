@@ -20,4 +20,3 @@ namespace PINEServer
 	bool Initialize(int slot = PINE_DEFAULT_SLOT);
 	void Deinitialize();
 } // namespace PINEServer
-

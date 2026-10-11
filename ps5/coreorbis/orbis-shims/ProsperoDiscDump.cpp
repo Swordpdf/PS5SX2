@@ -933,4 +933,3 @@ void OrbisDiscDumpRelease(const std::string& device)
 	s_claimed.clear();
 	Log("%s: no game plays from this drive now: the disc watcher may copy its disc", device.c_str());
 }
-

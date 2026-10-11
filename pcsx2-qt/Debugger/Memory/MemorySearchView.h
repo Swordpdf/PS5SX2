@@ -148,4 +148,3 @@ private:
 	SearchComparison getCurrentSearchComparison();
 	bool doesSearchComparisonTakeInput(SearchComparison comparison);
 };
-

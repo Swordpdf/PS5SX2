@@ -85,4 +85,3 @@ int main(int argc, char **argv) {
     tls_global_free();
   return 0;
 }
-

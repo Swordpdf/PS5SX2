@@ -144,4 +144,3 @@ extern "C" void orbis_log_drain()
 			orbis_event_log(e.c_str());
 	}
 }
-

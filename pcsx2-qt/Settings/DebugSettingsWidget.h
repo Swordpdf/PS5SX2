@@ -39,4 +39,3 @@ private:
 	QWidget* m_user_interface_tab = nullptr;
 	QWidget* m_logging_tab = nullptr;
 };
-

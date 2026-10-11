@@ -281,4 +281,3 @@ const char* shaderc_result_get_error_message(const shaderc_compilation_result_t 
 }
 
 } // extern "C"
-

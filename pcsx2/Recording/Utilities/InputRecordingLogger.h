@@ -13,4 +13,3 @@ namespace InputRec
 	void consoleLog(const std::string& log);
 	void consoleMultiLog(const std::vector<std::string>& logs);
 } // namespace inputRec
-

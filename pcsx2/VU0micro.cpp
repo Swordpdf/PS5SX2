@@ -68,4 +68,3 @@ void vu0ExecMicro(u32 addr) {
 	_vuExecMicroDebug(VU0);
 	CpuVU0->ExecuteBlock(1);
 }
-

@@ -595,4 +595,3 @@ void SetupWizardDialog::onInputDeviceDisconnected(const QString& identifier)
 }
 
 #include "moc_SetupWizardDialog.cpp"
-

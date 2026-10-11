@@ -1565,4 +1565,3 @@ namespace EmuFolders
 
 #undef BITFIELD32
 #undef BITFIELD_END
-

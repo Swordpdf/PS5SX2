@@ -290,4 +290,3 @@ static __ri void eeHwTraceLog( u32 addr, T val, bool mode )
 	else
 		UnknownHW_LOG( temp, labelStr.c_str(), addr, "Unknown", mode ? "->" : "<-", valStr.c_str() );
 }
-

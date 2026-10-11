@@ -547,4 +547,3 @@ u8 PadNegcon::SendCommandByte(u8 commandByte)
 	this->commandBytesReceived++;
 	return ret;
 }
-

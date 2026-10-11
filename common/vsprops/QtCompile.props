@@ -254,4 +254,3 @@
     <Delete Files="@(TsOutputs)" />
   </Target>
 </Project>
-

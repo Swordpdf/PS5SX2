@@ -968,4 +968,3 @@ bool GSClut::ReadState::IsDirty(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 
 	return is_dirty;
 }
-

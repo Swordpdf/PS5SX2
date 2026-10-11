@@ -140,4 +140,3 @@ static inline std::optional<std::vector<u8>> ReadBinaryFileInZip(zip_file_t* fil
 {
 	return ReadFileInZipToContainer<std::vector<u8>>(file, chunk_size);
 }
-

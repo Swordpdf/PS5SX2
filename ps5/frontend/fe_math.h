@@ -172,4 +172,3 @@ struct Mat4
 constexpr float kPi = 3.14159265358979f;
 inline float Radians(float deg) { return deg * (kPi / 180.0f); }
 } // namespace fe
-

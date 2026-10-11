@@ -325,4 +325,3 @@ void hid_pointer_activate(HIDState* hs);
 int hid_pointer_poll(HIDState* hs, uint8_t* buf, int len);
 int hid_keyboard_poll(HIDState* hs, uint8_t* buf, int len);
 int hid_keyboard_write(HIDState* hs, uint8_t* buf, int len);
-

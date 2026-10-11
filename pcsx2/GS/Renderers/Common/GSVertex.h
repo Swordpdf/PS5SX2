@@ -78,4 +78,3 @@ __forceinline_odr GSVector4i GetVertexFOG(const GSVertex& v)
 {
 	return GSVector4i(v.m[1]).wwww();
 }
-

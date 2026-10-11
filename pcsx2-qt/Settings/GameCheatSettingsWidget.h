@@ -66,4 +66,3 @@ private:
 	std::vector<Patch::PatchInfo> m_patches;
 	std::vector<std::string> m_enabled_patches;
 };
-

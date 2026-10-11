@@ -575,4 +575,3 @@ void _flushX86regs()
 		}
 	}
 }
-

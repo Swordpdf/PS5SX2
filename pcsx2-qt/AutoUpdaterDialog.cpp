@@ -915,4 +915,3 @@ void AutoUpdaterDialog::cleanupAfterUpdate()
 #endif
 
 #include "moc_AutoUpdaterDialog.cpp"
-

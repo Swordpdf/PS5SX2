@@ -112,4 +112,3 @@ struct s128
 		return (lo != right.lo) || (hi != right.hi);
 	}
 };
-

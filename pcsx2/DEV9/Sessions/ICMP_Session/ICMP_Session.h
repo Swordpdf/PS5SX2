@@ -85,4 +85,3 @@ namespace Sessions
 		virtual ~ICMP_Session();
 	};
 } // namespace Sessions
-

@@ -152,4 +152,3 @@ bool InputSource::ShouldIgnoreInversion()
 	// This is only called when binding controllers, so the lookup is fine.
 	return Host::GetBaseBoolSettingValue("InputSources", "IgnoreInversion", false);
 }
-

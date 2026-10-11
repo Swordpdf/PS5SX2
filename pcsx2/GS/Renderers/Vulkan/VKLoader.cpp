@@ -200,4 +200,3 @@ bool Vulkan::LoadVulkanDeviceFunctions(VkDevice device)
 
 	return !required_functions_missing;
 }
-

@@ -425,4 +425,3 @@ void VifUnpackSSE_Init()
 	Perf::any.Register(SysMemory::GetVIFUnpackRec(), armGetAsmPtr() - SysMemory::GetVIFUnpackRec(), "VIF Unpack");
 	HostSys::EndCodeWrite();
 }
-

@@ -306,4 +306,3 @@ constexpr GSPixelRowOffsetTableList< 64, 0> GSTables::pixelRowOffset16;
 constexpr GSPixelRowOffsetTableList< 64, 0> GSTables::pixelRowOffset16S;
 constexpr GSPixelRowOffsetTableList<128, 7> GSTables::pixelRowOffset8;
 constexpr GSPixelRowOffsetTableList<128, 7> GSTables::pixelRowOffset4;
-

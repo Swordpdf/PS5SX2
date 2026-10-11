@@ -19,4 +19,3 @@ namespace Sessions
 		virtual void ForceClose() { RaiseEventConnectionClosed(); };
 	};
 } // namespace Sessions
-

@@ -45,4 +45,3 @@ EarlyHardwareCheckObject s_hardware_checker;
 #pragma optimize("", on)
 
 #endif
-

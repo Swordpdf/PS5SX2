@@ -103,4 +103,3 @@ private:
 	// List of fences and the corresponding positions in the buffer
 	std::deque<std::pair<u64, u32>, OrbisLineAllocator<std::pair<u64, u32>>> m_tracked_fences; // vk-285-91
 };
-

@@ -39,4 +39,3 @@ private:
 	BreakpointMemcheck m_bp_mc;
 	int m_rowIndex;
 };
-

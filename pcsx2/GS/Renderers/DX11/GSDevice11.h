@@ -431,4 +431,3 @@ public:
 	operator ID3D11Device1*() { return m_dev.get(); }
 	operator ID3D11DeviceContext1*() { return m_ctx.get(); }
 };
-

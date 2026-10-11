@@ -546,4 +546,3 @@ void GameListModel::setColumnDisplayNames()
 }
 
 #include "moc_GameListModel.cpp"
-

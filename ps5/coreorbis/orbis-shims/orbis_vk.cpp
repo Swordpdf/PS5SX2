@@ -113,4 +113,3 @@ void orbis_vk_window_survey(const char* when)
 		static_cast<unsigned long>(direct_total >> 20), static_cast<unsigned long>(free_size >> 20), rc);
 	std::fflush(stdout);
 }
-

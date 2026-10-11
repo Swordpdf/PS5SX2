@@ -126,4 +126,3 @@ u32 OutputIsoFile::GetBlockSize() const
 {
 	return m_blocksize;
 }
-

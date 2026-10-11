@@ -95,4 +95,3 @@ body:
         If PCSX2 crashed, please post crash logs and the .dmp file (in a zip file) if appropriate.
     validations:
       required: false
-

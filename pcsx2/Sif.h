@@ -207,4 +207,3 @@ extern bool WriteFifoSingleWord();
 #define sif0tag DMA_TAG(sif0data)
 #define sif1tag DMA_TAG(sif1data)
 #define sif2tag DMA_TAG(sif2data)
-

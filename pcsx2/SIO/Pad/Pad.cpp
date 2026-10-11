@@ -796,4 +796,3 @@ void Pad::UpdateMacroButtons()
 		}
 	}
 }
-

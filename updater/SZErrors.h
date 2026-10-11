@@ -29,4 +29,3 @@ static inline const char* SZErrorToString(SRes res)
   }
 	// clang-format on
 }
-

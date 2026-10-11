@@ -245,4 +245,3 @@ VULKAN_DEVICE_ENTRY_POINT(vkReleaseSwapchainImagesEXT, false)
 VULKAN_DEVICE_ENTRY_POINT(vkReleaseSwapchainImagesKHR, false)
 
 #endif // VULKAN_DEVICE_ENTRY_POINT
-

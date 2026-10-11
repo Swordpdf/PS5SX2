@@ -163,4 +163,3 @@ bool DecompressCamJPEG(std::vector<u8>* buffer, u32* width, u32* height, const u
 	jpeg_destroy_decompress(&info);
 	return result;
 }
-

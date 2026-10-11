@@ -245,4 +245,3 @@ public:
 private:
 	bool m_headless = false;
 };
-

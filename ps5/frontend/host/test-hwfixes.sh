@@ -34,4 +34,3 @@ if command -v node > /dev/null; then
 else
   echo "SKIP: no node, the page's steps weren't checked"
 fi
-

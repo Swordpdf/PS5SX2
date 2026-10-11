@@ -386,4 +386,3 @@ void OrbisAchievementsStopBrowser()
 		b.started = false;
 	}
 }
-

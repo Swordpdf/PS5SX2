@@ -159,4 +159,3 @@ void D3D12DescriptorAllocator::Reset()
 {
 	m_current_offset = 0;
 }
-

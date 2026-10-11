@@ -648,4 +648,3 @@ void XInputSource::UpdateMotorState(InputBindingKey large_key, InputBindingKey s
 	cd.last_vibration.wRightMotorSpeed = static_cast<u16>(small_intensity * 65535.0f);
 	m_xinput_set_state(large_key.source_index, &cd.last_vibration);
 }
-

@@ -113,4 +113,3 @@ bool WAVWriter::WriteHeader()
 
 	return (std::fwrite(&header, sizeof(header), 1, m_file) == 1);
 }
-

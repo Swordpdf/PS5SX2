@@ -91,4 +91,3 @@ namespace usb_pad
 		USBDevice* CreateDevice(SettingsInterface& si, u32 port, u32 subtype) const override;
 	};
 } // namespace usb_pad
-

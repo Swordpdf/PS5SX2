@@ -293,4 +293,3 @@ std::string DescribeBiosProblem(const std::string& bios_dir, const std::string& 
 	return "Nothing in " + where + " is a PS2 BIOS (" + std::to_string(files) + (files == 1 ? " file)." : " files).");
 }
 } // namespace fe
-

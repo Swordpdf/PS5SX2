@@ -1145,4 +1145,3 @@ constexpr inline GSOffset GSOffset::fromKnownPSM(u32 bp, u32 bw, GS_PSM psm)
 	}
 	return GSOffset(GSLocalMemory::swizzle32, bp, bw, psm);
 }
-

@@ -1015,4 +1015,3 @@ void MemoryView::gotoAddress(u32 address)
 }
 
 #include "moc_MemoryView.cpp"
-

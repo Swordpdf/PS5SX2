@@ -1116,4 +1116,3 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 		return mVUsearchProg<vuIndex>(startPC, ptr); // Find and set correct program
 	}
 }
-

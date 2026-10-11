@@ -509,4 +509,3 @@ OnlinePatchService OnlinePatches::Service()
 	return s;
 }
 } // namespace fe
-

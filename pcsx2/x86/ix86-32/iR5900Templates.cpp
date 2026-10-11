@@ -509,4 +509,3 @@ void eeFPURecompileCode(R5900FNPTR_INFO xmmcode, R5900FNPTR fpucode, int xmminfo
 
 	xmmcode(info);
 }
-

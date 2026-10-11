@@ -86,4 +86,3 @@ int main()
 	std::printf(g_fails ? "%d FAILED (tree kept in %s)\n" : "all passed\n", g_fails, root.c_str());
 	return g_fails ? 1 : 0;
 }
-

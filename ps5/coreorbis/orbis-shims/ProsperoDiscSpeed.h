@@ -42,4 +42,3 @@ void OrbisDiscReadMethodClose(OrbisDiscReadMethod& m);
 // Times 256 MB at the start of the disc and 256 MB at its end with the method, logs and shows the speeds (flag
 // disc_readtest, for a disc already copied).
 void OrbisDiscReadTest(const OrbisDiscReadMethod& m, uint64_t bytes);
-

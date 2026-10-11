@@ -66,4 +66,3 @@ namespace Host
 	/// Did Playstation in the currently selected locale use circle as confirm
 	bool LocaleCircleConfirm();
 } // namespace Host
-

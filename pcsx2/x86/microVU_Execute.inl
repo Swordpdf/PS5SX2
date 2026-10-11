@@ -416,4 +416,3 @@ void* mVUexecuteVU0(u32 startPC, u32 cycles) { return mVUexecute<0>(startPC, cyc
 void* mVUexecuteVU1(u32 startPC, u32 cycles) { return mVUexecute<1>(startPC, cycles); }
 void mVUcleanUpVU0() { mVUcleanUp<0>(); }
 void mVUcleanUpVU1() { mVUcleanUp<1>(); }
-

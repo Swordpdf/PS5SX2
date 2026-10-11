@@ -534,4 +534,3 @@ int main(int argc, char** argv)
 	std::printf(g_failures ? "%d FAILED\n" : "all passed\n", g_failures);
 	return g_failures ? 1 : 0;
 }
-

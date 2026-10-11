@@ -1122,4 +1122,3 @@ void DEV9SettingsWidget::DeleteHostConfig(int index)
 DEV9SettingsWidget::~DEV9SettingsWidget() = default;
 
 #include "moc_DEV9SettingsWidget.cpp"
-

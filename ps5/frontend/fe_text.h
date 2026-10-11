@@ -128,4 +128,3 @@ constexpr const char* Discord = "\xEF\x8E\x92";   // U+F392
 constexpr const char* XTwitter = "\xEE\x98\x9B";  // U+E61B
 } // namespace icon
 } // namespace fe
-

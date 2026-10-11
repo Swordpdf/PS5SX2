@@ -47,4 +47,3 @@ extern void WriteFIFO_VIF0(const mem128_t* value);
 extern void WriteFIFO_VIF1(const mem128_t* value);
 extern void WriteFIFO_GIF(const mem128_t* value);
 extern void WriteFIFO_IPUin(const mem128_t* value);
-

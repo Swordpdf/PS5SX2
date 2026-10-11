@@ -617,4 +617,3 @@ namespace Sessions
 		state = TCP_State::CloseCompletedFlushBuffer;
 	}
 } // namespace Sessions
-

@@ -1135,4 +1135,3 @@ QString OSDFontPickerDialog::findCachedFamilyFontPath(const QString& family) con
 }
 
 #include "moc_OsdFontPickerDialog.cpp"
-

@@ -15,4 +15,3 @@ void smap_write32(u32 addr, u32 value);
 void smap_readDMA8Mem(u32* pMem, int size);
 void smap_writeDMA8Mem(u32* pMem, int size);
 void smap_async(u32 cycles);
-

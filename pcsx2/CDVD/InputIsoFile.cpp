@@ -337,4 +337,3 @@ bool InputIsoFile::Detect(bool readType)
 	//BUG: This also detects a memory-card-file as a valid Audio-CD ISO... -avih
 	return true;
 }
-

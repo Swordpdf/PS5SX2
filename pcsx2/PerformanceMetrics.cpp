@@ -391,4 +391,3 @@ u32 PerformanceMetrics::GetFrameTimeHistoryPos()
 {
 	return s_frame_time_history_pos;
 }
-

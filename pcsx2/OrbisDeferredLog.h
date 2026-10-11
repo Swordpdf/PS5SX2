@@ -39,4 +39,3 @@ extern "C" void ps5vk_log_hook(int stream, const char* text, size_t len);
 // written by the ticker thread with the next drain. For lines from the emulation threads (the GS thread's
 // once-a-minute perf line).
 void OrbisDeferredEvent(const char* line);
-

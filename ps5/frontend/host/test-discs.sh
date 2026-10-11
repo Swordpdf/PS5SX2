@@ -19,4 +19,3 @@ san=(-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-fram
   "$work/lz4.o" "$work/chd_stub.o" -lz -lpthread -o "$work/discs_test"
 mkdir -p "$work/run"
 "$work/discs_test" "$work/run"
-

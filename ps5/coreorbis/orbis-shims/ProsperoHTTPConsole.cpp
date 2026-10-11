@@ -138,4 +138,3 @@ std::unique_ptr<HTTPDownloader> HTTPDownloader::Create(std::string user_agent)
 		return c;
 	});
 }
-

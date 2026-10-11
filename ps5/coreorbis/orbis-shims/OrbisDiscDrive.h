@@ -77,4 +77,3 @@ std::string Describe(int pass_fd);
 // the drive is ready (or has no pass-through device to ask). `why` (when not null) says why not.
 bool WaitReady(const std::string& device, uint32_t timeout_ms, std::string* why = nullptr);
 } // namespace OrbisDiscDrive
-

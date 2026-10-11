@@ -89,4 +89,3 @@ constexpr Enum operator~(Enum e) noexcept
 {
 	return static_cast<Enum>(~static_cast<std::underlying_type_t<Enum>>(e));
 }
-

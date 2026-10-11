@@ -30,4 +30,3 @@ private:
 	QTableWidgetItem* createRowItem(bool pressed);
 	QTableWidgetItem* createRowItem(std::tuple<bool, u8> buttonInfo);
 };
-

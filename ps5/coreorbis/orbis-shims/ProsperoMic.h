@@ -19,4 +19,3 @@ namespace orbis_mic
 	// Drops what was captured (a rate change, a new stream).
 	void Reset();
 } // namespace orbis_mic
-

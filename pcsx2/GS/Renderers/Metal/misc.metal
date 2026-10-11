@@ -10,4 +10,3 @@ kernel void waste_time(constant uint& cycles [[buffer(0)]], device uint* spin [[
 	// Store the result back to the buffer so the compiler can't optimize it away
 	spin[0] = value;
 }
-

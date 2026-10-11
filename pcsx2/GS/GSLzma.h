@@ -320,4 +320,3 @@ private:
 
 // Initializes CRC tables used by LZMA SDK.
 void GSInit7ZCRCTables();
-

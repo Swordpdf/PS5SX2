@@ -27,4 +27,3 @@ private Q_SLOTS:
 private:
 	Ui::BIOSSettingsWidget m_ui;
 };
-

@@ -76,4 +76,3 @@ void mVUclamp4(microVU& mVU, const xmm& reg, const xmm& regT1, int xyzw)
 	if (clampE && !CHECK_VU_SIGN_OVERFLOW(mVU.index) && mVU.regAlloc->checkVFClamp(reg.Id))
 		mVUclamp1(mVU, reg, regT1, xyzw, 1);
 }
-

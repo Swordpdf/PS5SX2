@@ -687,4 +687,3 @@ int Host::LocaleSensitiveCompare(std::string_view lhs, std::string_view rhs)
 	std::lock_guard<std::mutex> guard(QtHost::s_collator_mtx);
 	return QtHost::s_current_collator.compare(qlhs, qrhs);
 }
-

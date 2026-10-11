@@ -7,4 +7,3 @@ namespace SysMemory
 u8* GetSWRec();
 u8* GetSWRecEnd();
 }
-

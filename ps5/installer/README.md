@@ -110,4 +110,3 @@ The tests cover:
 - the no-log build: it installs, then leaves nothing behind and sends nothing.
 
 The CA list (`ca/cacert.pem`) is Mozilla's, as bundled in Node.js; `ca/make-cacert.sh` rebuilds it. `history/` holds the config files and switches that test builds before 112 shipped.
-

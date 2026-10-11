@@ -243,4 +243,3 @@ bool SaveStateBase::gifFreeze()
 
 	return true;
 }
-

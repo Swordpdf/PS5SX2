@@ -65,4 +65,3 @@ template <typename ValueType>
 using StringMultiMap = std::multimap<std::string, ValueType, detail::transparent_string_less>;
 using StringSet = std::set<std::string, detail::transparent_string_less>;
 using StringMultiSet = std::multiset<std::string, detail::transparent_string_less>;
-

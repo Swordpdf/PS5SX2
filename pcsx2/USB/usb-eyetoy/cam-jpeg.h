@@ -7,4 +7,3 @@
 
 bool CompressCamJPEG(std::vector<u8>* buffer, const u8* image, u32 width, u32 height, int quality);
 bool DecompressCamJPEG(std::vector<u8>* buffer, u32* width, u32* height, const u8* data, size_t data_size);
-

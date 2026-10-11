@@ -171,4 +171,3 @@ inline std::array<std::uint8_t, 32> sha256(std::span<const std::uint8_t> input)
 }
 
 } // namespace ps5::crypto
-

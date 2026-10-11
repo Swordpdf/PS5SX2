@@ -7,4 +7,3 @@ SRCDIRS=$(realpath "$SCRIPTDIR/..")/\ $(realpath "$SCRIPTDIR/../../pcsx2")/
 OUTDIR=$(realpath "$SCRIPTDIR")
 
 lupdate $SRCDIRS $OPTS -no-obsolete -source-language en -ts "$OUTDIR/pcsx2-qt_en.ts"
-

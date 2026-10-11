@@ -229,4 +229,3 @@ void tls_close(tls_conn *c) {
   mbedtls_ssl_free(&c->ssl);
   free(c);
 }
-

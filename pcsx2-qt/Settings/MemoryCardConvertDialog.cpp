@@ -323,4 +323,3 @@ void MemoryCardConvertDialog::FileOpenError(const QString errmsg)
 }
 
 #include "moc_MemoryCardConvertDialog.cpp"
-

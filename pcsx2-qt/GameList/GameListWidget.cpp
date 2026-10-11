@@ -1102,4 +1102,3 @@ void GameListGridListView::wheelEvent(QWheelEvent* e)
 }
 
 #include "moc_GameListWidget.cpp"
-

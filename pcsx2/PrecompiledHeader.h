@@ -46,4 +46,3 @@
 #if !defined(__GNUC__) || defined(__clang__)
 #include "fmt/format.h"
 #endif
-

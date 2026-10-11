@@ -934,4 +934,3 @@ Bytes write_executable(const Image &image, std::span<const Stub> stubs, const Op
 }
 
 } // namespace ps5::module
-

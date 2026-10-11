@@ -85,4 +85,3 @@ namespace PacketReader::NetLib
 		*index += length;
 	}
 } // namespace PacketReader::NetLib
-

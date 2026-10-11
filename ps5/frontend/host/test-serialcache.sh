@@ -23,4 +23,3 @@ flags=(-O1 -g -Wall -Wno-unused-function -I"$fe" -I"$pcsx2/3rdparty/vulkan/inclu
   "$fe/fe_settings.cpp" "$work/lz4.o" "$work/chd_stub.o" -o "$work/serialcache_test" -lz -lpthread
 "$work/serialcache_test" "$work/run"
 rm -rf "$work/run"
-

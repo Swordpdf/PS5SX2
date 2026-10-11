@@ -92,4 +92,3 @@ namespace MTGS
 	// start (the wrapping is what makes it a ringbuffer, yo!)
 	static const uint RingBufferMask = RingBufferSize - 1;
 }
-

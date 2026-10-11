@@ -1108,4 +1108,3 @@ void vtlb_DynBackpatchLoadStore(uptr code_address, u32 code_size, u32 guest_pc, 
 	for (u32 i = static_cast<u32>((uptr)x86Ptr - code_address); i < code_size; i++)
 		xNOP();
 }
-

@@ -214,4 +214,3 @@ namespace x86Emitter
 		xWrite8(imm);
 	}
 } // namespace x86Emitter
-

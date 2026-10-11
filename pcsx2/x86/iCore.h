@@ -328,4 +328,3 @@ int _allocIfUsedFPUtoXMM(int fpureg, int mode);
 // no freeing, used when callee won't destroy xmm regs
 #define FLUSH_NODESTROY (FLUSH_CONSTANT_REGS | FLUSH_FLUSH_XMM | FLUSH_ALL_X86)
 
-

@@ -30,4 +30,3 @@ public:
 
 	u32 GetBlockCount() const override;
 };
-

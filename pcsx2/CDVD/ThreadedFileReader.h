@@ -125,4 +125,3 @@ public:
 	void SetBlockSize(u32 bytes);
 	void SetDataOffset(u32 bytes);
 };
-

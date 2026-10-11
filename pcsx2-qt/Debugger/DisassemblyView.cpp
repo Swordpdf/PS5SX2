@@ -1140,4 +1140,3 @@ bool DisassemblyView::FunctionCanRestore(u32 address)
 }
 
 #include "moc_DisassemblyView.cpp"
-

@@ -383,4 +383,3 @@ namespace Host
 	/// Provided by the host; called once per frame at guest vsync.
 	void PumpMessagesOnCPUThread();
 } // namespace Host
-

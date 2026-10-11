@@ -14,4 +14,3 @@ extern void MapTLB(const tlbs& t, int i);
 
 extern void COP0_UpdatePCCR();
 extern void COP0_DiagnosticPCCR();
-

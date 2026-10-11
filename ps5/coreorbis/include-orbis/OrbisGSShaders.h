@@ -18,4 +18,3 @@ bool OrbisBuiltinShaderSource(const char* filename, std::string* out);
 // The built-in copy of resources/<filename>, else the folder's (vk-285-134: the eboot's first, a boot.log line when the
 // folder holds a different copy; shadeboost.glsl, meant to be edited, the folder's first); false when neither has it.
 bool OrbisReadShaderSource(const std::string& resources_dir, const char* filename, std::string* out);
-

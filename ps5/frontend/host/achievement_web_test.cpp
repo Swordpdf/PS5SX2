@@ -123,4 +123,3 @@ int main(int argc, char** argv)
 	assert(image_calls == before);
 	server.Stop();
 }
-

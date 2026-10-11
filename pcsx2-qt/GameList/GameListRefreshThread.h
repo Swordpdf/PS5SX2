@@ -63,4 +63,3 @@ private:
 	bool m_invalidate_cache;
 	bool m_popup_on_error;
 };
-

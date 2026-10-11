@@ -191,4 +191,3 @@ bool IsoHasher::ComputeTrackHash(Track& track, ProgressCallback* callback)
 	callback->SetProgressValue(track.sectors);
 	return true;
 }
-

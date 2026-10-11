@@ -239,4 +239,3 @@ namespace PacketReader::IP::UDP::DHCP
 			delete options[i];
 	}
 } // namespace PacketReader::IP::UDP::DHCP
-

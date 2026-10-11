@@ -526,4 +526,3 @@ namespace FullscreenUI
 	inline bool s_prefer_english_titles;
 
 } // namespace FullscreenUI
-

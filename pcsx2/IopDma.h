@@ -32,4 +32,3 @@ extern void spu2DMA7Irq();
 
 extern void iopIntcIrq( uint irqType );
 extern void iopTestIntc();
-

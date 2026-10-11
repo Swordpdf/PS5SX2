@@ -166,4 +166,3 @@ Core attributes (SD_C)
 #define VOICE_ADDR_LSAX 0x4 // Loop point address
 #define VOICE_ADDR_NAX 0x8  // Waveform data that should be read next
 
-

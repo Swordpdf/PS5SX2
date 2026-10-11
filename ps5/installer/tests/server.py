@@ -128,4 +128,3 @@ srv = S(('127.0.0.1', PORT), H)
 srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
 open(os.path.join(WORK, 'server.ready'), 'w').write('ok')
 srv.serve_forever()
-

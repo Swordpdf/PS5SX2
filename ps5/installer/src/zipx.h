@@ -24,4 +24,3 @@ const char *zip_top(const zarch *z);
 uint64_t zip_total_size(const zarch *z);
 /* Extracts one file to dest (created, CRC-32 checked by miniz, fsync'ed); 0 on success. */
 int zip_extract(zarch *z, const zentry *e, const char *dest);
-

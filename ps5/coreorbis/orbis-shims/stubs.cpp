@@ -72,4 +72,3 @@ void AbortWithMessage(const char* msg)
   fflush(stdout);
   abort();
 }
-

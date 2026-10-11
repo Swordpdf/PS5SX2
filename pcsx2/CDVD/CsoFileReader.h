@@ -49,4 +49,3 @@ private:
 	size_t m_file_cache_size = 0;
 	z_stream m_z_stream = {};
 };
-

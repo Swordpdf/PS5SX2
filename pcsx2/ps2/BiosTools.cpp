@@ -559,4 +559,3 @@ void CopyBIOSToMemory()
 
 	CurrentBiosInformation.eeThreadListAddr = 0;
 }
-

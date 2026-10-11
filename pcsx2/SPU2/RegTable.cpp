@@ -311,4 +311,3 @@ static std::array<u16*, 0x401> ComputeRegTable()
 }
 
 const std::array<u16*, 0x401> regtable = ComputeRegTable();
-

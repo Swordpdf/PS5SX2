@@ -53,4 +53,3 @@ void ATA::HDD_ExecuteDeviceDiag(bool sendIRQ)
 
 	PostCmdExecuteDeviceDiag(sendIRQ);
 }
-

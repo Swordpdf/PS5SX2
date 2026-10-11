@@ -220,4 +220,3 @@ void SymbolTreeLocation::write128(u128 value, DebugInterface& cpu) const
 		}
 	}
 }
-

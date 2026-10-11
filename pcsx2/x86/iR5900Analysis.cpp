@@ -1615,4 +1615,3 @@ void recBackpropMMI(u32 code, EEINST* prev, EEINST* pinst)
 		break;
 	}
 }
-

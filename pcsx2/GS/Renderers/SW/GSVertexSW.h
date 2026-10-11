@@ -281,4 +281,3 @@ struct alignas(32) GSVertexSW2
 };
 
 #endif
-

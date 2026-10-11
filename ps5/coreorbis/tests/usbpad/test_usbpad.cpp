@@ -303,4 +303,3 @@ int main()
 	printf("PASS: %d of %d checks passed (USB pads)\n", s_checks, s_checks);
 	return 0;
 }
-

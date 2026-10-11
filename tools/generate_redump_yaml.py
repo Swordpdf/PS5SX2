@@ -119,4 +119,3 @@ if __name__ == "__main__":
     print("Writing %s..." % sys.argv[2])
     write_yaml(games, sys.argv[2])
     sys.exit(0)
-

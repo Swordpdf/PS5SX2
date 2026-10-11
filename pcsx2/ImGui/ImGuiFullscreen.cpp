@@ -3558,4 +3558,3 @@ void ImGuiFullscreen::SetTheme(std::string_view theme)
 		UISecondaryTextColor = HEX_TO_IMVEC4(0x000000, 0xff);
 	}
 }
-

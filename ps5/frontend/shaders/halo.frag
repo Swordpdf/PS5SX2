@@ -31,4 +31,3 @@ void main()
 	float a = (line + glow) * pc.color.w;
 	o_color = vec4(pc.color.rgb * a, a);
 }
-

@@ -474,4 +474,3 @@ void ps_automagical_supersampling()
 #endif
 
 #endif
-

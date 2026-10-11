@@ -37,4 +37,3 @@ namespace Sessions
 			Handlers[i](this);
 	}
 } // namespace Sessions
-

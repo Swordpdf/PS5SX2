@@ -586,4 +586,3 @@ void MemoryCardSlotWidget::setCard(const std::optional<std::string>& name, bool 
 }
 
 #include "moc_MemoryCardSettingsWidget.cpp"
-

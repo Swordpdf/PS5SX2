@@ -35,4 +35,3 @@ bool PadBase::Freeze(StateWrapper& sw)
 	sw.Do(&commandBytesReceived);
 	return !sw.HasError();
 }
-

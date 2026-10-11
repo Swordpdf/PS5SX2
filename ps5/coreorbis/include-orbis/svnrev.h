@@ -8,4 +8,3 @@
 #define GIT_REV "orbis-450a39a"
 #define GIT_HASH "450a39a"
 #define GIT_DATE "2026-09-05"
-

@@ -134,4 +134,3 @@ template< uint page > extern u16 rcntRead32( u32 mem );		// returns u16 by desig
 
 extern void UpdateVSyncRate(bool force);
 
-

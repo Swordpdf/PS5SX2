@@ -77,4 +77,3 @@ struct std::hash<Sessions::ConnectionKey>
 		return hash;
 	}
 };
-

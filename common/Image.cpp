@@ -1353,4 +1353,3 @@ bool BMPFileSaver(const RGBA8Image& image, const char* filename, std::FILE* fp, 
 
 	return (std::fwrite(buffer.data(), buffer.size(), 1, fp) == 1);
 }
-

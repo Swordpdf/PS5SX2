@@ -161,4 +161,3 @@ private:
 	u64 m_copy_fence_value = 0;
 	u32 m_buffer_size = 0;
 };
-

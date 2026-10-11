@@ -421,4 +421,3 @@ const CDVD_API CDVDapi_Iso =
 		ISOreadSector,
 		ISOgetDualInfo,
 };
-

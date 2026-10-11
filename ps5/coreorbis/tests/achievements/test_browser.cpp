@@ -203,4 +203,3 @@ int main(int argc, char** argv)
 	assert(ms < 1000 && !service.state().busy);
 	hang_requests = false;
 }
-

@@ -797,4 +797,3 @@ bool SaveStateBase::gifDmaFreeze()
 
 	return IsOkay();
 }
-

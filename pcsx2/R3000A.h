@@ -207,4 +207,3 @@ extern void (*psxCP2BSC[32])();
 
 extern void psxBiosReset();
 extern bool psxBiosCall();
-

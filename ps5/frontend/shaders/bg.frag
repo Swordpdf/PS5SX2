@@ -51,4 +51,3 @@ void main()
 	col += fe_dither(gl_FragCoord.xy) / 255.0;
 	o_color = vec4(max(col, vec3(0.0)), 1.0);
 }
-

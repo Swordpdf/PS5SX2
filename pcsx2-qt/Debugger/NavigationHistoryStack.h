@@ -162,4 +162,3 @@ private:
 	static constexpr int DELAY_MILLISECONDS = 1000;
 	static constexpr size_t MAX_ELEMENTS = 1000;
 };
-

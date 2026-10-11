@@ -89,4 +89,3 @@ public:
 
 	void CorrectDepthTrace(const void* vertex, int count);
 };
-

@@ -72,4 +72,3 @@ private:
 	QTimer* m_resize_debounce_timer = nullptr;
 	QWidget* m_container = nullptr;
 };
-

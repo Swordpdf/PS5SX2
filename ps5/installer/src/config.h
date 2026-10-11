@@ -44,4 +44,3 @@
 #define OUTBOX_MAX_FILES 20
 #define OUTBOX_MAX_BYTES (60ull << 20)
 #define LOGGER_POLL_SECONDS 5
-

@@ -116,4 +116,3 @@ namespace x86Emitter
 	};
 
 } // end namespace x86Emitter
-

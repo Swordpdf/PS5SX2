@@ -102,4 +102,3 @@ void main()
 	}
 	o_color = vec4(clamp(col, 0.0, 1.0), alpha);
 }
-

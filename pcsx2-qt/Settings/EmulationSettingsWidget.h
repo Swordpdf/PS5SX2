@@ -28,4 +28,3 @@ private:
 
 	Ui::EmulationSettingsWidget m_ui;
 };
-

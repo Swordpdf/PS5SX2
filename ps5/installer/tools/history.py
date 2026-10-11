@@ -36,4 +36,3 @@ for f in sorted(flags):
 lines.append('};')
 lines.append('const size_t g_shipped_flags_n = sizeof(g_shipped_flags) / sizeof(g_shipped_flags[0]);')
 open(out, 'w').write('\n'.join(lines) + '\n')
-

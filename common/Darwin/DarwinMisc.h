@@ -22,4 +22,3 @@ std::vector<CPUClass> GetCPUClasses();
 }
 
 #endif
-

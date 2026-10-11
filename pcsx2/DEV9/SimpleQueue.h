@@ -101,4 +101,3 @@ SimpleQueue<T>::~SimpleQueue()
 		tail = nullptr;
 	}
 }
-

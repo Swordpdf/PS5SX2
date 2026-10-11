@@ -898,4 +898,3 @@ void recCOP2_SPEC1()
 
 }
 void recCOP2_SPEC2() { recCOP2SPECIAL2t[(cpuRegs.code & 3) | ((cpuRegs.code >> 4) & 0x7c)](); }
-

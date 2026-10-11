@@ -523,4 +523,3 @@ int DebugAnalysisSettingsWidget::getIntSettingValue(
 }
 
 #include "moc_DebugAnalysisSettingsWidget.cpp"
-

@@ -60,4 +60,3 @@ namespace GSTextureReplacements
 	/// Saves an image buffer to a PNG file (for dumping).
 	bool SavePNGImage(const std::string& filename, u32 width, u32 height, const u8* buffer, u32 pitch);
 } // namespace GSTextureReplacements
-

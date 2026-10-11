@@ -78,4 +78,3 @@ void BaseVUmicroCPU::ExecuteBlockJIT(BaseVUmicroCPU* cpu, bool interlocked)
 		}
 	}
 }
-

@@ -7647,4 +7647,3 @@ void GSState::GSPCRTCRegs::CalculateDisplayOffset(bool scanmask)
 	}
 }
 
-

@@ -37,4 +37,3 @@ u32 GzippedFileReader::GetBlockCount() const
 {
   return 0;
 }
-

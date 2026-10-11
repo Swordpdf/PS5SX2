@@ -29,4 +29,3 @@ namespace GSDumpReplayer
 
 	void RenderUI();
 } // namespace GSDumpReplayer
-

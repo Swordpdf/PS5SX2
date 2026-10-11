@@ -114,4 +114,3 @@ bool GLContextEGLWayland::LoadModule(Error* error)
 
 	return true;
 }
-

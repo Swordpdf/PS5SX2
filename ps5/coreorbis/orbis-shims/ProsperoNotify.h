@@ -51,4 +51,3 @@ inline std::string OrbisToastIcon(const std::string& path, const std::string& ur
 		return url;
 	return {};
 }
-

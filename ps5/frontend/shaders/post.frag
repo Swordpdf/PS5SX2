@@ -45,4 +45,3 @@ void main()
 	}
 	o_color = vec4(result * pc.texel.z, 1.0);
 }
-

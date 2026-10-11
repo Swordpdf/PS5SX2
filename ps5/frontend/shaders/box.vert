@@ -33,4 +33,3 @@ void main()
 	v_face = int(a_face + 0.5);
 	gl_Position = u_view_proj * world;
 }
-

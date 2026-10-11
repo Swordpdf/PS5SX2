@@ -20,4 +20,3 @@ GSTexture* GSRendererNull::GetOutput(int i, float& scale, int& y_offset)
 {
 	return nullptr;
 }
-

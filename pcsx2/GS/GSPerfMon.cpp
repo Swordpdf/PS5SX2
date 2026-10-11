@@ -68,4 +68,3 @@ void GSPerfMon::Dump(const std::string& filename, bool hw)
 
 	fclose(fp);
 }
-

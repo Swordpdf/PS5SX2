@@ -420,4 +420,3 @@ InstantizeHwRead(0x04);	InstantizeHwRead(0x0c);
 InstantizeHwRead(0x05);	InstantizeHwRead(0x0d);
 InstantizeHwRead(0x06);	InstantizeHwRead(0x0e);
 InstantizeHwRead(0x07);	InstantizeHwRead(0x0f);
-

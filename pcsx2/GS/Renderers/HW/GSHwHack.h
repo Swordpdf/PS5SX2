@@ -49,4 +49,3 @@ public:
 	static const Entry<GSRendererHW::OI_Ptr> s_before_draw_functions[];
 	static const Entry<GSRendererHW::MV_Ptr> s_move_handler_functions[];
 };
-

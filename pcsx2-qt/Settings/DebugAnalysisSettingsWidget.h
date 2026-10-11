@@ -67,4 +67,3 @@ protected:
 
 	Ui::DebugAnalysisSettingsWidget m_ui;
 };
-

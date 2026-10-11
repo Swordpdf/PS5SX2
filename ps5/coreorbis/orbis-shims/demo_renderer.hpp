@@ -82,4 +82,3 @@ class Canvas final
 void read_asset_text(const char *path, std::span<char> destination,
                      std::string_view fallback) noexcept;
 } // namespace ps5::demo
-

@@ -39,4 +39,3 @@ public:
 	u32 GetDirtyChannels();
 	GSVector4i GetDirtyRect(size_t index, GIFRegTEX0 TEX0, const GSVector4i& clamp, bool align) const;
 };
-

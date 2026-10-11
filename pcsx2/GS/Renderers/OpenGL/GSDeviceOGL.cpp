@@ -4094,4 +4094,3 @@ void GSDeviceOGL::InsertDebugMessage(DebugMessageCategory category, const char* 
 		glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, type, id, severity, buf.size(), buf.c_str());
 #endif
 }
-

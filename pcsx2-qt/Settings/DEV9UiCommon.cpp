@@ -70,4 +70,3 @@ void IPItemDelegate::updateEditorGeometry(QWidget* editor, const QStyleOptionVie
 }
 
 #include "moc_DEV9UiCommon.cpp"
-

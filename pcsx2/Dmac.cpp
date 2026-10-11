@@ -581,4 +581,3 @@ template bool dmacWrite32<0x0c>( u32 mem, mem32_t& value );
 template bool dmacWrite32<0x0d>( u32 mem, mem32_t& value );
 template bool dmacWrite32<0x0e>( u32 mem, mem32_t& value );
 template bool dmacWrite32<0x0f>( u32 mem, mem32_t& value );
-

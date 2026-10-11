@@ -81,4 +81,3 @@ Try different combinations of VU0/VU1 Advanced Recompiler Options. Only change o
 
 There are some known issues with specific games that are programming level issues rather than configuration level; please check the [PCSX2 Wiki](https://wiki.pcsx2.net/Main_Page) if these solutions do not help.
 
-

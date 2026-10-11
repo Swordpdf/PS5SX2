@@ -16,4 +16,3 @@ done
 rm -rf "$out"
 [ $fail = 0 ] && echo "PASS disc_hash: 70 cases match zlib/hashlib"
 exit $fail
-

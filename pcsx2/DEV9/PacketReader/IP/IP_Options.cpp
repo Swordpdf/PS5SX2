@@ -50,4 +50,3 @@ namespace PacketReader::IP
 		NetLib::WriteUInt16(buffer, offset, value);
 	}
 } // namespace PacketReader::IP
-

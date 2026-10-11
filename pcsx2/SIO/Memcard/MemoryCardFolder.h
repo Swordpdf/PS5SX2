@@ -559,4 +559,3 @@ public:
 	void NextFrame(uint slot);
 	bool ReIndex(uint slot, const bool enableFiltering, const std::string& filter);
 };
-

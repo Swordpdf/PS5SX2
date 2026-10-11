@@ -191,4 +191,3 @@ namespace Sessions::UDP_Common
 		return {std::nullopt, true};
 	}
 } // namespace Sessions::UDP_Common
-

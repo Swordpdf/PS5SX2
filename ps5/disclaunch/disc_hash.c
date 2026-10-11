@@ -126,4 +126,3 @@ void disc_hash_final(disc_hash_ctx *c, char crc_hex[9], char md5_hex[33], char s
     for (int i = 0; i < 16; i++) snprintf(md5_hex + 2 * i, 3, "%02x", (c->md5[i / 4] >> (8 * (i % 4))) & 0xFF);
     for (int i = 0; i < 20; i++) snprintf(sha1_hex + 2 * i, 3, "%02x", (c->sha1[i / 4] >> (24 - 8 * (i % 4))) & 0xFF);
 }
-

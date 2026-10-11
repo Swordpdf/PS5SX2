@@ -146,4 +146,3 @@ constexpr auto swizzleTables16   = makeSwizzleTableList(blockTable16,   pixelCol
 constexpr auto swizzleTables16S  = makeSwizzleTableList(blockTable16S,  pixelColOffset16S,  GSTables::pixelRowOffset16S );
 constexpr auto swizzleTables8    = makeSwizzleTableList(blockTable8,    pixelColOffset8,    GSTables::pixelRowOffset8   );
 constexpr auto swizzleTables4    = makeSwizzleTableList(blockTable4,    pixelColOffset4,    GSTables::pixelRowOffset4   );
-

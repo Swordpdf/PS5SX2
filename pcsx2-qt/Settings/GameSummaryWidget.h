@@ -43,4 +43,3 @@ private:
 	std::string m_entry_path;
 	std::string m_redump_search_keyword;
 };
-

@@ -218,4 +218,3 @@ int main(void) {
     if (g_out) fclose(g_out);
     return 0;
 }
-

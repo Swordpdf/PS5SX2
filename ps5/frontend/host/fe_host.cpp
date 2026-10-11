@@ -932,4 +932,3 @@ int main(int argc, char** argv)
 	renderer.Shutdown();
 	return failures ? 1 : 0;
 }
-

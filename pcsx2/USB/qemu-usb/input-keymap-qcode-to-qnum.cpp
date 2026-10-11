@@ -207,4 +207,3 @@ int qemu_input_key_value_to_scancode(const KeyValue* value, bool down,
 
 	return count;
 }
-

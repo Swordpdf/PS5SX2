@@ -110,4 +110,3 @@ static inline bool cpuinfo_has_x86_bmi2(void)
   return true;
 }
 #endif
-

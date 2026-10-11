@@ -4598,4 +4598,3 @@ static const fg_shader k_fg_shaders[10] = {
 	{"fi_vector_field", k_fg_spv_fi_vector_field, 5970, {8, 8, 1}, k_fg_bind_fi_vector_field, 7},
 	{"fi_interpolate", k_fg_spv_fi_interpolate, 13907, {8, 8, 1}, k_fg_bind_fi_interpolate, 11},
 };
-

@@ -28,4 +28,3 @@ extern void resetNewVif(int idx);
 
 template< int idx >
 extern void vifUnpackSetup(const u32* data);
-

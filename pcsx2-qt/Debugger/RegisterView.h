@@ -68,4 +68,3 @@ private:
 	bool m_showVU0FFloat = false;
 	bool m_showFPRFloat = false;
 };
-

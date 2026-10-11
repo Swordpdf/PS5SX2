@@ -135,4 +135,3 @@ void GSDrawingEnvironment::Dump(const std::string& filename) const
 
 	fclose(fp);
 }
-

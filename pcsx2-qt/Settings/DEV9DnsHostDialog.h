@@ -38,4 +38,3 @@ private:
 	QStandardItemModel* m_ethHost_model;
 	QSortFilterProxyModel* m_ethHosts_proxy;
 };
-

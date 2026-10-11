@@ -1098,4 +1098,3 @@ void Vulkan::BufferViewBuilder::Set(VkBuffer buffer, VkFormat format, u32 offset
 	m_ci.offset = offset;
 	m_ci.range = size;
 }
-

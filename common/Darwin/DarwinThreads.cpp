@@ -277,4 +277,3 @@ void Threading::SetNameOfCurrentThread(const char* name)
 {
 	pthread_setname_np(name);
 }
-

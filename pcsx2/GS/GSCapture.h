@@ -42,4 +42,3 @@ namespace GSCapture
 	using FormatList = std::vector<FormatName>;
 	FormatList GetVideoFormatList(const char* codec);
 }; // namespace GSCapture
-

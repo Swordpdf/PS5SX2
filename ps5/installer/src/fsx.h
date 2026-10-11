@@ -52,4 +52,3 @@ uint64_t fs_free_bytes(const char *p);
 /* flock(LOCK_EX|LOCK_NB): 0 = we hold it (fd kept open), 1 = someone else holds it, -1 = error. */
 int fs_lock(const char *p, int *fd_out);
 void fs_unlock(int fd);
-

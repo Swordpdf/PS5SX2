@@ -53,4 +53,3 @@ private:
 
 	Ui::GamePatchSettingsWidget m_ui;
 };
-

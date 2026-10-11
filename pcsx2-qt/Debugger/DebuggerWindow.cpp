@@ -611,4 +611,3 @@ DebugInterface* DebuggerWindow::currentCPU()
 }
 
 #include "moc_DebuggerWindow.cpp"
-

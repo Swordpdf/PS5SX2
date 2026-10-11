@@ -200,4 +200,3 @@ namespace ControllerSettingWidgetBinder
 		}
 	}
 } // namespace ControllerSettingWidgetBinder
-

@@ -1297,4 +1297,3 @@ namespace ps5::framegen
 		return true;
 	}
 }
-

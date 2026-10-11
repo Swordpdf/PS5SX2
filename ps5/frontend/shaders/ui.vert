@@ -21,4 +21,3 @@ void main()
 	v_params = a_params;
 	gl_Position = vec4(a_pos * u_screen.zw * 2.0 - 1.0, 0.0, 1.0);
 }
-

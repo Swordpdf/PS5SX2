@@ -24,4 +24,3 @@ void Clear()
 {
 }
 } // namespace SaveStateSelectorUI
-

@@ -27,4 +27,3 @@ public:
 
 	void Dump(const std::string& filename) const;
 };
-

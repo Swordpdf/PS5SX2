@@ -2410,4 +2410,3 @@
  A_STATIC AF3 opARcpF3(outAF3 d,inAF3 a){d=ARcpF3(a);return d;}
  A_STATIC AF4 opARcpF4(outAF4 d,inAF4 a){d=ARcpF4(a);return d;}
 #endif
-

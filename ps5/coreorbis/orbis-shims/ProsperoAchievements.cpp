@@ -278,4 +278,3 @@ void OrbisAchievementsLoginSuccess(const char* username)
 	account.state.authenticated = true;
 	account.state.username = username;
 }
-

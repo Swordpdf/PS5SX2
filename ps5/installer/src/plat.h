@@ -26,4 +26,3 @@ const char *plat_test_env(const char *name);
 
 /* Ignore SIGPIPE etc. */
 void plat_init(void);
-

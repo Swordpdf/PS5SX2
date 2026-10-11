@@ -226,4 +226,3 @@ EERECOMPILE_CODEX(eeRecompileCodeRC1, XORI, XMMINFO_WRITET | XMMINFO_READS | XMM
 #endif
 
 } // namespace R5900::Dynarec::OpcodeImpl
-

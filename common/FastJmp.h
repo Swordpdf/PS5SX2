@@ -23,4 +23,3 @@ extern "C" {
 int fastjmp_set(fastjmp_buf* buf);
 __noreturn void fastjmp_jmp(const fastjmp_buf* buf, int ret);
 }
-

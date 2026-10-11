@@ -923,4 +923,3 @@ std::pair<QString, u64> DockLayout::generateNewUniqueName(const char* type)
 
 	return {name, id};
 }
-

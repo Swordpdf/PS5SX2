@@ -201,4 +201,3 @@ long CubebAudioDevice::DataCallback(struct cubeb_stream* stream, void* user_ptr,
 }
 } // namespace audiodev_cubeb
 } // namespace usb_mic
-

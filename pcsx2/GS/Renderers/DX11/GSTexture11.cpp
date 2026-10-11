@@ -315,4 +315,3 @@ void GSDownloadTexture11::SetDebugName(std::string_view name)
 }
 
 #endif
-

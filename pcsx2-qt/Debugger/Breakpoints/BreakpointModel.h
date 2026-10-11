@@ -71,4 +71,3 @@ private:
 
 	static std::map<BreakPointCpu, BreakpointModel*> s_instances;
 };
-

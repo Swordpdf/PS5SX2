@@ -514,4 +514,3 @@ void AudioSettingsWidget::resetVolume(const bool fast_forward)
 }
 
 #include "moc_AudioSettingsWidget.cpp"
-

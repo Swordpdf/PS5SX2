@@ -1620,4 +1620,3 @@ void StopVoices(int core, u32 value)
 			SPU2::ConLog("* SPU2: KeyOff: Core %d; Voice %d.\n", core, vc);
 	}
 }
-

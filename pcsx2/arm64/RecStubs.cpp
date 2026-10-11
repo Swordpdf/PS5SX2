@@ -28,4 +28,3 @@ bool SaveStateBase::vuJITFreeze()
 	Freeze(empty_data);
 	return true;
 }
-

@@ -105,4 +105,3 @@ private:
 	std::array<QPixmap, static_cast<int>(GameList::CompatibilityRatingCount)> m_compatibility_pixmaps;
 	mutable LRUCache<std::string, QPixmap> m_cover_pixmap_cache;
 };
-

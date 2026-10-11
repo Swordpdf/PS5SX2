@@ -362,4 +362,3 @@ void recMOVN()
 #endif
 
 } // namespace R5900::Dynarec::OpcodeImpl
-

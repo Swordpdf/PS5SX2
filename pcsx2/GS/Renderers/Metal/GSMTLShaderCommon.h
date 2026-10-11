@@ -52,4 +52,3 @@ static inline float4 convert_depth16_rgba8(float value)
 #ifndef __HAVE_MUL24__
 template <typename T> T mul24(T a, T b) { return a * b; }
 #endif
-

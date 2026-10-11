@@ -348,4 +348,3 @@ bool IOCtlSrc::DiscReady()
 
 	return !!m_sectors;
 }
-

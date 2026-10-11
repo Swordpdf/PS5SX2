@@ -529,4 +529,3 @@ bool SaveStateBase::sprFreeze()
 
 	return IsOkay();
 }
-

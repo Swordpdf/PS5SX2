@@ -425,4 +425,3 @@ std::unique_ptr<GSDumpBase> GSDumpBase::CreateZstDump(
 		screenshot_width, screenshot_height, screenshot_pixels,
 		fd, regs);
 }
-

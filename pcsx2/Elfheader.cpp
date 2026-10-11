@@ -349,4 +349,3 @@ void ElfObject::LoadHeaders()
 	LoadProgramHeaders();
 	LoadSectionHeaders();
 }
-

@@ -323,4 +323,3 @@ void dmaVIF0()
 	if (!vif0Regs.stat.test(VIF0_STAT_VSS | VIF0_STAT_VIS | VIF0_STAT_VFS))
 		CPU_INT(DMAC_VIF0, 4);
 }
-

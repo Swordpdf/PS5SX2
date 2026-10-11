@@ -150,4 +150,3 @@ void BIOSSettingsWidget::fastBootChanged()
 }
 
 #include "moc_BIOSSettingsWidget.cpp"
-

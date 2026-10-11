@@ -186,4 +186,3 @@ for source in "${sources[@]}"; do
 done
 
 printf '%s\n' "${objects[@]}"
-

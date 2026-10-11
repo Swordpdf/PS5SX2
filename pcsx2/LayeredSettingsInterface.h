@@ -74,4 +74,3 @@ private:
 
 	std::array<SettingsInterface*, NUM_LAYERS> m_layers{};
 };
-

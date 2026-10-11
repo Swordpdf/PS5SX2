@@ -158,4 +158,3 @@ namespace x86Emitter
 		void operator()(const xRegisterSSE& dst, const xRegisterSSE& src1, const xIndirectVoid& src2, const xRegisterSSE& src3) const;
 	};
 } // end namespace x86Emitter
-

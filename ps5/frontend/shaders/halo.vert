@@ -24,4 +24,3 @@ void main()
 	v_local = c * half_size;
 	gl_Position = u_view_proj * (pc.model * vec4(v_local, pc.size.z, 1.0));
 }
-

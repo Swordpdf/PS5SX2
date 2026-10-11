@@ -82,4 +82,3 @@ namespace PacketReader::IP::TCP
 		}
 	};
 } // namespace PacketReader::IP::TCP
-

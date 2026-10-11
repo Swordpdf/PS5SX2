@@ -94,4 +94,3 @@ Logs: attached
 2. On the settings page, press **Download logs**. They're also in `/data/PCSX2/logs/`: `boot.log`, `emulog.txt` and `settings.log`.
 
 Logs from slow games are the most useful ones: PS5SX2's built-in profiler writes down where the time went, and the per-minute lines show the frame rate, the speed and how busy each thread was.
-

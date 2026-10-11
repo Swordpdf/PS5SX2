@@ -68,4 +68,3 @@ namespace PacketReader::ARP
 		return 8 + 2 * GetHardwareAddressLength() + 2 * GetProtocolAddressLength();
 	}
 } // namespace PacketReader::ARP
-

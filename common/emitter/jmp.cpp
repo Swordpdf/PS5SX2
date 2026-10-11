@@ -267,4 +267,3 @@ namespace x86Emitter
 		return (JccComparisonType)((int)src ^ 1);
 	}
 } // namespace x86Emitter
-

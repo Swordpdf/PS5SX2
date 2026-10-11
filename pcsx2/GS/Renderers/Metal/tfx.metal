@@ -1865,4 +1865,3 @@ kernel void metal_version_22() {}
 #if __METAL_VERSION__ >= 230
 kernel void metal_version_23() {}
 #endif
-

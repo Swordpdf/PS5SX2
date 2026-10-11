@@ -416,4 +416,3 @@ template u32 vifRead32<1>(u32 mem);
 
 template bool vifWrite32<0>(u32 mem, u32 value);
 template bool vifWrite32<1>(u32 mem, u32 value);
-

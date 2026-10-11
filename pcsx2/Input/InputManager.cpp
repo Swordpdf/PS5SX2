@@ -1885,4 +1885,3 @@ void InputManager::ReloadSources(SettingsInterface& si, std::unique_lock<std::mu
 	UpdateInputSourceState<XInputSource>(si, settings_lock, InputSourceType::XInput);
 #endif
 }
-

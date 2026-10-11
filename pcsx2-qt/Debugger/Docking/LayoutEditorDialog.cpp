@@ -107,4 +107,3 @@ void LayoutEditorDialog::onNameChanged()
 }
 
 #include "moc_LayoutEditorDialog.cpp"
-

@@ -478,4 +478,3 @@ namespace usb_pad
 	}
 
 } // namespace usb_pad
-

@@ -1412,4 +1412,3 @@ void P_VRXOR( std::string& output ){_sap("vrxor R, %s%s") COP2_REG_CTL[DECODE_FS
 //************************************END OF SPECIAL2 VUO TABLE****************************
 
 }
-

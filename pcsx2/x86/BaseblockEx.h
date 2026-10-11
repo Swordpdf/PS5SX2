@@ -247,4 +247,3 @@ static inline void recLUT_SetPage(uptr reclut[0x10000], u32 hwlut[0x10000],
 }
 
 static_assert(sizeof(BASEBLOCK) == 8, "BASEBLOCK is not 8 bytes");
-

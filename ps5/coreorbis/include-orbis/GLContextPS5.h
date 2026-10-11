@@ -33,4 +33,3 @@ private:
 	void* m_context = nullptr; // EGLContext
 	bool m_current = false;
 };
-

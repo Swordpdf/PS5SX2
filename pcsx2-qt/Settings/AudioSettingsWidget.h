@@ -43,4 +43,3 @@ private:
 	Ui::AudioSettingsWidget m_ui;
 	u32 m_output_device_latency = 0;
 };
-

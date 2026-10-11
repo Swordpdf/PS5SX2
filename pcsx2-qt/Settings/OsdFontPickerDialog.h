@@ -82,4 +82,3 @@ private:
 	bool m_bold_preview = false;
 	int m_preview_font_id = -1;
 };
-

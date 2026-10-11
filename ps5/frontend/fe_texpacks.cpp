@@ -1932,4 +1932,3 @@ TexturePackService TexturePackManager::Service()
 	return s;
 }
 } // namespace fe
-

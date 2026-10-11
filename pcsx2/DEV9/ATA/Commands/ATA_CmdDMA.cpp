@@ -180,4 +180,3 @@ void ATA::HDD_WriteDMA(bool isLBA48)
 	//Do Async write
 	DRQCmdDMADataFromHost();
 }
-

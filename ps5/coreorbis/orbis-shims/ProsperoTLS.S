@@ -23,4 +23,3 @@ _ZTH6j32Ptr:
 .type _ZTH10g_xmmtypes,@function
 _ZTH10g_xmmtypes:
 	ret
-

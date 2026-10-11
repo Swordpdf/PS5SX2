@@ -223,4 +223,3 @@ target_compile_options(common PRIVATE "${PCSX2_WARNINGS}")
 if(COMMAND target_precompile_headers)
 	target_precompile_headers(common PRIVATE PrecompiledHeader.h)
 endif()
-

@@ -129,4 +129,3 @@ public:
 	operator const u32*() const { return m_buff32; }
 	operator const u64*() const { return m_buff64; }
 };
-

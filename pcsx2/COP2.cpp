@@ -67,4 +67,3 @@ void BC2TL()
 		cpuRegs.pc += 4;
 	}
 }
-

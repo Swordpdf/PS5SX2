@@ -117,4 +117,3 @@ void D2_NETMP(const u8 *inbuffer, u8 *outbuffer, char *message){
 	}
 	sprintf(message, "[NETMP %c->%c/%04X] %s", in->h.source, in->h.destination, in->h.length, line);
 }
-

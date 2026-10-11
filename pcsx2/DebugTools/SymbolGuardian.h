@@ -98,4 +98,3 @@ protected:
 
 extern SymbolGuardian R5900SymbolGuardian;
 extern SymbolGuardian R3000SymbolGuardian;
-

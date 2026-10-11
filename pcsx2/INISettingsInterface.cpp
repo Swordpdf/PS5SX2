@@ -384,4 +384,3 @@ void INISettingsInterface::SetKeyValueList(const char* section, const std::vecto
 	for (const std::pair<std::string, std::string>& item : items)
 		m_ini.SetValue(section, item.first.c_str(), item.second.c_str(), nullptr, false);
 }
-

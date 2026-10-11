@@ -47,4 +47,3 @@ protected:
 	GLuint m_buffer_id;
 	u32 m_size;
 };
-

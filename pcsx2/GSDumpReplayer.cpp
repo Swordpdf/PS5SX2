@@ -404,4 +404,3 @@ void GSDumpReplayer::RenderUI()
 
 #undef DRAW_LINE
 }
-

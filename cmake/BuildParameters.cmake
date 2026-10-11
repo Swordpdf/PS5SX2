@@ -339,4 +339,3 @@ if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
 
 	add_link_options(-Wl,-dead_strip,-dead_strip_dylibs)
 endif()
-

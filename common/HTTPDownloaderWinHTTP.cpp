@@ -322,4 +322,3 @@ void HTTPDownloaderWinHttp::CloseRequest(HTTPDownloader::Request* request)
 
 	delete req;
 }
-

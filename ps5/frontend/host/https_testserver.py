@@ -258,4 +258,3 @@ print(json.dumps({"ports": ports, "root": pem(new_root), "ecroot": pem(ec_root),
                   "blob_sha256": hashlib.sha256(BLOB).hexdigest()}), flush=True)
 while True:
     time.sleep(3600)
-

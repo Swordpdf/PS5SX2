@@ -1680,4 +1680,3 @@ const GSRasterizer::DrawEdgeLinePtr GSRasterizer::m_draw_edge_line[2][2][2][2] =
 #undef INIT1
 #undef INIT2
 #undef INIT3
-

@@ -260,4 +260,3 @@ void AudioStream::SampleReaderImpl(SampleType* dest, const SampleType* src, u32 
 		src += luts[static_cast<size_t>(mode)].second;
 	}
 }
-

@@ -160,4 +160,3 @@ ShortcutCreationDialog::ShortcutCreationDialog(QWidget* parent, const QString& t
 }
 
 #include "moc_ShortcutCreationDialog.cpp"
-

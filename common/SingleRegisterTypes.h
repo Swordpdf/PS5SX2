@@ -193,4 +193,3 @@ using r128 = uint32x4_t;
 #error Unknown architecture.
 
 #endif
-

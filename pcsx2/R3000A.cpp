@@ -302,4 +302,3 @@ int psxIsMemcheckNeeded(u32 pc)
 
 	return 0;
 }
-

@@ -212,4 +212,3 @@ private:
 
 	std::multimap<std::string, std::function<bool(const DebuggerEvents::Event&)>> m_event_handlers;
 };
-

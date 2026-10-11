@@ -79,4 +79,3 @@ struct AudioStreamParameters
 
 	friend auto operator<=>(const AudioStreamParameters& lhs, const AudioStreamParameters& rhs) = default;
 };
-

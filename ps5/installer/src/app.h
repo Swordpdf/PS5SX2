@@ -13,4 +13,3 @@ int app_installed_tag(char *tag, size_t size);
 
 /* <0, 0, >0 like strcmp for tags of the form <prefix>-<number> with the same prefix; 2 when not comparable. */
 int tag_compare(const char *a, const char *b);
-

@@ -31,4 +31,3 @@ private:
 	MemoryCardType m_type = MemoryCardType::File;
 	MemoryCardFileType m_fileType = MemoryCardFileType::PS2_8MB;
 };
-

@@ -200,4 +200,3 @@ namespace Patch
 
 	extern const char* PlaceToString(std::optional<patch_place_type> place);
 } // namespace Patch
-

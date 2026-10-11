@@ -240,4 +240,3 @@ extern void mfifoVIF1transfer();
 extern bool VIF0transfer(u32 *data, int size, bool TTE=0);
 extern bool VIF1transfer(u32 *data, int size, bool TTE=0);
 extern void vifMFIFOInterrupt();
-

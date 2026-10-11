@@ -530,4 +530,3 @@ bool SymbolTreeModel::nodeHasChildren(const ccc::ast::Node& logical_type, const 
 }
 
 #include "moc_SymbolTreeModel.cpp"
-

@@ -49,4 +49,3 @@ body:
         Include screenshots or video if you like to help demonstrate how you'd like this feature to work
     validations:
       required: true
-

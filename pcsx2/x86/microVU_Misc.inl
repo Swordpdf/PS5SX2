@@ -653,4 +653,3 @@ void SSE_DIVSS(mV, const xmm& to, const xmm& from, const xmm& t1 = xEmptyReg, co
 {
 	clampOp(xDIV.SS, false);
 }
-

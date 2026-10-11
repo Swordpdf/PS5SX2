@@ -59,4 +59,3 @@ GameFixSettingsWidget::GameFixSettingsWidget(SettingsWindow* settings_dialog, QW
 GameFixSettingsWidget::~GameFixSettingsWidget() = default;
 
 #include "moc_GameFixSettingsWidget.cpp"
-

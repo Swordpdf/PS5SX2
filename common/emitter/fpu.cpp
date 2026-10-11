@@ -58,4 +58,3 @@ emitterT void FMUL32(u32 from)
 	ModRM(0, 0x1, DISP32);
 	xWrite32(MEMADDR(from, 4));
 }
-

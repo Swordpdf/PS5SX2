@@ -676,4 +676,3 @@ __ri void mVUanalyzeJump(mV, int Is, int It, bool isJALR)
 			setConstReg(It, bSaveAddr);
 	}
 }
-

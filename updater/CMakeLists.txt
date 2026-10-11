@@ -29,4 +29,3 @@ if(NOT PACKAGE_MODE)
 		install(FILES $<TARGET_PDB_FILE:updater> DESTINATION ${CMAKE_SOURCE_DIR}/bin)
 	endif()
 endif()
-

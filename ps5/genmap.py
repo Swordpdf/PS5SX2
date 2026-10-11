@@ -31,4 +31,3 @@ print(f'imports kept global: {len(shared)}')
 print(f'non-stub undefs (must be weak or else fail): {len(missing)}')
 for s in missing[:40]:
     print(f'  {s}')
-

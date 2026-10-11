@@ -98,4 +98,3 @@ kernel void CASHalf(
 		gxy.y += 8;
 	}
 }
-

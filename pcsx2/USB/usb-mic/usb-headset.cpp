@@ -1020,4 +1020,3 @@ namespace usb_mic
 		return info;
 	}
 } // namespace usb_mic
-

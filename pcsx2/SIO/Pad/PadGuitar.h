@@ -91,4 +91,3 @@ public:
 
 	static const Pad::ControllerInfo ControllerInfo;
 };
-

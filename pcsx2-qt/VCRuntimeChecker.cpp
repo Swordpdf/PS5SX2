@@ -108,4 +108,3 @@ struct VCRuntimeCheckObject
 #pragma warning(disable : 4075) // warning C4075: initializers put in unrecognized initialization area
 #pragma init_seg(".CRT$XCT")
 VCRuntimeCheckObject s_vcruntime_checker;
-

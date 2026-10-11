@@ -118,4 +118,3 @@ void unload_pcap()
 	FreeLibrary(hpcap);
 	hpcap = nullptr;
 }
-

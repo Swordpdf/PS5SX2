@@ -27,4 +27,3 @@ private:
 
 	SavedAddressesModel* m_model;
 };
-

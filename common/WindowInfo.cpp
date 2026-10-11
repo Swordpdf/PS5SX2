@@ -255,4 +255,3 @@ std::optional<float> WindowInfo::QueryRefreshRateForWindow(const WindowInfo& wi)
 }
 
 #endif
-

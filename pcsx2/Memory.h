@@ -210,4 +210,3 @@ public:
 
 	bool CompareBytes(u32 address, const void* src, u32 size) override;
 };
-

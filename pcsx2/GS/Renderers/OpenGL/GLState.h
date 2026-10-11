@@ -53,4 +53,3 @@ namespace GLState
 	extern u32 UpdateDrawBuffers();
 	extern void Clear();
 } // namespace GLState
-

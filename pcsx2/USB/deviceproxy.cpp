@@ -93,4 +93,3 @@ void RegisterDevice::Unregister()
 	delete registerDevice;
 	registerDevice = nullptr;
 }
-

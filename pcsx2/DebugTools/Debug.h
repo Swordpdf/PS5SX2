@@ -264,4 +264,3 @@ extern ConsoleLogPack ConsoleLogging;
 #define pgifConLog      ConsoleLogging.pgifLog.IsActive()          && ConsoleLogging.pgifLog.Write
 #define recordingConLog ConsoleLogging.recordingConsole.IsActive() && ConsoleLogging.recordingConsole.Write
 #define controlLog      ConsoleLogging.controlInfo.IsActive()      && ConsoleLogging.controlInfo.Write
-

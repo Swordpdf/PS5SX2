@@ -1852,4 +1852,3 @@ const char* Patch::PlaceToString(std::optional<patch_place_type> place)
 
 	return "";
 }
-

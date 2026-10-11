@@ -51,4 +51,3 @@ private:
 	bool m_is_open = false;
 	bool m_is_cd = false;
 };
-

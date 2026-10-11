@@ -84,4 +84,3 @@ namespace MultiISAFunctions
 	extern u32 (&GSXXH3_64_Update)(void* state, const void* data, size_t len);
 	extern u64 (&GSXXH3_64_Digest)(void* state);
 }
-

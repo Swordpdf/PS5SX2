@@ -674,4 +674,3 @@ void SymbolImporter::ScanForFunctions(
 		}
 	}
 }
-

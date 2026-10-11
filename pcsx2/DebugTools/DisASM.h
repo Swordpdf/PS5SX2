@@ -36,4 +36,3 @@
 #define DECODE_SA_IOP    ((psxRegs.code >>  6) & 0x1F)
 #define DECODE_FS_IOP           (DECODE_RD_IOP)
 
-

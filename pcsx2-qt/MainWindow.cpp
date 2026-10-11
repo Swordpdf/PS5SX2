@@ -3992,4 +3992,3 @@ const QString& QtHost::GetCurrentGamePath()
 }
 
 #include "moc_MainWindow.cpp"
-

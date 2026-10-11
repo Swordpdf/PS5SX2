@@ -315,4 +315,3 @@ unsigned long jo_write_mpeg(unsigned char *mpeg_buf, const unsigned char *raw, i
 
 	return bits.buf_ptr - head;
 }
-

@@ -137,4 +137,3 @@ assets, `sce_module/libc.prx` and Helper. Back up its current `eboot.bin` before
 replacing `/data/homebrew/PPSA99203/eboot.bin`. Start with the shelf and account
 screen, then test a game. For failures, collect `boot.log` and `stderr.log` from
 the configured PCSX2 data directory; do not share `achievements-secrets.ini`.
-

@@ -10,4 +10,3 @@ struct t_sif_dma_transfer
 	s32 size;
 	s32 attr;
 };
-

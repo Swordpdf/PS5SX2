@@ -1348,4 +1348,3 @@ namespace usb_msd
 		}
 	}
 } // namespace usb_msd
-

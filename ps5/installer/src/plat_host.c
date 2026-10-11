@@ -79,4 +79,3 @@ const char *plat_test_env(const char *name) {
 }
 
 void plat_init(void) { signal(SIGPIPE, SIG_IGN); }
-

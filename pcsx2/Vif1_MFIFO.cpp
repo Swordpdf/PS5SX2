@@ -402,4 +402,3 @@ void vifMFIFOInterrupt()
 	CPU_SET_DMASTALL(DMAC_MFIFO_VIF, false);
 	vif1Regs.stat.FQC = 0;
 }
-

@@ -48,4 +48,3 @@ int zip_stat_index(zip_t* archive, uint64_t index, zip_flags_t flags, zip_stat_t
 #ifdef __cplusplus
 }
 #endif
-

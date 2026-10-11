@@ -191,4 +191,3 @@ int main(int argc, char** argv)
 	std::printf("%s: %d of %d checks passed (the BIOS before the shelf)\n", s_fail ? "FAIL" : "PASS", s_checks - s_fail, s_checks);
 	return s_fail ? 1 : 0;
 }
-

@@ -197,4 +197,3 @@ For Linux and macOS users, PCSX2 will automatically detect and bind controls to 
 
 ### PCSX2 with Netplay Support
 *   [The latest Netplay fork of PCSX2](https://forums.pcsx2.net/Thread-PCSX2-Online-Plus).
-

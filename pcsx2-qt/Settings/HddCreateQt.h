@@ -25,4 +25,3 @@ protected:
 	virtual void SetFileProgress(u64 currentSize);
 	virtual void SetError();
 };
-

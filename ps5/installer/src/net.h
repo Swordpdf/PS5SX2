@@ -12,4 +12,3 @@ ssize_t net_send(int fd, const void *buf, size_t len);
 void net_close(int fd);
 /* 1 when the last net_recv/net_send failed because of the time limit. */
 int net_timed_out(void);
-

@@ -41,4 +41,3 @@ pthread_create(&t, &a, disc_auto_thread, NULL);
 
 Licence: GPL-3.0-or-later, so the payload it's built into has to be GPL-3.0-compatible.
 Host check of the checksums: `bash tests/run-hash-test.sh` (70 cases against Python's zlib/hashlib).
-

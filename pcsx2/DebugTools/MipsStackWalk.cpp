@@ -232,4 +232,3 @@ namespace MipsStackWalk
 		return frames;
 	}
 }; // namespace MipsStackWalk
-

@@ -109,4 +109,3 @@ document.querySelectorAll(".item img").forEach(elem => elem.addEventListener("cl
         openModal();
     setImageIndex(getImageIndexForUri(this.getAttribute("src")));
 }));
-

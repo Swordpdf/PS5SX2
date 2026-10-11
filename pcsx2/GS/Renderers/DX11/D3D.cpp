@@ -566,4 +566,3 @@ wil::com_ptr_nothrow<ID3DBlob> D3D::CompileShader(D3D::ShaderType type, D3D::Sha
 
 	return blob;
 }
-

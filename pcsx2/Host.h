@@ -196,4 +196,3 @@ namespace Host
 
 // Does not translate the string at runtime, but allows the UI to in its own way.
 #define TRANSLATE_NOOP(context, msg) msg
-

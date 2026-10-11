@@ -47,4 +47,3 @@ Run the following, this assumes you have access to bash, either by virtue of run
 ### Customizing Output
 
 For generating the PDF's this popular template is used and has many features that could be useful https://github.com/Wandmalfarbe/pandoc-latex-template#usage reference it's documentation to take advantage of those if desired.
-

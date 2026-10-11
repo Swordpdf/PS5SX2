@@ -51,4 +51,3 @@ namespace usb_eyetoy
 		return {};
 	}
 } // namespace usb_eyetoy
-

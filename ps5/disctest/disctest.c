@@ -497,4 +497,3 @@ int main(void) {
     fclose(g_log);
   return 0;
 }
-

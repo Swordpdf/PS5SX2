@@ -98,4 +98,3 @@ template <typename T>
 [[maybe_unused]] __fi static u16 GetBufferU16(const u8* buffer, u32 offset) { return GetBufferT<u16>(buffer, offset); }
 [[maybe_unused]] __fi static u32 GetBufferU32(const u8* buffer, u32 offset) { return GetBufferT<u32>(buffer, offset); }
 [[maybe_unused]] __fi static u64 GetBufferU64(const u8* buffer, u32 offset) { return GetBufferT<u64>(buffer, offset); }
-

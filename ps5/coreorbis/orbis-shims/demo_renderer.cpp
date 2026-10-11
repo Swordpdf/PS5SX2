@@ -941,4 +941,3 @@ void MenuDisplay::close() noexcept
            static_cast<unsigned>(released));
 }
 } // namespace ps5::demo
-

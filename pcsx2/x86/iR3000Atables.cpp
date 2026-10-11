@@ -2395,4 +2395,3 @@ void rpsxpropCP2(EEINST* prev, EEINST* pinst)
 			break;
 	}
 }
-

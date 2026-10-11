@@ -136,4 +136,3 @@ std::pair<u8, u8> GSGetRGBA8AlphaMinMax(const void* data, u32 width, u32 height,
 		#define ALIGN_STACK(n) alignas(n) int dummy__;
 	#endif
 #endif
-

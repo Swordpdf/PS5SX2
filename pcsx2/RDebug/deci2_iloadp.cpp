@@ -87,4 +87,3 @@ void D2_ILOADP(const u8 *inbuffer, u8 *outbuffer, char *message){
 	sprintf(message, "[ILOADP %c->%c/%04X] %s", in->h.source, in->h.destination, in->h.length, line);
 	writeData(outbuffer);
 }
-

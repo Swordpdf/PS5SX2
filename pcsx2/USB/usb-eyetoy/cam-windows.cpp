@@ -587,4 +587,3 @@ namespace usb_eyetoy
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
-

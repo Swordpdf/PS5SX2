@@ -199,4 +199,3 @@ find_package_handle_standard_args(FFMPEG
   VERSION_VAR FFMPEG_VERSION
   HANDLE_COMPONENTS)
 unset(_ffmpeg_required_vars)
-

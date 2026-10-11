@@ -252,4 +252,3 @@ bool D3D12GroupedSamplerAllocator<NumSamplers>::ShouldReset() const
 	// This saves descriptor copying when there isn't a large number of sampler configs per frame.
 	return m_groups.size() >= (D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE / 2);
 }
-

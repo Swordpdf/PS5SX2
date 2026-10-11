@@ -80,4 +80,3 @@ private:
 
 	vixl::aarch64::Label m_step_label;
 };
-

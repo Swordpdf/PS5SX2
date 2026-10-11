@@ -335,4 +335,3 @@ std::vector<QAction*> DebuggerView::createEventActionsImplementation(
 }
 
 #include "moc_DebuggerView.cpp"
-

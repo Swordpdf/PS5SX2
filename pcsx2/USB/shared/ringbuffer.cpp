@@ -86,4 +86,3 @@ void RingBuffer::write(const void* src, size_t nbytes)
 		m_full = m_full || (m_wpos == m_rpos);
 	}
 }
-

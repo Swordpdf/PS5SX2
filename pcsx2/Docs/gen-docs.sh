@@ -39,4 +39,3 @@ find . -maxdepth 1 -name "*.md" -not -path "./README.md"  | while read filename;
   filename="${filename%.*}"
   prepare_markdown_file "$filename" "eisvogel.tex"
 done
-

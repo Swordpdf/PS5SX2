@@ -178,4 +178,3 @@ void WriteFIFO_IPUin(const mem128_t* value)
 		}
 	}
 }
-

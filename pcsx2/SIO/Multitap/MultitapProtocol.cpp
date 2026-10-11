@@ -142,4 +142,3 @@ void MultitapProtocol::SendToMultitap()
 			break;
 	}
 }
-

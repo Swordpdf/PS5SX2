@@ -118,4 +118,3 @@ private:
 	DWORD(WINAPI* m_xinput_get_capabilities)(DWORD, DWORD, XINPUT_CAPABILITIES*);
 	DWORD(WINAPI* m_xinput_get_extended)(DWORD, SCP_EXTN*);
 };
-

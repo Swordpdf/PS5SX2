@@ -11,4 +11,3 @@
 #define PCSX2_DOCUMENTATION_BIOS_URL_SHORTENED "pcsx2.net/docs/setup/bios"
 #define PCSX2_WIKI_URL "https://wiki.pcsx2.net/Main_Page"
 #define PCSX2_DISCORD_URL "https://pcsx2.net/discord"
-

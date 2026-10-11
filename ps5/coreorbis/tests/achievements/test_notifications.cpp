@@ -65,4 +65,3 @@ int main()
 	Host::AddKeyedOSDMessage("retroachievements_disc_read_failed", "Could not read the disc", 5);
 	assert(plain_count == 2 && last_title == "Could not read the disc");
 }
-

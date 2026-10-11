@@ -444,4 +444,3 @@ int isBreakpointNeeded(u32 addr);
 #define EXC_CODE_WATCH  EXC_CODE(23)
 #define EXC_CODE__MASK  0x0000007c
 #define EXC_CODE__SHIFT 2
-

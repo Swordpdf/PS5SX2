@@ -579,4 +579,3 @@ int report_build(session_info *s, sbuf *out) {
   }
   return out->data ? 0 : -1;
 }
-

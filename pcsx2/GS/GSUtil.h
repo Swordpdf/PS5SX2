@@ -173,4 +173,3 @@ public:
 		return bbox0;
 	}
 };
-

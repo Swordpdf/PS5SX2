@@ -14,4 +14,3 @@ namespace BuildVersion
 	const char* GitHash = GIT_HASH;
 	const char* GitDate = GIT_DATE;
 } // namespace BuildVersion
-

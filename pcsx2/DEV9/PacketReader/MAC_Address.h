@@ -25,4 +25,3 @@ namespace PacketReader
 	};
 #pragma pack(pop)
 } // namespace PacketReader
-

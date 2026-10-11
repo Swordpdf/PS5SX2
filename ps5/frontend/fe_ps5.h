@@ -134,4 +134,3 @@ bool orbis_frontend_request_launch(const std::string& path);
 // vk-285-145 (AI-assisted): free bytes in `dir` through libkernel's _fstatfs (libc's statfs makes the system call from the
 // app's code, which the PS5 kills the app for). UINT64_MAX when it can't tell.
 uint64_t orbis_frontend_free_bytes(const std::string& dir);
-

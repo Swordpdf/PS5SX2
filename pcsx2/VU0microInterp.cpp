@@ -304,4 +304,3 @@ void InterpVU0::Execute(u32 cycles)
 
 	VU0.nextBlockCycles = (VU0.cycle - cpuRegs.cycle) + 1;
 }
-

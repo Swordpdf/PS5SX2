@@ -43,4 +43,3 @@ namespace PacketReader::IP::UDP::DHCP
 		virtual ~DHCP_Packet();
 	};
 } // namespace PacketReader::IP::UDP::DHCP
-

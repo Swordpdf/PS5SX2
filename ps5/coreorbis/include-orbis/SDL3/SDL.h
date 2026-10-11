@@ -42,4 +42,3 @@ typedef union SDL_Event
   uint32_t type;
   char padding[56];
 } SDL_Event;
-

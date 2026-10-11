@@ -99,4 +99,3 @@ namespace x86Emitter
 		const xImplAVX_ThreeArgYMM GTD;
 	};
 } // namespace x86Emitter
-

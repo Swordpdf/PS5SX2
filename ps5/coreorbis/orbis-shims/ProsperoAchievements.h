@@ -21,4 +21,3 @@ void OrbisAchievementsWaitForLogin();
 fe::GameAchievementsService OrbisAchievementsBrowserService(const std::string& cache_directory = "/data/PCSX2/achievement-badges");
 void OrbisAchievementsWaitForBrowser();
 void OrbisAchievementsStopBrowser(); // pr9n: cancels what it's loading, then waits (a game launching)
-

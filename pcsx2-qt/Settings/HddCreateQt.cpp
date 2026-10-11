@@ -40,4 +40,3 @@ void HddCreateQt::Cleanup()
 {
 	delete progressDialog;
 }
-

@@ -105,4 +105,3 @@ private:
 	QString m_profile_name;
 	std::unique_ptr<SettingsInterface> m_profile_interface;
 };
-

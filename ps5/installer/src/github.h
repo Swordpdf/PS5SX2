@@ -20,4 +20,3 @@ typedef void (*gh_progress)(void *ctx, uint64_t got, uint64_t total);
 
 /* Downloads to dest (via dest.part), checks the size and SHA-256; 0 on success. */
 int gh_download(const gh_release *rel, const char *dest, gh_progress progress, void *ctx);
-

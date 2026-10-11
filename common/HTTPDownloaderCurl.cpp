@@ -204,4 +204,3 @@ void HTTPDownloaderCurl::CloseRequest(HTTPDownloader::Request* request)
 	curl_easy_cleanup(req->handle);
 	delete req;
 }
-

@@ -43,4 +43,3 @@ FolderSettingsWidget::FolderSettingsWidget(SettingsWindow* settings_dialog, QWid
 FolderSettingsWidget::~FolderSettingsWidget() = default;
 
 #include "moc_FolderSettingsWidget.cpp"
-

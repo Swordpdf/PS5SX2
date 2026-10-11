@@ -208,4 +208,3 @@ extern s32 DoCDVDreadTrack(u32 lsn, int mode);
 extern s32 DoCDVDgetBuffer(u8* buffer);
 extern s32 DoCDVDdetectDiskType();
 extern void DoCDVDresetDiskTypeCache();
-

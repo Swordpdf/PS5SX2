@@ -43,4 +43,3 @@ public:
 
 extern std::array<MultitapProtocol, SIO::PORTS> g_MultitapArr;
 
-

@@ -277,4 +277,3 @@ bool InputRecordingFile::verifyRecordingFileHeader()
 	}
 	return true;
 }
-

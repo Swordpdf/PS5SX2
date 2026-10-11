@@ -168,4 +168,3 @@ void SavedAddressesView::saveToDebuggerSettings()
 }
 
 #include "moc_SavedAddressesView.cpp"
-

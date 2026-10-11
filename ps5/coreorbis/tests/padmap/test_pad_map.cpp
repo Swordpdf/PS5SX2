@@ -450,4 +450,3 @@ int main()
 		printf("test_pad_map: all checks passed\n");
 	return s_failures == 0 ? 0 : 1;
 }
-

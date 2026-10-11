@@ -459,4 +459,3 @@ void ArmConstantPool::EmitLoadLiteral(const vixl::aarch64::CPURegister& reg, con
 	armMoveAddressToReg(RXVIXLSCRATCH, literal);
 	armAsm->Ldr(reg, a64::MemOperand(RXVIXLSCRATCH));
 }
-

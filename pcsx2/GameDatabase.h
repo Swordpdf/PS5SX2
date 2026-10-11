@@ -166,4 +166,3 @@ namespace GameDatabase
 	void unloadHashDatabase();
 	const HashDatabaseEntry* lookupHash(const TrackHash* tracks, size_t num_tracks, bool* tracks_matched, std::string* match_error);
 }; // namespace GameDatabase
-

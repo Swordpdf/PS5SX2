@@ -38,4 +38,3 @@ private:
 	bool isFormValid();
 	void updateFormStatus();
 };
-

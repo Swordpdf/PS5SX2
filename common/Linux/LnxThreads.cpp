@@ -362,4 +362,3 @@ void Threading::SetNameOfCurrentThread(const char* name)
 	pthread_set_name_np(pthread_self(), name);
 #endif
 }
-

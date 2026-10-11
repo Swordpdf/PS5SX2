@@ -528,4 +528,3 @@ void MemoryCardProtocol::AuthF7()
 	PS1_FAIL();
 	The2bTerminator(5);
 }
-

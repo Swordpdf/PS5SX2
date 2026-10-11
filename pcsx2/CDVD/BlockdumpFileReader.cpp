@@ -149,4 +149,3 @@ u32 BlockdumpFileReader::GetBlockCount() const
 {
 	return m_blocks;
 }
-

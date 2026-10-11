@@ -300,4 +300,3 @@ namespace PacketReader::IP::TCP
 		return (csumCal == 0);
 	}
 } // namespace PacketReader::IP::TCP
-

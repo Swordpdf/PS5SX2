@@ -67,4 +67,3 @@ extern "C" int munmap(void* addr, std::size_t len)
 {
     return sceKernelReleaseFlexibleMemory(addr, len);
 }
-

@@ -1433,4 +1433,3 @@ namespace SettingWidgetBinder
 		}
 	}
 } // namespace SettingWidgetBinder
-

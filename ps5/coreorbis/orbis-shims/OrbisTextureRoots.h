@@ -159,4 +159,3 @@ inline std::vector<std::string> UsbRoots(const std::string& mount_dir = "/mnt")
 	return out;
 }
 } // namespace OrbisTextures
-

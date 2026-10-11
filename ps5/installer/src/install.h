@@ -11,4 +11,3 @@ int install_run(void);
 
 /* An install that stopped half-way (power cut, crash) is undone from its journal. Call with the lock held. */
 int install_recover(void);
-

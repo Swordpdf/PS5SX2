@@ -121,4 +121,3 @@ void ps5vk_cmd_buffer_note_draw_samples(void* cmd_buffer)
 	}
 	ps5vk_cmd_buffer_note_draw_samples_orig(cmd_buffer);
 }
-

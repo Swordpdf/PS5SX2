@@ -927,4 +927,3 @@ bool DockManager::dragAboutToStart(KDDockWidgets::Core::Draggable* draggable)
 }
 
 #include "moc_DockManager.cpp"
-

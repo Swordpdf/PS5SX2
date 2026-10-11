@@ -410,4 +410,3 @@ void sendBREAK(u8 source, u16 id, u8 code, u8 result, u8 count){
 	tmp._pad		=0;
 	writeData((u8*)&tmp);
 }
-

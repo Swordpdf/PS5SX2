@@ -73,4 +73,3 @@ void Gif_ParsePacket(u8* data, u32 size, GIF_PATH path) {
 void Gif_ParsePacket(GS_Packet& gsPack, GIF_PATH path) {
 	Gif_ParsePacket(&gifUnit.gifPath[path].buffer[gsPack.offset], gsPack.size, path);
 }
-

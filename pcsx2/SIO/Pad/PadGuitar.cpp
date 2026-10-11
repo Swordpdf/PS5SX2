@@ -492,4 +492,3 @@ u8 PadGuitar::SendCommandByte(u8 commandByte)
 	this->commandBytesReceived++;
 	return ret;
 }
-

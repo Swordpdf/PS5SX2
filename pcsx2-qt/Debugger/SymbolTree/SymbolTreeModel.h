@@ -85,4 +85,3 @@ protected:
 	DebugInterface& m_cpu;
 	SymbolTreeDisplayOptions m_display_options;
 };
-

@@ -559,4 +559,3 @@ namespace usb_eyetoy
 		}
 	}
 } // namespace usb_eyetoy
-

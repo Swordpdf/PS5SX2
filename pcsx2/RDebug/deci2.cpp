@@ -9,4 +9,3 @@ void exchangeSD(DECI2_HEADER *h){
 	h->source	=h->destination;
 	h->destination	=tmp;
 }
-

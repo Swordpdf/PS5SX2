@@ -159,4 +159,3 @@ StereoOut32 V_Core::DoReverb(StereoOut32 Input)
 
 	return ReverbUpsample(*this);
 }
-

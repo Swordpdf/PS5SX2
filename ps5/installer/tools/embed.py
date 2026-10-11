@@ -18,4 +18,3 @@ if row:
 out.append('};')
 out.append('const size_t g_cacert_pem_size = sizeof(g_cacert_pem);')
 open(dst, 'w').write('\n'.join(out) + '\n')
-

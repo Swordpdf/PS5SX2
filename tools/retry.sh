@@ -11,4 +11,3 @@ for i in $(seq 1 "$RETRIES"); do
 done
 
 exit 0
-

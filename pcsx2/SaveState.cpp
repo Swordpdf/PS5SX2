@@ -1262,4 +1262,3 @@ void SaveState_ReportSaveErrorOSD(const std::string& message, std::optional<s32>
 	Host::AddIconOSDMessage("SaveState", ICON_FA_TRIANGLE_EXCLAMATION,
 		full_message, Host::OSD_WARNING_DURATION);
 }
-

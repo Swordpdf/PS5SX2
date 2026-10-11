@@ -122,4 +122,3 @@ __ri void ipu_dither_sse2(const macroblock_rgb32 &rgb32, macroblock_rgb16 &rgb16
 #endif
 
 MULTI_ISA_UNSHARED_END
-

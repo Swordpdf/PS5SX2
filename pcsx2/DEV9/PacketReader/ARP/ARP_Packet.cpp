@@ -82,4 +82,3 @@ namespace PacketReader::ARP
 		return new ARP_Packet(*this);
 	}
 } // namespace PacketReader::ARP
-

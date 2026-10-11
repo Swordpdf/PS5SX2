@@ -17,4 +17,3 @@ get https://github.com/richgel999/miniz/releases/download/3.1.1/miniz-3.1.1.zip 
 [ -d mbedtls-3.6.7 ] || tar xjf mbedtls-3.6.7.tar.bz2
 [ -d miniz-3.1.1 ] || (mkdir miniz-3.1.1 && cd miniz-3.1.1 && unzip -q ../miniz-3.1.1.zip)
 echo "deps ready in $DEPS"
-

@@ -24,4 +24,3 @@ private:
 	SettingsWindow* m_dialog;
 	Ui::AdvancedSystemSettingsWidget m_ui;
 };
-

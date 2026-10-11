@@ -150,4 +150,3 @@ extern "C" int closedir(DIR* dirp)
     delete d;
     return rc;
 }
-

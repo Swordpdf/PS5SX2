@@ -76,4 +76,3 @@ extern "C" const struct cpuinfo_uarch_info* cpuinfo_get_uarch(uint32_t index)
     return 0;
   return &s_uarch;
 }
-

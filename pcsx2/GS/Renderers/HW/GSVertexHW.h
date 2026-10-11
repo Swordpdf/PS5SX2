@@ -24,4 +24,3 @@ struct alignas(32) GSVertexHW9
 };
 
 #pragma pack(pop)
-

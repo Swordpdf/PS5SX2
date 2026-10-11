@@ -1501,4 +1501,3 @@ bool SaveStateBase::handleFreeze()
 	}
 	return IsOkay();
 }
-

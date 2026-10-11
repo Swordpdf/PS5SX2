@@ -138,4 +138,3 @@ void ThreadModel::refreshData()
 }
 
 #include "moc_ThreadModel.cpp"
-

@@ -44,4 +44,3 @@ namespace InputRec
 		}
 	}
 } // namespace InputRecording
-

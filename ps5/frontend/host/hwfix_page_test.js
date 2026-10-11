@@ -79,4 +79,3 @@ api.pending.clear();
 api.change("UserHacks_TCOffsetX", "500");
 assert.deepStrictEqual(Object.fromEntries(api.pending), { UserHacks_TCOffsetX: "500" }, "all games: only itself");
 console.log("PASS: the page's Hardware fixes steps (one game only, the game's own fixes shown and written, the switch)");
-

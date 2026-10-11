@@ -2444,4 +2444,3 @@ void recPCPYH()
 } // namespace OpcodeImpl
 } // namespace Dynarec
 } // namespace R5900
-

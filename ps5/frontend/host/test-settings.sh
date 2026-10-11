@@ -81,4 +81,3 @@ else
 fi
 head -n 1 "$work/sheet.txt"
 exit $fail
-

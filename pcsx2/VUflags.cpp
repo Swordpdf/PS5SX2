@@ -95,4 +95,3 @@ __ri void VU_STAT_UPDATE(VURegs * VU) {
 	// Save old sticky flags and D/I settings, everthing else is the new flags only
 	VU->statusflag = newflag;
 }
-

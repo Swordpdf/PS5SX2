@@ -271,4 +271,3 @@ int usb_desc_handle_control(USBDevice* dev, USBPacket* p,
 
 int usb_desc_set_config(USBDevice* dev, int value);
 int usb_desc_set_interface(USBDevice* dev, int index, int value);
-

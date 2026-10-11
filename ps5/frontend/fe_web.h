@@ -176,4 +176,3 @@ private:
 // one a private-range route uses; "" without a network.
 std::string LocalAddress();
 } // namespace fe
-

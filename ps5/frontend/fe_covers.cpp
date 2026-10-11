@@ -940,4 +940,3 @@ void CoverService::RunDownloads()
 	m_busy = false;
 }
 } // namespace fe
-

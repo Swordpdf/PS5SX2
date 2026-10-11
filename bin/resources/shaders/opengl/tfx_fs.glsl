@@ -1427,4 +1427,3 @@ void ps_main()
 	gl_FragDepth = input_z;
 #endif
 }
-

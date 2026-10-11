@@ -565,4 +565,3 @@ void OrbisNotifyRich(const char* message, const char* sub_message, const char* i
 	r.logged = true; // a toast sent not logged never showed on the Pro (2026-10-05)
 	Queue(std::move(r));
 }
-

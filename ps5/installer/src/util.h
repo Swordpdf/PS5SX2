@@ -55,4 +55,3 @@ void fmt_stamp(char *dst, size_t size, time_t t);
 void human_bytes(char *dst, size_t size, uint64_t n);
 void sleep_ms(unsigned ms);
 uint64_t mono_ms(void);
-

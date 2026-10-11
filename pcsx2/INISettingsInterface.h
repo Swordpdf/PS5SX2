@@ -66,4 +66,3 @@ private:
 	CSimpleIniA m_ini;
 	bool m_dirty = false;
 };
-

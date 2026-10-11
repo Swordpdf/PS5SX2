@@ -106,4 +106,3 @@ protected:
 
 	State* m_saved_state = nullptr;
 };
-

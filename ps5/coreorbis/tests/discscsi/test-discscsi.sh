@@ -9,4 +9,3 @@ CXX=${CXX:-clang++-18}
 mkdir -p "$work"
 "$CXX" -std=c++20 -O1 -g -Wall -Wextra "$here/test_discscsi.cpp" -o "$work/test_discscsi"
 "$work/test_discscsi"
-

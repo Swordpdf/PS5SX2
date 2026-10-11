@@ -699,4 +699,3 @@ void SettingsWindow::closeGamePropertiesDialogs()
 }
 
 #include "moc_SettingsWindow.cpp"
-

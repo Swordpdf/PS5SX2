@@ -17,4 +17,3 @@
 /// If resolve_anchors is set to true, YAML anchors and aliases will be resolved.
 /// It's a potentially slow operation, so it's opt-in.
 std::optional<ryml::Tree> ParseYAMLFromString(ryml::csubstr yaml, ryml::csubstr file_name, Error* error, bool resolve_anchors = false);
-

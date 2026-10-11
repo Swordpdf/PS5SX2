@@ -62,4 +62,3 @@ void main()
 	CasFilter(c.r, c.g, c.b, gxy, const0, const1, CAS_SHARPEN_ONLY);
 	imageStore(imgDst, ASU2(gxy), c);
 }
-

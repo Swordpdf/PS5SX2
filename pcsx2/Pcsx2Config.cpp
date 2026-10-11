@@ -2415,4 +2415,3 @@ std::string EmuFolders::GetOverridableResourcePath(std::string_view name)
 
 	return upath;
 }
-

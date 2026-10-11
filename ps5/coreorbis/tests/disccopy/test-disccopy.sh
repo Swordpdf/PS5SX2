@@ -12,4 +12,3 @@ san=()
 [[ -n ${DISCCOPY_SANITIZE:-} ]] && san=(-fsanitize="$DISCCOPY_SANITIZE" -fno-omit-frame-pointer)
 "$CXX" -std=c++20 -O1 -g -Wall -Wextra "${san[@]}" "$here/test_disccopy.cpp" -o "$work/test_disccopy" -lpthread
 "$work/test_disccopy"
-

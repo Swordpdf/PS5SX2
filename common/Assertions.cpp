@@ -118,4 +118,3 @@ void pxOnAssertFail(const char* file, int line, const char* func, const char* ms
 
 	ResumeThreads(handle);
 }
-

@@ -612,4 +612,3 @@ void dmaVIF1()
 	if (!vif1ch.chcr.DIR || !vif1Regs.stat.test(VIF1_STAT_VSS | VIF1_STAT_VIS | VIF1_STAT_VFS))
 		CPU_INT(DMAC_VIF1, 4);
 }
-

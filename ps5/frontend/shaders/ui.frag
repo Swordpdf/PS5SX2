@@ -33,4 +33,3 @@ void main()
 	// Mode 2 draws RGBA achievement badges using the same vertex pipeline (AI-assisted).
 	o_color = v_params.w > 1.5 ? sample_color * v_color : vec4(v_color.rgb, v_color.a * a);
 }
-

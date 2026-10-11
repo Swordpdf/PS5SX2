@@ -164,4 +164,3 @@ void MemcardBusy::CheckSaveStateDependency()
 			TRANSLATE_SV("MemoryCard", "The virtual console hasn't saved to your memory card in a long time.\nSavestates should not be used in place of in-game saves."), Host::OSD_INFO_DURATION);
 	}
 }
-

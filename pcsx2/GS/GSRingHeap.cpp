@@ -243,4 +243,3 @@ void GSRingHeap::free_internal(void* ptr, size_t size) noexcept
 	Buffer** bptr = static_cast<Buffer**>(ptr) - 1;
 	(*bptr)->free(bptr, size);
 }
-

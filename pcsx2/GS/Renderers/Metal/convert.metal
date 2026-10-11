@@ -569,4 +569,3 @@ fragment float4 ps_shadeboost(float4 p [[position]], DirectReadTextureIn<float> 
 
 	return float4(csb, 1);
 }
-

@@ -54,4 +54,3 @@ namespace AdapterUtils
 	std::vector<PacketReader::IP::IP_Address> GetGateways(const Adapter* adapter);
 	std::vector<PacketReader::IP::IP_Address> GetDNS(const Adapter* adapter);
 }; // namespace AdapterUtils
-

@@ -240,4 +240,3 @@ protected:
 
 extern R5900DebugInterface r5900Debug;
 extern R3000DebugInterface r3000Debug;
-

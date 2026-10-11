@@ -109,4 +109,3 @@ static MakeDisF(disNULL,		dName("*** Bad OP ***");)
 _disVUOpcodes(VU1);
 _disVUTables(VU1);
 
-

@@ -1016,4 +1016,3 @@ namespace QtUtils
 #endif
 	}
 } // namespace QtUtils
-

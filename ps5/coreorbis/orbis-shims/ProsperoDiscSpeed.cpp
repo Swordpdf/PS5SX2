@@ -559,4 +559,3 @@ void OrbisDiscReadTest(const OrbisDiscReadMethod& m, uint64_t bytes)
 		b / 1.385);
 	OrbisNotifyPlain(note);
 }
-

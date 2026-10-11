@@ -21,4 +21,3 @@ CC=${CC:-clang}
 "$CC" -std=c11 -O2 -mavx2 -Wall -Wextra -o "$work/test_war" "$here/test_war.c" "$shims/orbis_ps5vk_war.c" \
   "$work/ps5vk_cmd_buffer.o" -Wl,--gc-sections -Wl,--unresolved-symbols=ignore-all
 "$work/test_war" "$@"
-

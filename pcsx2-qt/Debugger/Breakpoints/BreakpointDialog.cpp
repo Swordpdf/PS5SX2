@@ -202,4 +202,3 @@ void BreakpointDialog::accept()
 }
 
 #include "moc_BreakpointDialog.cpp"
-

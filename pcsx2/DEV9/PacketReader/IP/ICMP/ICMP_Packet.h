@@ -55,4 +55,3 @@ namespace PacketReader::IP::ICMP
 		void WriteHeaderData(u8* headerData);
 	};
 } // namespace PacketReader::IP::ICMP
-
