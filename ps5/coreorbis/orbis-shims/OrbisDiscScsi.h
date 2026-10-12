@@ -172,6 +172,83 @@ namespace orbis_mmc
 		return b;
 	}
 
+	// READ DVD STRUCTURE, format 0 (physical information) for one layer. 32 bytes is what PCSX2 asks Windows for.
+	inline std::vector<uint8_t> ReadDvdStructure(uint8_t layer = 0, uint16_t alloc = 32)
+	{
+		std::vector<uint8_t> c(12, 0);
+		c[0] = 0xAD;
+		c[6] = layer;
+		c[7] = 0x00;
+		Be16(&c[8], alloc);
+		return c;
+	}
+
+	// One layer of the physical descriptor, after the 4-byte READ DVD STRUCTURE header (MMC physical format
+	// information: byte 2 holds the layer count and the track path, then three big-endian sector numbers).
+	struct DvdPhysical
+	{
+		bool ok = false;
+		uint8_t layers = 0;     // the drive's field: 0 is one layer
+		uint8_t track_path = 0; // 0 parallel, 1 opposite
+		uint32_t start = 0, end = 0, end_l0 = 0;
+	};
+	inline DvdPhysical ParseDvdPhysical(const uint8_t* response, size_t n)
+	{
+		DvdPhysical p;
+		if (!response || n < 20)
+			return p;
+		const uint8_t* d = response + 4;
+		p.layers = static_cast<uint8_t>((d[2] >> 5) & 3);
+		p.track_path = static_cast<uint8_t>((d[2] >> 4) & 1);
+		p.start = Get32(d + 4);
+		p.end = Get32(d + 8);
+		p.end_l0 = Get32(d + 12);
+		p.ok = p.end > p.start;
+		return p;
+	}
+
+	// PCSX2's IOCtlSrc::ReadDVDInfo: media_type 0 single, 1 parallel dual, 2 opposite dual. `layer_break` is the last
+	// sector of layer 0 as a logical address (PCSX2 then reports layer 1 as layer_break + 1). `layer1` is the second
+	// READ DVD STRUCTURE, used only for a parallel dual-layer disc.
+	struct DvdLayout
+	{
+		bool ok = false;
+		int media_type = 0;
+		uint32_t sectors = 0;
+		uint32_t layer_break = 0;
+	};
+	inline DvdLayout DvdLayoutFrom(const DvdPhysical& layer0, const DvdPhysical* layer1 = nullptr)
+	{
+		DvdLayout L;
+		if (!layer0.ok)
+			return L;
+		if (layer0.layers == 0)
+		{
+			L.media_type = 0;
+			L.layer_break = 0;
+			L.sectors = layer0.end - layer0.start + 1;
+			L.ok = true;
+			return L;
+		}
+		if (layer0.track_path == 0)
+		{
+			if (!layer1 || !layer1->ok)
+				return L;
+			L.media_type = 1;
+			L.layer_break = layer0.end - layer0.start;
+			L.sectors = L.layer_break + 1 + layer1->end - layer1->start + 1;
+			L.ok = L.sectors > L.layer_break;
+			return L;
+		}
+		if (layer0.end_l0 <= layer0.start)
+			return L;
+		L.media_type = 2;
+		L.layer_break = layer0.end_l0 - layer0.start;
+		L.sectors = L.layer_break + 1 + layer0.end - ((~layer0.end_l0) & 0xFFFFFFu) + 1;
+		L.ok = L.sectors > L.layer_break;
+		return L;
+	}
+
 	// Sense data, fixed (0x70/0x71) or descriptor (0x72/0x73) format: "key/asc/ascq".
 	struct Sense
 	{

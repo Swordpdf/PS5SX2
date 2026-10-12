@@ -36,6 +36,7 @@ extern "C" {
 FILE* __real_fopen(const char* path, const char* mode);
 FILE* __real_freopen(const char* path, const char* mode, FILE* fp);
 int __real_fclose(FILE* fp);
+int ps5_memstream_fclose(FILE* fp);
 size_t __real_fread(void* ptr, size_t size, size_t n, FILE* fp);
 size_t __real_fwrite(const void* ptr, size_t size, size_t n, FILE* fp);
 int __real_fseek(FILE* fp, long off, int whence);
@@ -47,6 +48,8 @@ int __real_feof(FILE* fp);
 int __real_ferror(FILE* fp);
 int __real_fileno(FILE* fp);
 int __real_fflush(FILE* fp);
+// Platform memstream flush/close, renamed out of __wrap_* so this file stays the only wrap.
+int ps5_memstream_fflush(FILE* fp);
 int __real_fgetc(FILE* fp);
 char* __real_fgets(char* s, int n, FILE* fp);
 int __real_fputc(int c, FILE* fp);
@@ -1157,7 +1160,7 @@ int __wrap_fclose(FILE* fp)
 {
 	const int slot = SlotOfFile(fp);
 	if (slot < 0)
-		return __real_fclose(fp);
+		return ps5_memstream_fclose(fp);
 	return CloseSlot(slot) == 0 ? 0 : EOF;
 }
 
@@ -1292,7 +1295,7 @@ int __wrap_fileno(FILE* fp)
 int __wrap_fflush(FILE* fp)
 {
 	if (SlotOfFile(fp) < 0)
-		return __real_fflush(fp);
+		return ps5_memstream_fflush(fp);
 	return 0;
 }
 

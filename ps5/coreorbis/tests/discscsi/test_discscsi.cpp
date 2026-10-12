@@ -84,6 +84,40 @@ int main()
 		Check(SieSpeedText(0x20) == "2.0x" && SieSpeedText(0x80) == "8.0x" && SieSpeedText(0x32) == "3.2x" && SieSpeedText(0xFFFF) == "max",
 			"speed text as SceShellCore logs it");
 	}
+	{
+		const auto c = ReadDvdStructure(0, 32);
+		Check(c.size() == 12 && c[0] == 0xAD && c[6] == 0 && c[7] == 0 && c[8] == 0 && c[9] == 32, "READ DVD STRUCTURE: physical format, layer 0, 32 bytes");
+		Check(ReadDvdStructure(1, 32)[6] == 1, "READ DVD STRUCTURE: layer 1");
+		auto physical = [](uint8_t layers, uint8_t path, uint32_t start, uint32_t end, uint32_t end_l0) {
+			std::vector<uint8_t> d(32, 0);
+			d[6] = static_cast<uint8_t>((layers << 5) | (path << 4) | 1); // descriptor byte 2, after the 4-byte header
+			Be32(&d[8], start);
+			Be32(&d[12], end);
+			Be32(&d[16], end_l0);
+			return d;
+		};
+		const auto single = physical(0, 0, 0x00030000, 0x0016FFFF, 0);
+		const DvdPhysical s = ParseDvdPhysical(single.data(), single.size());
+		const DvdLayout sl = DvdLayoutFrom(s);
+		Check(s.ok && s.layers == 0 && s.start == 0x30000 && s.end == 0x16FFFF, "physical descriptor: one layer, big-endian sectors");
+		Check(sl.ok && sl.media_type == 0 && sl.layer_break == 0 && sl.sectors == 0x140000, "single layer: sector count is end - start + 1, no layer break");
+		const auto otp = physical(1, 1, 0x00030000, 0x00FD0000, 0x0022FFFF);
+		const DvdPhysical o = ParseDvdPhysical(otp.data(), otp.size());
+		const DvdLayout ol = DvdLayoutFrom(o);
+		Check(o.ok && o.layers == 1 && o.track_path == 1 && o.end_l0 == 0x22FFFF, "opposite track: layer count, track path, end of layer 0");
+		Check(ol.ok && ol.media_type == 2 && ol.layer_break == 0x1FFFFF && ol.sectors == 0x400001,
+			"opposite dual layer: PCSX2's layer break and sector count");
+		const auto ptp0 = physical(1, 0, 0x00030000, 0x0022FFFF, 0);
+		const auto ptp1 = physical(1, 0, 0x00230000, 0x0042FFFE, 0);
+		const DvdPhysical a = ParseDvdPhysical(ptp0.data(), ptp0.size());
+		const DvdPhysical b = ParseDvdPhysical(ptp1.data(), ptp1.size());
+		const DvdLayout pl = DvdLayoutFrom(a, &b);
+		Check(pl.ok && pl.media_type == 1 && pl.layer_break == 0x1FFFFF && pl.sectors == 0x3FFFFF,
+			"parallel dual layer: layer 0's end, plus layer 1's own range");
+		Check(!DvdLayoutFrom(a).ok, "parallel dual layer without the second read is not a layout");
+		uint8_t shortb[8] = {};
+		Check(!ParseDvdPhysical(shortb, sizeof(shortb)).ok, "a short READ DVD STRUCTURE is not a descriptor");
+	}
 	std::printf(fails ? "%d FAILED\n" : "all passed\n", fails);
 	return fails ? 1 : 0;
 }

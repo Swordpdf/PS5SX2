@@ -2377,6 +2377,35 @@ void OrbisChangeDiscCpu(int req)
   fflush(stdout);
 }
 
+// 2026-10-10: flag discplay launches "/dev/cd0" (ProsperoDiscDump.cpp) instead of an image file.
+static bool orbis_is_disc_device(const std::string& path)
+{
+  return path.size() >= 8 && path.compare(0, 5, "/dev/") == 0;
+}
+
+// Settings file named the way a dump is ("Title (SERIAL).ini"), so a game played from the drive keeps the settings
+// of its image. The serial is read off the disc.
+static std::string orbis_disc_settings_stem(const std::string& device)
+{
+  fe::GameInfo gi;
+  gi.serial = fe::ReadSerial(device);
+  gi.title = gi.serial.empty() ? std::string("PS2 disc") : gi.serial;
+  fe::ApplyGameDbTitle(gi);
+  std::string stem = gi.title;
+  if (!gi.serial.empty() && gi.title != gi.serial)
+    stem += " (" + gi.serial + ")";
+  for (size_t at; (at = stem.find(": ")) != std::string::npos;)
+    stem.replace(at, 2, " - ");
+  for (char& ch : stem)
+    if (std::strchr("/\\:*?\"<>|", ch) || static_cast<unsigned char>(ch) < 0x20)
+      ch = ' ';
+  for (size_t at; (at = stem.find("  ")) != std::string::npos;)
+    stem.erase(at, 1);
+  while (!stem.empty() && (stem.back() == ' ' || stem.back() == '.'))
+    stem.pop_back();
+  return stem.empty() ? std::string("PS2 disc") : stem;
+}
+
 // At the game's start: the set, and the disc it starts from (the cheat disc, when it's on and found).
 static std::string orbis_disc_boot(const std::string& game)
 {
@@ -3085,7 +3114,14 @@ int main()
       const std::string dep = OrbisLogPath("disc-launch-exec.txt");
       struct stat exec_st{};
       const bool exec_pending = stat(dep.c_str(), &exec_st) == 0;
-      if (exec_pending) {
+      struct stat launch_st{};
+      // 2026-10-10: flag discplay. The daemon's ISO path would start the copy; drop it so the shelf comes up and the
+      // disc watcher plays the DVD from the drive.
+      if (OrbisFlag("discplay") && stat(dlp.c_str(), &launch_st) == 0) {
+          unlink(dlp.c_str());
+          printf("[boot] disc-launch.txt ignored (flag discplay): the PS2 DVD will be played from the drive\n");
+          fflush(stdout);
+      } else if (exec_pending) {
           printf("[boot] disc-launch: exec.txt present — self-exec imminent; deferring disc-launch.txt\n");
           fflush(stdout);
       } else if (FILE* f = fopen(dlp.c_str(), "r")) {
@@ -3168,9 +3204,14 @@ int main()
   {
     // vk-285-32: its settings file, named after the image without the extension.
     std::string stem = s_game_path.substr(s_game_path.rfind('/') + 1);
-    const size_t dot = stem.rfind('.');
-    if (dot != std::string::npos && dot > 0)
-      stem.erase(dot);
+    if (orbis_is_disc_device(s_game_path))
+      stem = orbis_disc_settings_stem(s_game_path);
+    else
+    {
+      const size_t dot = stem.rfind('.');
+      if (dot != std::string::npos && dot > 0)
+        stem.erase(dot);
+    }
     s_game_ini_path = "/data/PCSX2/settings/" + stem + ".ini";
   }
 #ifdef ORBIS_VULKAN
@@ -3610,8 +3651,16 @@ int main()
 
   VMBootParameters params;
   params.filename = s_game_path; // vk-285-30
+  // 2026-10-10: flag discplay. The shelf was handed the drive node; PCSX2's disc source reads it (ProsperoCDVD.cpp).
+  if (orbis_is_disc_device(s_game_path))
+  {
+    params.filename = s_game_path;
+    params.source_type = CDVD_SourceType::Disc;
+    printf("[boot] playing from the disc %s (no image is written)\n", s_game_path.c_str());
+    fflush(stdout);
+  }
   // vk-285-139: a game's discs (and the cheat disc as disc 1 when the game starts from it).
-  if (!s_game_path.empty() && !(s_game_path.size() > 4 && strcasecmp(s_game_path.c_str() + s_game_path.size() - 4, ".elf") == 0))
+  else if (!s_game_path.empty() && !(s_game_path.size() > 4 && strcasecmp(s_game_path.c_str() + s_game_path.size() - 4, ".elf") == 0))
   {
     params.filename = orbis_disc_boot(s_game_path);
     if (params.filename != s_game_path)
