@@ -37,7 +37,7 @@ struct GameRoots
 	bool scan_subfolders = true;      // ScanGames also opens the folders in each of `dirs`
 	std::vector<std::string> missing; // set folders that are no folder here (boot.log, and the empty shelf says so)
 	std::string signature;            // "default", or "set:" + the set folders joined with '|', and the switches: what usb-games.txt is keyed to
-	std::string copy_to;              // where a copied disc goes: the first set folder that is no NFS share; "" = games/ as before
+	std::string copy_to;              // where a copied disc goes: the first set folder that is no NFS or SMB share; "" = games/ as before
 	std::string first_set;            // the first folder named in PS5SX2/GameFolders, there or not: what the empty shelf names
 };
 
@@ -50,9 +50,12 @@ inline bool RootIsFolder(const std::string& path)
 // A folder on an NFS share (OrbisNfs mounts them under /nfs/<host>/...): read-only, so a copied disc is never put there.
 inline bool UnderNfs(const std::string& path) { return path == "/nfs" || path.compare(0, 5, "/nfs/") == 0; }
 
+// A folder on an SMB share (OrbisSmb mounts them under /smb/<server>/<share>/...): read-only too.
+inline bool UnderSmb(const std::string& path) { return path == "/smb" || path.compare(0, 5, "/smb/") == 0; }
+
 // `set`: PS5SX2/GameFolders as SplitFolderList gives it. `defaults`: games_dir and top_dir. `drives`: the drives' folders
 // (orbis_usb_game_dirs). Both are read only while `set` is empty, and `drives` only while options.scan_usb. `shares`: the NFS
-// shares' mount points (the player added them: always, and they exist by now, so a set folder under /nfs can be checked).
+// and SMB shares' mount points (the player added them: always, and they exist by now, so a set folder under /nfs can be checked).
 inline GameRoots ResolveGameRoots(const std::vector<std::string>& set, const std::vector<std::string>& defaults,
 	const std::vector<std::string>& drives, const std::vector<std::string>& shares, const RootOptions& options = RootOptions())
 {
@@ -81,7 +84,7 @@ inline GameRoots ResolveGameRoots(const std::vector<std::string>& set, const std
 			if (RootIsFolder(d))
 			{
 				add(d);
-				if (r.copy_to.empty() && !UnderNfs(d))
+				if (r.copy_to.empty() && !UnderNfs(d) && !UnderSmb(d))
 					r.copy_to = d;
 			}
 			else
