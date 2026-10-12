@@ -12,6 +12,10 @@
 // commands through the drive's pass-through device (OrbisDiscDrive.h). DVDs were tried on a console in PR #34 (a TSSTcorp
 // SN-208FB on USB); CDs need proper testing.
 //
+// /dev/passN and /dev/usbdisc are not cd(4) devices (flag discplay launches whichever node identified the disc; a USB
+// CD on this console was /dev/pass1). Those read with the SCSI helpers in ProsperoDiscSpeed.cpp. m_device == -2 is the
+// usbdisc session, which is not a file descriptor.
+//
 // Port changes from the review of PR #34: Reopen fails when neither a DVD's layers nor a CD's table of contents read (it
 // said yes, and PCSX2's CDVD thread then asked DiscReady, and so Reopen, about 100 times a second); DiscReady asks the
 // drive at most every 500 ms and keeps the answer in between (it sent TEST UNIT READY on each of the CDVD thread's
@@ -22,6 +26,7 @@
 #include "common/Error.h"
 
 #include "OrbisDiscDrive.h"
+#include "ProsperoDiscSpeed.h" // /dev/passN and /dev/usbdisc: SCSI reads (a USB drive the cd driver did not attach)
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -43,6 +48,19 @@ namespace
 {
 // DiscReady asks the drive at most this often; the CDVD thread calls it on every loop (every 10 ms with no disc).
 constexpr s64 kReadyEveryMs = 500;
+// Not a file descriptor: the libSceUsbd session for /dev/usbdisc. Destructor and Reopen must not close() it.
+constexpr int kUsbSession = -2;
+
+// "/dev/pass" and digits. Not a cd node, so pread and the cd ioctls do not apply.
+bool IsPassOnly(const std::string& path)
+{
+  if (path.size() < 10 || path.compare(0, 9, "/dev/pass") != 0)
+    return false;
+  for (size_t i = 9; i < path.size(); ++i)
+    if (path[i] < '0' || path[i] > '9')
+      return false;
+  return true;
+}
 
 s64 NowMs()
 {
@@ -115,7 +133,9 @@ IOCtlSrc::~IOCtlSrc()
   std::lock_guard<std::mutex> lock(m_lock);
   if (m_pass >= 0)
     close(m_pass);
-  if (m_device != -1)
+  if (m_device == kUsbSession)
+    OrbisUsbDiscRelease();
+  else if (m_device != -1)
     close(m_device);
 }
 
@@ -125,7 +145,9 @@ bool IOCtlSrc::Reopen(Error* error)
   if (m_pass >= 0)
     close(m_pass);
   m_pass = -1;
-  if (m_device != -1)
+  if (m_device == kUsbSession)
+    OrbisUsbDiscRelease();
+  else if (m_device != -1)
     close(m_device);
   m_device = -1;
   m_sectors = 0;
@@ -134,8 +156,47 @@ bool IOCtlSrc::Reopen(Error* error)
   m_raw_off = false;
   m_toc.clear();
 
-  m_device = open(m_filename.c_str(), O_RDONLY);
-  if (m_device == -1)
+  const bool usb = OrbisUsbDiscPath(m_filename);
+  const bool pass_only = IsPassOnly(m_filename);
+  std::string pass_name;
+  if (usb)
+  {
+    std::string what, why;
+    if (!OrbisUsbDiscFind(&what, &why))
+    {
+      if (!m_said_unreadable)
+      {
+        std::printf("[disc] %s doesn't open: %s\n", m_filename.c_str(), why.empty() ? "the USB drive was not found" : why.c_str());
+        std::fflush(stdout);
+      }
+      m_said_unreadable = true;
+      Error::SetString(error, why.empty() ? "could not open the USB drive" : why.c_str());
+      return false;
+    }
+    m_device = kUsbSession;
+    pass_name = what.empty() ? m_filename : what;
+  }
+  else if (pass_only)
+  {
+    m_pass = OrbisOpenDev(m_filename.c_str(), O_RDWR);
+    if (m_pass < 0)
+    {
+      const int e = errno;
+      if (!m_said_unreadable)
+      {
+        std::printf("[disc] %s doesn't open: errno %d (%s)\n", m_filename.c_str(), e, std::strerror(e));
+        std::fflush(stdout);
+      }
+      m_said_unreadable = true;
+      Error::SetErrno(error, e);
+      return false;
+    }
+    OrbisPassReleaseQueue(m_pass);
+    pass_name = m_filename;
+  }
+  else
+    m_device = open(m_filename.c_str(), O_RDONLY);
+  if (!usb && !pass_only && m_device == -1)
   {
     const int e = errno;
     if (!m_said_unreadable)
@@ -150,8 +211,8 @@ bool IOCtlSrc::Reopen(Error* error)
       Error::SetErrno(error, e);
     return false;
   }
-  std::string pass_name;
-  m_pass = OrbisDiscDrive::OpenPassThrough(m_device, &pass_name);
+  if (!usb && !pass_only)
+    m_pass = OrbisDiscDrive::OpenPassThrough(m_device, &pass_name);
   if (m_pass >= 0)
   {
     // A disc change (or the drive's reset) is reported once, as UNIT ATTENTION: taken here, so that DiscReady's next one
@@ -163,7 +224,25 @@ bool IOCtlSrc::Reopen(Error* error)
   }
 
   // DVD first, as on Linux: cd(4) answers the table of contents for both.
-  const bool known = ReadDVDInfo() || ReadCDInfo();
+  bool known = ReadDVDInfo() || ReadCDInfo();
+  if (!known && m_device >= 0 && !usb && !pass_only)
+  {
+    // A PS2 DVD on /dev/cd0: sector 16 is ISO 9660 and the drive reports its size, even when the structure ioctl and
+    // the pass device both failed. One layer; a dual-layer disc still needs the structure read above.
+    uint8_t pvd[2048] = {};
+    off_t bytes = 0;
+    const bool iso = pread(m_device, pvd, sizeof(pvd), 16 * 2048) == 2048 && pvd[0] == 1 && std::memcmp(pvd + 1, "CD001", 5) == 0;
+    if (iso && ioctl(m_device, DIOCGMEDIASIZE, &bytes) == 0 && bytes >= 2048)
+    {
+      m_media_type = 0;
+      m_layer_break = 0;
+      m_sectors = static_cast<u32>(static_cast<u64>(bytes) / 2048);
+      m_toc.clear();
+      known = m_sectors != 0;
+      std::printf("[disc] %s: playing from the drive size, %u sectors (one layer)\n", m_filename.c_str(), m_sectors);
+      std::fflush(stdout);
+    }
+  }
   if (!known)
   {
     // No disc, one still spinning up, or not a data disc. The device stays open: DiscReady asks the drive again (at most
@@ -179,7 +258,10 @@ bool IOCtlSrc::Reopen(Error* error)
     return false;
   }
   m_said_unreadable = false;
-  const std::string drive = m_pass >= 0 ? OrbisDiscDrive::Describe(m_pass) : std::string();
+  SetSpindleSpeed(false);
+  std::string drive = m_pass >= 0 ? OrbisDiscDrive::Describe(m_pass) : std::string();
+  if (drive.empty() && (usb || pass_only))
+    drive = pass_name;
   std::printf("[disc] %s: %s, %s, %u sectors, layer break %u, %zu track(s); pass-through %s%s\n", m_filename.c_str(),
     drive.empty() ? "(drive not named)" : drive.c_str(),
     m_media_type < 0 ? "CD" : m_media_type == 0 ? "DVD, one layer" : m_media_type == 1 ? "DVD, two layers (PTP)" : "DVD, two layers (OTP)",
@@ -191,12 +273,35 @@ bool IOCtlSrc::Reopen(Error* error)
 
 bool IOCtlSrc::ReadDVDInfo()
 {
+  if (OrbisUsbDiscPath(m_filename) || IsPassOnly(m_filename))
+  {
+    OrbisDiscLayer layer;
+    const bool ok = OrbisUsbDiscPath(m_filename) ? OrbisUsbDiscReadLayer(&layer) : OrbisDiscReadLayerPass(m_pass, &layer);
+    if (!ok || layer.sectors == 0)
+      return false;
+    m_media_type = layer.media_type;
+    m_sectors = layer.sectors;
+    m_layer_break = layer.layer_break;
+    m_toc.clear();
+    return true;
+  }
   struct dvd_struct ds;
   std::memset(&ds, 0, sizeof(ds));
   ds.format = DVD_STRUCT_PHYSICAL;
   ds.layer_num = 0;
   if (ioctl(m_device, DVDIOCREADSTRUCTURE, &ds) != 0)
-    return false;
+  {
+    // The PS5's own drive reads a PS2 DVD with pread. Its DVD-structure ioctl can fail; the SCSI read through the
+    // pass device is what discplay used for the layer break. Needs proper testing on the console's own drive.
+    OrbisDiscLayer layer;
+    if (!OrbisDiscReadLayer(m_device, &layer) || !layer.ok || layer.sectors == 0)
+      return false;
+    m_media_type = layer.media_type;
+    m_sectors = layer.sectors;
+    m_layer_break = layer.layer_break;
+    m_toc.clear();
+    return true;
+  }
   struct dvd_layer l0;
   std::memcpy(&l0, ds.data, sizeof(l0));
   const u32 start_sector = l0.start_sector;
@@ -243,6 +348,24 @@ bool IOCtlSrc::ReadDVDInfo()
 
 bool IOCtlSrc::ReadCDInfo()
 {
+  if (OrbisUsbDiscPath(m_filename) || IsPassOnly(m_filename))
+  {
+    // A PS2 CD answers READ DVD STRUCTURE with sense 05/30/02. The TOC is what makes it a CD. /dev/cdN does not give
+    // the 2352-byte sectors; a pass device does, via READ CD.
+    OrbisCdToc toc;
+    if (!(OrbisUsbDiscPath(m_filename) ? OrbisUsbDiscReadToc(&toc) : OrbisPassReadCdToc(m_pass, &toc)) || !toc.ok)
+      return false;
+    m_toc.clear();
+    for (uint32_t i = 0; i < toc.count; i++)
+    {
+      const OrbisCdTrack& t = toc.tracks[i];
+      m_toc.push_back({t.lba, t.number, t.adr, t.control});
+    }
+    m_sectors = toc.leadout;
+    m_layer_break = 0;
+    m_media_type = -1;
+    return m_sectors > 0 && !m_toc.empty();
+  }
   struct ioc_toc_header header;
   if (ioctl(m_device, CDIOREADTOCHEADER, &header) != 0 || header.ending_track < header.starting_track)
     return false;
@@ -285,7 +408,23 @@ bool IOCtlSrc::ReadCDInfo()
 
 void IOCtlSrc::SetSpindleSpeed(bool restore_defaults) const
 {
-  (void)restore_defaults;
+  // A USB drive takes SET CD SPEED: 4x DVD (5540) or 8x CD (1408) on a pass node, 2x DVD / 4x CD on the bulk pipe.
+  // /dev/cdN gets Sony's 3.2x command below. Needs proper testing on the console's own drive.
+  if (OrbisUsbDiscPath(m_filename))
+  {
+    const uint16_t kbs = restore_defaults ? 0xFFFF : (m_media_type >= 0 ? 2770 : 706);
+    OrbisUsbDiscSetSpeed(kbs);
+    return;
+  }
+  if (IsPassOnly(m_filename) && m_pass >= 0)
+  {
+    const uint16_t kbs = restore_defaults ? 0xFFFF : (m_media_type >= 0 ? 5540 : 1408);
+    OrbisPassSetSpeed(m_pass, kbs);
+    return;
+  }
+  // The console's own drive: Sony's 3.2x command. A drive that refuses it still plays at the speed it had.
+  if (m_device >= 0)
+    OrbisDiscSetPlaySpeed(m_device, restore_defaults);
 }
 
 u32 IOCtlSrc::GetSectorCount() const
@@ -301,12 +440,20 @@ const std::vector<toc_entry>& IOCtlSrc::ReadTOC() const
 bool IOCtlSrc::ReadSectors2048(u32 sector, u32 count, u8* buffer) const
 {
   std::lock_guard<std::mutex> lock(m_lock);
+  if (OrbisUsbDiscPath(m_filename))
+    return OrbisUsbDiscRead2048(sector, count, buffer);
+  if (IsPassOnly(m_filename))
+    return m_pass >= 0 && OrbisPassRead2048(m_pass, sector, count, buffer);
   return m_device != -1 && Pread2048(m_device, sector, count, buffer);
 }
 
 bool IOCtlSrc::ReadSectors2352(u32 sector, u32 count, u8* buffer) const
 {
   std::lock_guard<std::mutex> lock(m_lock);
+  if (OrbisUsbDiscPath(m_filename))
+    return OrbisUsbDiscRead2352(sector, count, buffer);
+  if (IsPassOnly(m_filename))
+    return m_pass >= 0 && OrbisPassRead2352(m_pass, sector, count, buffer);
   if (m_device == -1)
     return false;
   if (m_pass >= 0 && !m_raw_off &&
@@ -364,11 +511,13 @@ bool IOCtlSrc::DiscReady()
     if (m_ready_checked_ms >= 0 && now - m_ready_checked_ms < kReadyEveryMs)
       return m_ready && m_sectors != 0;
     m_ready_checked_ms = now;
-    // m_device == -1: it didn't open last time (no disc in it then): Reopen below tries again.
-    if (m_device != -1)
+    // m_device == -1 and no pass session: it didn't open last time (no disc in it then): Reopen below tries again.
+    if (m_device != -1 || m_pass >= 0)
     {
       bool changed = false;
-      if (m_pass >= 0)
+      if (m_device == kUsbSession)
+        m_ready = OrbisUsbDiscReady();
+      else if (m_pass >= 0)
       {
         orbis_mmc::Sense sense;
         m_ready = OrbisDiscDrive::Ready(m_pass, &sense);

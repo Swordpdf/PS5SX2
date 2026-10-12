@@ -16,6 +16,13 @@
 // renamed to .iso at the end. Notifications at the start, every 25% and at the end. Nothing is ever written to the disc
 // or a device. Flag nodiscdump: off.
 //
+// 2026-10-10: flag discplay plays a PS2 DVD from the drive instead of copying it (ProsperoCDVD.cpp). The drive is set to
+// Sony's 3.2x and the layer break is read from the drive. A PS2 CD still is not played from the console's own drive.
+//
+// 2026-10-11: a USB DVD drive is also a candidate. On this console its cd device often never attaches, so it shows up
+// only as /dev/passN (INQUIRY type 5, not the console's PS-SYSTEM). With discplay that pass device is started the
+// same way: a PS2 DVD through READ(10), a PS2 CD through READ CD. Needs proper testing on a console with a USB drive.
+//
 // swordpdf: "after its dumped, whenever inserted should start that game with ps5sx2". A PS2 disc put in while the shelf is
 // up starts its copy (once the copy is made), as if picked on the shelf; so does one already in the drive when the app is
 // opened. Not when the app was re-executed into the shelf (back to the menu, a game that didn't start: main-boot writes
@@ -69,6 +76,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "ProsperoDiscDump.h"
+#include "OrbisDiscDrive.h"
 #include "ProsperoDiscSpeed.h"
 #include "OrbisDiscCopy.h"
 #include "ProsperoNotify.h"
@@ -143,6 +151,24 @@ namespace
 		fflush(stdout);
 	}
 
+	bool IsPassName(const std::string& n)
+	{
+		if (n.compare(0, 4, "pass") != 0)
+			return false;
+		if (n.size() == 4)
+			return false;
+		for (size_t i = 4; i < n.size(); i++)
+			if (n[i] < '0' || n[i] > '9')
+				return false;
+		return true;
+	}
+
+	bool IsPassPath(const std::string& path)
+	{
+		const size_t slash = path.rfind('/');
+		return IsPassName(slash == std::string::npos ? path : path.substr(slash + 1));
+	}
+
 	bool LooksOptical(const std::string& n)
 	{
 		// The name alone or the name plus a number: cd0 yes, bluetooth_hid / bdbus / cdev no.
@@ -169,10 +195,127 @@ namespace
 		uint64_t bytes = 0; // the media's size (DIOCGMEDIASIZE), or the ISO volume's
 	};
 
+	// SYSTEM.CNF's BOOT2 serial, the same walk as fe::ReadSerial, from 2048-byte sectors the caller reads.
+	template <typename Read>
+	std::string SerialFromSectors(Read read)
+	{
+		auto take = [&](uint32_t lba, void* buf, size_t len) {
+			const size_t whole = (len + 2047) & ~static_cast<size_t>(2047);
+			if (whole == len)
+				return read(lba, buf, static_cast<uint32_t>(len / 2048));
+			std::vector<uint8_t> tmp(whole);
+			if (!read(lba, tmp.data(), static_cast<uint32_t>(whole / 2048)))
+				return false;
+			std::memcpy(buf, tmp.data(), len);
+			return true;
+		};
+		uint8_t pvd[2048];
+		if (!take(16, pvd, sizeof(pvd)) || pvd[0] != 1 || std::memcmp(pvd + 1, "CD001", 5) != 0)
+			return {};
+		const uint8_t* root = pvd + 156;
+		const uint32_t root_lba = Le32(root + 2);
+		const uint32_t root_len = std::min<uint32_t>(Le32(root + 10), 64 * 2048);
+		std::vector<uint8_t> dir(root_len);
+		if (!root_len || !take(root_lba, dir.data(), dir.size()))
+			return {};
+		for (size_t off = 0; off < dir.size();)
+		{
+			const uint8_t len = dir[off];
+			if (len == 0)
+			{
+				off = (off / 2048 + 1) * 2048;
+				continue;
+			}
+			if (off + len > dir.size() || len < 34)
+				break;
+			const uint8_t name_len = dir[off + 32];
+			std::string name(reinterpret_cast<const char*>(&dir[off + 33]), std::min<size_t>(name_len, len - 33));
+			for (char& c : name)
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			if (name.rfind("system.cnf", 0) == 0)
+			{
+				const uint32_t lba = Le32(&dir[off + 2]);
+				const uint32_t size = std::min<uint32_t>(Le32(&dir[off + 10]), 4096);
+				std::string cnf(size, '\0');
+				if (!take(lba, cnf.data(), size))
+					break;
+				const size_t b = cnf.find("BOOT2");
+				const size_t s = cnf.find('\\', b == std::string::npos ? 0 : b);
+				if (b == std::string::npos || s == std::string::npos)
+					break;
+				std::string elf, serial;
+				for (size_t i = s + 1; i < cnf.size() && cnf[i] != ';' && cnf[i] != '\r' && cnf[i] != '\n'; i++)
+					elf += cnf[i];
+				for (char c : elf)
+				{
+					if (c == '_')
+						serial += '-';
+					else if (c != '.')
+						serial += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+				}
+				if (serial.size() >= 9 && serial.size() <= 12)
+					return serial;
+				break;
+			}
+			off += len;
+		}
+		return {};
+	}
+
 	// What a node holds: false when it doesn't open or sector 16 isn't an ISO 9660 volume. `log`: say what was found.
 	bool ProbeNode(const std::string& path, Node& out, bool log)
 	{
-		const int fd = open(path.c_str(), O_RDONLY);
+		if (OrbisUsbDiscPath(path))
+		{
+			uint8_t pvd[2048] = {};
+			const bool dvd = OrbisUsbDiscRead2048(16, 1, pvd) && pvd[0] == 1 && std::memcmp(pvd + 1, "CD001", 5) == 0;
+			const bool cd = !dvd && OrbisUsbDiscReadCdUser(16, 1, pvd) && pvd[0] == 1 && std::memcmp(pvd + 1, "CD001", 5) == 0;
+			const uint32_t cap = OrbisUsbDiscCapacity();
+			const uint64_t vol = (dvd || cd) ? static_cast<uint64_t>(Le32(pvd + 80)) * 2048 : 0;
+			if (log)
+			{
+				char hex[80] = {};
+				for (unsigned i = 0; i < 16; i++)
+					std::snprintf(hex + i * 3, 4, "%02x ", pvd[i]);
+				Log("%s: %s [%s]", path.c_str(), (dvd || cd) ? "ISO 9660" : "not a PS2 volume", hex);
+			}
+			if (!dvd && !cd)
+				return false;
+			out.path = path;
+			out.bytes = cap ? static_cast<uint64_t>(cap) * 2048 : vol;
+			return out.bytes > 0;
+		}
+		if (IsPassPath(path))
+		{
+			const int fd = OrbisOpenDev(path.c_str(), O_RDWR);
+			if (fd < 0)
+			{
+				if (log)
+					Log("%s: open: errno %d", path.c_str(), errno);
+				return false;
+			}
+			OrbisPassReleaseQueue(fd);
+			uint8_t pvd[2048] = {};
+			const bool dvd = OrbisPassRead2048(fd, 16, 1, pvd) && pvd[0] == 1 && std::memcmp(pvd + 1, "CD001", 5) == 0;
+			const bool cd = !dvd && OrbisPassReadCdUser(fd, 16, 1, pvd) && pvd[0] == 1 && std::memcmp(pvd + 1, "CD001", 5) == 0;
+			const uint32_t cap = OrbisPassCapacity(fd);
+			const uint64_t vol = (dvd || cd) ? static_cast<uint64_t>(Le32(pvd + 80)) * 2048 : 0;
+			close(fd);
+			if (log)
+			{
+				char label[33] = {};
+				if (dvd || cd)
+					std::memcpy(label, pvd + 40, 32);
+				Log("%s: pass device; sector 16 %s%s%s, capacity %u sectors", path.c_str(),
+					(dvd || cd) ? "ISO 9660 \"" : "not ISO 9660", (dvd || cd) ? label : "", (dvd || cd) ? "\"" : "", cap);
+			}
+			if (!dvd && !cd)
+				return false;
+			out.path = path;
+			out.bytes = cap ? static_cast<uint64_t>(cap) * 2048 : vol;
+			return out.bytes > 0;
+		}
+		const int fd = OrbisOpenDev(path.c_str(), O_RDONLY);
 		if (fd < 0)
 		{
 			if (log)
@@ -202,7 +345,26 @@ namespace
 				iso ? "\"" : (n == 2048 ? ", not ISO 9660" : ""));
 		}
 		if (!iso)
+		{
+			// A USB drive that did get a cd node (cd1, ...) still hides a PS2 CD from a 2048-byte pread.
+			// aio reads that through the pass device (READ CD). The console's own cd0 is left as it was.
+			if (path != "/dev/cd0")
+			{
+				const int cd = OrbisOpenDev(path.c_str(), O_RDONLY);
+				if (cd >= 0)
+				{
+					const std::string pass = OrbisDiscPassPath(cd);
+					close(cd);
+					if (!pass.empty())
+					{
+						if (log)
+							Log("%s: no ISO 9660 from pread; trying %s", path.c_str(), pass.c_str());
+						return ProbeNode(pass, out, log);
+					}
+				}
+			}
 			return false;
+		}
 		out.path = path;
 		// vk-285-155 (AI-assisted): copy the media's real size when the drive gives it (on the PS5's drive DIOCGMEDIASIZE
 		// is the exact disc size: NFSU2 read 2874605568, its ISO to the byte). The old code clamped down to the ISO 9660
@@ -231,7 +393,26 @@ namespace
 	// The media size without reading the disc; 0 when it doesn't open or holds nothing.
 	uint64_t QuietMediaSize(const std::string& path)
 	{
-		const int fd = open(path.c_str(), O_RDONLY);
+		if (OrbisUsbDiscPath(path))
+		{
+			if (!OrbisUsbDiscReady())
+				return 0;
+			const uint32_t cap = OrbisUsbDiscCapacity();
+			return cap ? static_cast<uint64_t>(cap) * 2048 : 1;
+		}
+		if (IsPassPath(path))
+		{
+			const int fd = OrbisOpenDev(path.c_str(), O_RDWR);
+			if (fd < 0)
+				return 0;
+			const bool ready = OrbisPassReady(fd);
+			const uint32_t cap = ready ? OrbisPassCapacity(fd) : 0;
+			close(fd);
+			if (!ready)
+				return 0;
+			return cap ? static_cast<uint64_t>(cap) * 2048 : 1; // 1: a disc is in, but not as 2048-byte blocks yet
+		}
+		const int fd = OrbisOpenDev(path.c_str(), O_RDONLY);
 		if (fd < 0)
 			return 0;
 		off_t media = 0;
@@ -240,22 +421,145 @@ namespace
 		return (r == 0 && media > 0) ? static_cast<uint64_t>(media) : 0;
 	}
 
+	// libc opendir("/dev") returns EPERM in the game sandbox (dirshim.cpp). sceKernelGetdents is the listing that works.
+	extern "C" int sceKernelOpen(const char* path, int flags, int mode);
+	extern "C" int sceKernelGetdents(int fd, char* buf, int nbytes);
+	extern "C" int sceKernelClose(int fd);
+
+	bool ListDev(std::vector<std::string>& names, int* err)
+	{
+		const int fd = sceKernelOpen("/dev", O_RDONLY | O_DIRECTORY | O_NOFOLLOW, 0);
+		if (fd < 0)
+		{
+			*err = fd;
+			return false;
+		}
+		alignas(0x4000) static char buffer[0x10000];
+		for (;;)
+		{
+			const int n = sceKernelGetdents(fd, buffer, static_cast<int>(sizeof(buffer)));
+			if (n < 0)
+			{
+				*err = n;
+				sceKernelClose(fd);
+				return false;
+			}
+			if (n == 0)
+				break;
+			for (size_t off = 0; off + 8 <= static_cast<size_t>(n);)
+			{
+				char* p = buffer + off;
+				const size_t reclen = static_cast<unsigned char>(p[4]) | (static_cast<size_t>(static_cast<unsigned char>(p[5])) << 8);
+				const size_t namlen = static_cast<unsigned char>(p[7]);
+				if (reclen < 12 || off + reclen > static_cast<size_t>(n) || 8 + namlen >= reclen)
+					break;
+				names.emplace_back(p + 8, namlen);
+				off += reclen;
+			}
+		}
+		sceKernelClose(fd);
+		return true;
+	}
+
+	bool ConsiderPass(const std::string& path, std::vector<std::string>& out, bool log, bool announce)
+	{
+		int kernel_err = 0;
+		const int fd = OrbisOpenDev(path.c_str(), O_RDWR, &kernel_err);
+		if (fd < 0)
+		{
+			if (log)
+				Log("%s: open errno %d, sceKernelOpen %#x (uid %u euid %u)", path.c_str(), errno, static_cast<unsigned>(kernel_err),
+					static_cast<unsigned>(getuid()), static_cast<unsigned>(geteuid()));
+			// pass1/cd1 appear when the drive re-enumerates after the ugen pipe died and the shell's driver takes
+			// it; the title can't open them (errno 1). Say so once per node, not on every scan.
+			static std::vector<std::string> announced;
+			if (announce && std::find(announced.begin(), announced.end(), path) == announced.end())
+			{
+				announced.push_back(path);
+				char msg[160];
+				std::snprintf(msg, sizeof(msg), "USB drive: can't open %s (errno %d)", path.c_str(), errno);
+				OrbisNotifyPlain(msg);
+			}
+			return false;
+		}
+		OrbisPassReleaseQueue(fd);
+		OrbisPassInfo info;
+		const bool described = OrbisPassDescribe(fd, &info);
+		close(fd);
+		if (described && info.optical && !info.sony)
+		{
+			out.push_back(path);
+			if (log)
+			{
+				Log("USB optical %s: %s", path.c_str(), info.text.c_str());
+				char msg[160];
+				std::snprintf(msg, sizeof(msg), "USB drive: %s", info.text.c_str());
+				OrbisNotifyPlain(msg);
+			}
+			return true;
+		}
+		if (log)
+			Log("%s: not a USB optical drive (%s)", path.c_str(), described ? info.text.c_str() : "INQUIRY failed");
+		return false;
+	}
+
 	std::vector<std::string> Candidates(bool log)
 	{
 		std::vector<std::string> out;
 		std::string all;
-		if (DIR* d = opendir("/dev"))
+		std::vector<std::string> names;
+		int list_err = 0;
+		const bool listed = ListDev(names, &list_err);
+		if (!listed && log)
+			Log("sceKernelOpen /dev: %#x", static_cast<unsigned>(list_err));
+		for (const std::string& n : names)
 		{
-			while (dirent* e = readdir(d))
+			if (n == "." || n == "..")
+				continue;
+			all += " " + n;
+			if (LooksOptical(n))
+				out.push_back("/dev/" + n);
+			else if (IsPassName(n))
+				ConsiderPass("/dev/" + n, out, log, true);
+		}
+		bool probed = false;
+		for (const std::string& p : out)
+			if (IsPassPath(p))
+				probed = true;
+		std::string usb_why;
+		for (int i = 0; i < 8 && !probed; i++)
+		{
+			const std::string n = "pass" + std::to_string(i);
+			if (std::find(names.begin(), names.end(), n) != names.end())
+				continue;
+			if (ConsiderPass("/dev/" + n, out, log, false))
+				probed = true;
+		}
+		// discplay reads through the kernel's cd/pass device (ProsperoCDVD). Opening ugen here races that
+		// driver: its replies arrive with another tag, the pipe dies, and /dev/cd1 comes up with errno 13.
+		// Elevate.elf is what lets this process open that node. Needs proper testing.
+		if (!probed && OrbisFlag("discplay"))
+		{
+			if (log)
+				Log("discplay: not claiming the USB pipe; waiting for /dev/cd or /dev/pass (Elevate.elf if open returns errno 13)");
+		}
+		else if (!probed)
+		{
+			std::string what;
+			if (OrbisUsbDiscFind(&what, &usb_why))
 			{
-				const std::string n = e->d_name;
-				if (n == "." || n == "..")
-					continue;
-				all += " " + n;
-				if (LooksOptical(n))
-					out.push_back("/dev/" + n);
+				out.push_back("/dev/usbdisc");
+				probed = true;
+				if (log)
+				{
+					Log("USB optical: %s", what.c_str());
+					char msg[160];
+					std::snprintf(msg, sizeof(msg), "USB drive: %s", what.c_str());
+					OrbisNotifyPlain(msg);
+				}
 			}
-			closedir(d);
+			else if (log && !usb_why.empty())
+				Log("%s", usb_why.c_str());
 		}
 		// vk-285-145: no getmntinfo here (a system call from the app's own code: the PS5 kills the app).
 		if (log)
@@ -277,6 +581,13 @@ namespace
 			for (const std::string& p : out)
 				c += " " + p;
 			Log("candidate drive nodes:%s", c.empty() ? " none" : c.c_str());
+			if (!listed)
+				OrbisNotifyPlain("USB drive: can't list /dev");
+			else if (all.find(" pass") == std::string::npos && !probed)
+			{
+				Log("no /dev/pass device in the kernel listing");
+				OrbisNotifyPlain(usb_why.empty() ? "USB drive: no /dev/pass device" : usb_why.c_str());
+			}
 		}
 		return out;
 	}
@@ -339,7 +650,7 @@ namespace
 		Log("%s: read test (flag disc_readtest)", serial.c_str());
 		OrbisNotifyPlain("Disc read test: about 3 minutes at 2x");
 		s_busy.store(true);
-		const int fd = open(node.path.c_str(), O_RDONLY);
+		const int fd = OrbisOpenDev(node.path.c_str(), O_RDONLY);
 		if (fd < 0)
 		{
 			s_busy.store(false);
@@ -435,7 +746,7 @@ namespace
 				return {};
 			}
 		}
-		const int in = open(node.path.c_str(), O_RDONLY);
+		const int in = OrbisOpenDev(node.path.c_str(), O_RDONLY);
 		const int out = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
 		if (in < 0 || out < 0)
 		{
@@ -713,7 +1024,7 @@ namespace
 		bool refg_done = false; // vk-285-159: one re-foreground attempt per boot, whatever the outcome (flag disc_refg)
 		const bool relaunch = TakeRelaunchMark();
 		const std::string recent = RecentAutoStart(kAutoStartGuardSeconds); // vk-285-155: a disc auto-started recently (a likely failed launch)
-		sleep(5); // vk-285-145: well after the app's start
+		sleep(1); // vk-285-145 waited 5 s so boot never met the old getmntinfo crash; the scan itself is the first look
 		if (relaunch)
 			Log("a re-exec into the shelf: a disc in the drive now doesn't start its game");
 		if (!recent.empty())
@@ -763,7 +1074,16 @@ namespace
 				}
 				const bool log = std::find(logged.begin(), logged.end(), path) == logged.end();
 				// vk-285-160l: reuse the last probe while the media size is unchanged (no disc reads, so the drive can rest).
-				const uint64_t media = QuietMediaSize(path);
+				uint64_t media = QuietMediaSize(path);
+				ProbeCache& held = probes[path];
+				// A busy USB pipe used to be reported as the disc leaving. The disc stays in while the session is open.
+				if (OrbisUsbDiscPath(path) && media == 0 && held.iso && OrbisUsbDiscSession())
+				{
+					static int said = 0;
+					if (said++ < 3)
+						Log("%s: read failed; %s stays in the drive", path.c_str(), held.serial.c_str());
+					media = held.media ? held.media : 1;
+				}
 				ProbeCache& pc = probes[path];
 				if (media == 0 || media != pc.media || log)
 				{
@@ -771,7 +1091,38 @@ namespace
 					pc.iso = ProbeNode(path, pc.node, log);
 					pc.media = media; // a non-PS2 disc is remembered too, so it isn't re-read every 3 s either
 					if (pc.iso)
-						pc.serial = fe::ReadSerial(path);
+					{
+						if (OrbisUsbDiscPath(path))
+						{
+							const auto dvd = [&](uint32_t lba, void* buf, uint32_t count) { return OrbisUsbDiscRead2048(lba, count, buf); };
+							const auto cd = [&](uint32_t lba, void* buf, uint32_t count) { return OrbisUsbDiscReadCdUser(lba, count, buf); };
+							pc.serial = SerialFromSectors(dvd);
+							if (pc.serial.empty())
+								pc.serial = SerialFromSectors(cd);
+						}
+						else if (IsPassPath(path))
+						{
+							const int fd = OrbisOpenDev(path.c_str(), O_RDWR);
+							if (fd >= 0)
+							{
+								OrbisPassReleaseQueue(fd);
+								const auto dvd = [&](uint32_t lba, void* buf, uint32_t count) { return OrbisPassRead2048(fd, lba, count, buf); };
+								const auto cd = [&](uint32_t lba, void* buf, uint32_t count) { return OrbisPassReadCdUser(fd, lba, count, buf); };
+								pc.serial = SerialFromSectors(dvd);
+								if (pc.serial.empty())
+									pc.serial = SerialFromSectors(cd);
+								close(fd);
+							}
+						}
+						else
+						{
+							// /dev/cd0 gives a PS2 DVD's sectors, but fe::ReadSerial opens it like a file and can miss
+							// SYSTEM.CNF. Whole sectors through the same open the probe used.
+							pc.serial = OrbisDiscDrive::IsDrivePath(path) ? OrbisDiscSerial(path) : fe::ReadSerial(path);
+							if (pc.serial.empty() && OrbisDiscDrive::IsDrivePath(path))
+								pc.serial = fe::ReadSerial(path);
+						}
+					}
 				}
 				if (log)
 					logged.push_back(path);
@@ -802,6 +1153,28 @@ namespace
 					refg_done = true;
 					TryReForeground(serial); // under flag disc_refg this re-execs and doesn't return
 				}
+				// 2026-10-10: flag discplay. A PS2 DVD already identified here (ISO 9660 and a BOOT2 serial, which /dev/cd0
+				// only gives for a DVD) is started from the drive. Nothing is copied.
+				if (OrbisFlag("discplay"))
+				{
+					if (handled == serial)
+						continue;
+					handled = serial;
+					pending = node.path;
+					Log("%s: playing from %s (flag discplay; not copied)", serial.c_str(), node.path.c_str());
+					continue;
+				}
+				if (IsPassPath(node.path) || OrbisUsbDiscPath(node.path))
+				{
+					// The copy path reads /dev/cdN. A USB drive here is only a pass device; flag discplay is what plays it.
+					static std::string s_usb;
+					if (s_usb != node.path)
+					{
+						s_usb = node.path;
+						Log("%s: %s is a USB drive; it is played with flag discplay, not copied", serial.c_str(), node.path.c_str());
+					}
+					continue;
+				}
 				bool clean = true;
 				if (!BeginCopy(path))
 					continue; // PR #34 port: claimed for a game just now
@@ -831,7 +1204,9 @@ namespace
 			if (!pending.empty() && orbis_frontend_request_launch(pending))
 			{
 				Log("starting %s", pending.c_str());
-				OrbisNotifyPlain("PS2 disc: starting the game");
+				OrbisNotifyPlain(pending.find("/pass") != std::string::npos || OrbisUsbDiscPath(pending) ? "PS2 disc: playing from the USB drive"
+					: pending.compare(0, 5, "/dev/") == 0 ? "PS2 disc: playing from the disc"
+														 : "PS2 disc: starting the game");
 				WriteAutoStartMark(handled); // vk-285-155: so a force-off then reopen doesn't loop this game
 				pending.clear();
 			}
@@ -876,6 +1251,20 @@ static void* AliveThread(void*)
 	return nullptr;
 }
 
+std::string OrbisDiscSerial(const std::string& device)
+{
+	const int fd = OrbisOpenDev(device.c_str(), O_RDONLY);
+	if (fd < 0)
+		return {};
+	const auto read = [&](uint32_t lba, void* buf, uint32_t count) {
+		const ssize_t want = static_cast<ssize_t>(count) * 2048;
+		return pread(fd, buf, static_cast<size_t>(want), static_cast<off_t>(lba) * 2048) == want;
+	};
+	const std::string serial = SerialFromSectors(read);
+	close(fd);
+	return serial;
+}
+
 void OrbisDiscDumpStart()
 {
 	if (s_started.exchange(true))
@@ -890,11 +1279,13 @@ void OrbisDiscDumpStart()
 			Log("alive thread: pthread_create failed");
 		pthread_attr_destroy(&aattr);
 	}
-	if (OrbisFlag("nodiscdump"))
+	if (OrbisFlag("nodiscdump") && !OrbisFlag("discplay"))
 	{
 		Log("off (flag nodiscdump)");
 		return;
 	}
+	if (OrbisFlag("discplay"))
+		Log("flag discplay: a PS2 disc is played from the drive (or a USB DVD drive), not copied");
 	pthread_t t;
 	pthread_attr_t attr;
 	pthread_attr_init(&attr);

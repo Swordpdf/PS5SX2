@@ -15,3 +15,7 @@ bool OrbisDiscDumpBusy();
 // changes) when that drive's disc is being copied right now. OrbisDiscDumpRelease gives the drive back to the watcher.
 bool OrbisDiscDumpClaim(const std::string& device);
 void OrbisDiscDumpRelease(const std::string& device);
+
+// BOOT2 serial from a /dev/cdN node, read in whole 2048-byte sectors (the console drive rejects a short read).
+// Empty when the node doesn't open or the disc has no PS2 SYSTEM.CNF. Needs proper testing on the console's own drive.
+std::string OrbisDiscSerial(const std::string& device);

@@ -152,6 +152,14 @@ map="$OUT/build/radv-platform-local.map"
 } > "$map"
 radv_flags+=(--version-script "$map")
 
+# The same C library calls OrbisNfs.cpp stands in front of (link-vk.sh).
+NFS_WRAP=()
+while IFS= read -r name; do
+  name=${name%$'\r'}
+  [[ -z $name || $name == \#* ]] && continue
+  NFS_WRAP+=("--wrap=$name")
+done < "$here/orbis-shims/OrbisNfs.wrap"
+
 # 4. The pie link (twice, as link-vk.sh: the second pass localizes everything but the imports). libunwind.a comes once more
 # before the system modules' stubs for _Unwind_Backtrace: the platform's backtrace() walks with it, and the console libc's
 # would mix two unwinders in one walk (RPCS3-PS5's link does the same; the RADV titles list libunwind before the stubs).
@@ -162,12 +170,29 @@ if [[ $ORDER_FILE != none && -f $ORDER_FILE ]]; then
   ORDER_ARGS=(--symbol-ordering-file="$ORDER_FILE" --no-warn-symbol-ordering)
 fi
 pie_link() {
+  # The object list is longer than Windows' command line, so it goes through
+  # a response file. Paths inside it are not converted by MSYS.
+  local rsp="$OUT/build/radv-objs.rsp"
+  : > "$rsp"
+  local o win
+  for o in $OBJS; do
+    if command -v cygpath >/dev/null 2>&1; then
+      win=$(cygpath -m "$o")
+    else
+      win=$o
+    fi
+    printf '%s\n' "$win" >> "$rsp"
+  done
+  local rsp_arg="@$rsp"
+  if command -v cygpath >/dev/null 2>&1; then
+    rsp_arg="@$(cygpath -m "$rsp")"
+  fi
   # shellcheck disable=SC2086
   "$LLD" -m elf_x86_64 -pie -z max-page-size=0x4000 -mllvm -emulated-tls \
     --hash-style=gnu -T "$NATIVE/tooling/native/ps5-pie.ld" -T "$here/orbis-shims/ehframe.ld" --eh-frame-hdr \
-    --version-script "$NATIVE/tooling/native/app-symbols.map" "${ORDER_ARGS[@]}" "${radv_flags[@]}" "$@" -e _start \
+    --version-script "$NATIVE/tooling/native/app-symbols.map" "${ORDER_ARGS[@]}" "${radv_flags[@]}" "${NFS_WRAP[@]}" "$@" -e _start \
     ${LLD_EXTRA:---no-dynamic-linker} \
-    -o "$OUT/build/llvm-pie.elf" $OBJS \
+    -o "$OUT/build/llvm-pie.elf" "$rsp_arg" \
     --whole-archive "$RADV_ARCHIVE" --no-whole-archive \
     "${GLSLANG_LIBS[@]}" \
     -u _Unwind_Backtrace "$SDK"/target/lib/libunwind.a \
