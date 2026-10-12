@@ -703,6 +703,35 @@ int main(int argc, char** argv)
 			at = bar + 1;
 		}
 	}
+	// SMB share passwords: "<url>\t<password>" lines in <data>/smb-passwords.txt (the console's OrbisSmb has its own file).
+	const std::string smb_passwords = data + "/smb-passwords.txt";
+	auto smb_lines = [smb_passwords] {
+		std::vector<std::string> lines;
+		std::ifstream in(smb_passwords);
+		for (std::string line; std::getline(in, line);)
+			lines.push_back(line);
+		return lines;
+	};
+	acfg.smb_set_password = [smb_passwords, smb_lines](const std::string& url, const std::string& password, std::string& error) {
+		if (url.find('@') == std::string::npos)
+		{
+			error = "a password needs a user name";
+			return false;
+		}
+		std::ofstream out(smb_passwords, std::ios::trunc);
+		for (const std::string& line : smb_lines())
+			if (line.compare(0, url.size() + 1, url + "\t") != 0)
+				out << line << "\n";
+		if (!password.empty())
+			out << url << "\t" << password << "\n";
+		return true;
+	};
+	acfg.smb_has_password = [smb_lines](const std::string& url) {
+		for (const std::string& line : smb_lines())
+			if (line.compare(0, url.size() + 1, url + "\t") == 0)
+				return true;
+		return false;
+	};
 	if (no_bios)
 	{
 		acfg.bios_present = [] { return false; };

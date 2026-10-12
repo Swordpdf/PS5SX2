@@ -58,6 +58,9 @@ struct AppConfig
 	// vk-285-135 (AI-assisted): the sheet for all games' Folders rows and their picker start from these places (label, path),
 	// those that are folders when it opens (the drives come and go); empty: no Folders rows.
 	std::vector<std::pair<std::string, std::string>> folder_places;
+	// SMB shares' passwords (OrbisSmb): set one (empty removes it), and whether one is set. Unset: no password entry.
+	std::function<bool(const std::string& url, const std::string& password, std::string& error)> smb_set_password;
+	std::function<bool(const std::string& url)> smb_has_password;
 	// live-22 (AI-assisted): the disc dumper's progress file (orbis-shims/ProsperoDiscDump.cpp, logs/disc-dump-progress.txt).
 	// While a PS2 disc is being copied, the shelf polls it and shows a spinning-disc entry with the live percentage, until
 	// the copy ends (the file is removed, and the game launches). Empty: no such entry (the host sets it for its test).
@@ -182,6 +185,7 @@ private:
 		float scroll = 0, scroll_target = 0;
 		bool typing = false; // the PS5's keyboard is open for a share's address
 		std::string editing;  // vk-285-138: the share being changed (empty: a new one)
+		std::string password_for; // the SMB share whose password is being typed
 		// vk-285-139: the panel's own keyboard for the address, where the PS5's won't open (libSceImeDialog doesn't load in
 		// every jailbreak's process: swordpdf's 138 log, "load 0x80020063").
 		bool osk = false;
@@ -191,6 +195,7 @@ private:
 		double held_for = 0, next_repeat = 0;
 	};
 	void OpenPicker(OptionsSheet::Kind kind);
+	void AskSharePassword(const std::string& url);
 	void PickerList(const std::string& dir, const std::string& focus = {});
 	void UpdatePicker(double dt, const Input& in);
 	void BuildPicker(std::vector<UiVertex>& ui, float x, float sw, float y, float sh, float k, uint32_t accent);

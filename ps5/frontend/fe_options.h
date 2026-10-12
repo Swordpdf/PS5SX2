@@ -79,6 +79,7 @@ constexpr const char* kCheatDiscKey = "PS5SX2/CheatDisc"; // vk-285-139: gs.ini,
 constexpr const char* kGameFoldersKey = "PS5SX2/GameFolders"; // folders separated by ';'
 constexpr const char* kBiosFolderKey = "PS5SX2/BiosFolder";
 constexpr const char* kNfsSharesKey = "PS5SX2/NfsShares"; // nfs:// addresses separated by ';'
+constexpr const char* kSmbSharesKey = "PS5SX2/SmbShares"; // smb:// addresses separated by ';'
 // A list setting's items (';' or '|' between them, spaces and a folder's last '/' off), and the list again.
 std::vector<std::string> SplitFolderList(const std::string& list);
 std::string JoinFolderList(const std::vector<std::string>& items);
@@ -103,6 +104,7 @@ public:
 		GameFolders, // vk-285-135: the sheet for all games: more game folders (the app's folder picker)
 		BiosFolder,  // vk-285-135: where the BIOS is looked for first (the folder picker)
 		NfsShares,   // vk-285-135: NFS shares' addresses (the app's list, the PS5's keyboard)
+		SmbShares,   // SMB shares' addresses, as NfsShares
 		CheatDisc,   // vk-285-139: the sheet for all games: the cheat disc (kCheatDiscKey, one of the shelf's images)
 	};
 

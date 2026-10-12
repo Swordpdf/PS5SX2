@@ -94,6 +94,32 @@ steps "$open_all;press down 3;wait 0.2;press cross;wait 0.3;press cross;wait 0.4
 run nfs-share-refused --ime-text "smb://pc/games" --script "$script"
 check "an smb:// address isn't added" test -z "$(ini PS5SX2/NfsShares)"
 
+# SMB shares (the row under NFS shares). A share with a user: added, then its password asked for at once.
+pw="$data/smb-passwords.txt"
+steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;expect picker=1;press cross;wait 0.4;shot picker-smb;expect picker=1" > "$script"
+run smb-share --ime-text "smb://user@nas/PS2" --script "$script"
+check "the share is in PS5SX2/SmbShares" test "$(ini PS5SX2/SmbShares)" = "smb://user@nas/PS2"
+check "its password was asked for and stored" grep -qx "smb://user@nas/PS2	hunter2-preview" "$pw"
+check "no password in gs.ini" bash -c "! grep -q hunter2 '$data/gs.ini'"
+# A guest share: no password asked; Square on it doesn't ask either.
+steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;press cross;wait 0.4;press down 2;press square;wait 0.3;expect picker=1" > "$script"
+run smb-guest --ime-text "smb://nas/Public" --script "$script"
+check "both shares listed" test "$(ini PS5SX2/SmbShares)" = "smb://user@nas/PS2;smb://nas/Public"
+check "no password for the guest share" bash -c "! grep -q 'Public' '$pw'"
+# Square on the share with a user, no PS5 keyboard: the panel's keyboard, its text hidden. Up to "1", Cross three times.
+steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;press down;press square;wait 0.3;press up;press cross 3;wait 0.2;shot picker-smb-password;press options;wait 0.3;expect picker=1" > "$script"
+run smb-password-osk --script "$script"
+check "the password was changed" grep -qx "smb://user@nas/PS2	111" "$pw"
+# Triangle removes the share and its password.
+steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;press down;press triangle;wait 0.3" > "$script"
+run smb-share-removed --script "$script"
+check "the share is gone from gs.ini" test "$(ini PS5SX2/SmbShares)" = "smb://nas/Public"
+check "its password is gone" bash -c "! grep -q 'user@nas' '$pw'"
+# Not an smb:// address: nothing added.
+steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;press cross;wait 0.4" > "$script"
+run smb-share-refused --ime-text "nfs://pc/games" --script "$script"
+check "an nfs:// address isn't added" test "$(ini PS5SX2/SmbShares)" = "smb://nas/Public"
+
 if [[ $failed != 0 ]]; then
   echo "folder picker: FAILED"
   exit 1

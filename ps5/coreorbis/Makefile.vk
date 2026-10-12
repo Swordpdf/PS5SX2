@@ -323,6 +323,12 @@ NFS_CSRCS := $(wildcard $(NFS_DIR)/lib/*.c) $(wildcard $(NFS_DIR)/mount/*.c) $(w
 NFS_INCLUDES := -I$(NFS_DIR)/include
 C_SRCS := $(C_SRCS) $(NFS_CSRCS)
 
+# libsmb2, for SMB shares (orbis-shims/OrbisSmb.cpp).
+SMB_DIR := $(PS5_THIRD)/libsmb2
+SMB_CSRCS := $(wildcard $(SMB_DIR)/lib/*.c)
+SMB_INCLUDES := -I$(SMB_DIR)/include
+C_SRCS := $(C_SRCS) $(SMB_CSRCS)
+
 # The GL build's shims minus glprobe, GLContextPS5 and gl_loader_table; plus the
 # shaderc shim and the Vulkan build's stand-ins for GL-only hooks.
 SHIM_SRCS := ./orbis-shims/ProsperoInput.cpp ./orbis-shims/ProsperoCDVD.cpp \
@@ -342,7 +348,7 @@ SHIM_SRCS := ./orbis-shims/ProsperoInput.cpp ./orbis-shims/ProsperoCDVD.cpp \
   ./orbis-shims/ProsperoAchievementBrowser.cpp \
   ./orbis-shims/orbis_gs_shaders.cpp \
   ./orbis-shims/ps5_framegen.cpp \
-  ./orbis-shims/OrbisNfs.cpp ./orbis-shims/OrbisDiscDrive.cpp ./orbis-shims/OrbisIOCtlSrc.cpp
+  ./orbis-shims/OrbisNfs.cpp ./orbis-shims/OrbisSmb.cpp ./orbis-shims/OrbisDiscDrive.cpp ./orbis-shims/OrbisIOCtlSrc.cpp
 
 SHIM_ASM := ./orbis-shims/ProsperoTLS.S
 
@@ -461,6 +467,17 @@ $(patsubst $(PCSX2)/%.c,$(OBJDIR)/%.o,$(NFS_CSRCS)): CFLAGS += -DHAVE_CONFIG_H -
   -I$(NFS_DIR) $(NFS_INCLUDES) -I$(NFS_DIR)/include/nfsc -I$(NFS_DIR)/mount -I$(NFS_DIR)/nfs -I$(NFS_DIR)/nfs4 \
   -I$(NFS_DIR)/portmap -w
 $(OBJDIR)/shim/orbis-shims/OrbisNfs.o: CXXFLAGS += $(NFS_INCLUDES)
+$(patsubst $(PCSX2)/%.c,$(OBJDIR)/%.o,$(SMB_CSRCS)): CFLAGS += -DHAVE_CONFIG_H -D_FILE_OFFSET_BITS=64 \
+  "-D_U_=__attribute__((unused))" -I$(SMB_DIR) $(SMB_INCLUDES) -I$(SMB_DIR)/include/smb2 -w
+$(OBJDIR)/shim/orbis-shims/OrbisSmb.o: CXXFLAGS += $(SMB_INCLUDES)
+# link-radv.sh's OrbisNfs.o: directory calls wrapped too (no dirshim.o there); what it passes on goes to the RADV
+# platform's functions (its fclose and fflush wrappers renamed by link-radv.sh).
+$(OBJDIR)/shim/orbis-shims/OrbisNfs-radv.o: ./orbis-shims/OrbisNfs.cpp Makefile.vk
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(NFS_INCLUDES) -DORBIS_NFS_WRAP_DIRS -D__real_fclose=ps5_platform_fclose \
+	  -D__real_fflush=ps5_platform_fflush -D__real_opendir=ps5_opendir -D__real_readdir=ps5_readdir \
+	  -D__real_closedir=ps5_closedir -D__real_access=ps5_access -c $< -o $@
+
 # 2026-10-05: mbedTLS with its config (warnings on: it builds clean), and the client that uses it.
 $(patsubst $(PCSX2)/%.c,$(OBJDIR)/%.o,$(MBEDTLS_CSRCS)): CFLAGS += $(MBEDTLS_FLAGS) -I$(PS5_THIRD)/mbedtls/library
 $(OBJDIR)/frontend/fe_https.o: CXXFLAGS += $(MBEDTLS_FLAGS) -Wframe-larger-than=12288

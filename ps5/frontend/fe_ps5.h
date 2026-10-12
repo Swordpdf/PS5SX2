@@ -52,6 +52,9 @@ struct OrbisFrontendPaths
 	std::function<bool()> bios_check;
 	std::function<std::string()> bios_problem;
 	std::string bios_dir;
+	// SMB shares' passwords (OrbisSmb): set one (empty removes it), and whether one is set. Unset: no password entry.
+	std::function<bool(const std::string& url, const std::string& password, std::string& error)> smb_set_password;
+	std::function<bool(const std::string& url)> smb_has_password;
 };
 
 // 2026-10-08 (AI-assisted): what orbis_frontend_run returns for the sheet's "PS2 system menu": main-boot.cpp then boots the

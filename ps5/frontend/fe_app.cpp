@@ -1588,7 +1588,7 @@ void App::UpdateSheet(double dt, const Input& in)
 	// vk-285-135: the Folders rows: Cross opens the picker (game folders, the BIOS folder) or the share list; Triangle sets the
 	// BIOS folder back to its default.
 	if (row.kind == OptionsSheet::Kind::GameFolders || row.kind == OptionsSheet::Kind::BiosFolder ||
-		row.kind == OptionsSheet::Kind::NfsShares)
+		row.kind == OptionsSheet::Kind::NfsShares || row.kind == OptionsSheet::Kind::SmbShares)
 	{
 		if (pressed(in.cross, m_prev.cross))
 		{
@@ -2222,7 +2222,7 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		}
 		// vk-285-135: the Folders rows open a list (Cross); left and right don't change them.
 		const bool folder_row = r.kind == OptionsSheet::Kind::GameFolders || r.kind == OptionsSheet::Kind::BiosFolder ||
-		                        r.kind == OptionsSheet::Kind::NfsShares;
+		                        r.kind == OptionsSheet::Kind::NfsShares || r.kind == OptionsSheet::Kind::SmbShares;
 		if (folder_row && focused)
 			value += "  \xE2\x80\xBA";
 		const bool arrows = focused && !action && pick_arrows && !folder_row;
@@ -2382,6 +2382,32 @@ bool StartsWithNoCase(const std::string& s, const char* prefix)
 }
 } // namespace
 
+namespace
+{
+bool IsShareList(OptionsSheet::Kind k)
+{
+	return k == OptionsSheet::Kind::NfsShares || k == OptionsSheet::Kind::SmbShares;
+}
+
+const char* ShareKey(OptionsSheet::Kind k)
+{
+	return k == OptionsSheet::Kind::SmbShares ? kSmbSharesKey : kNfsSharesKey;
+}
+
+const char* ShareScheme(OptionsSheet::Kind k)
+{
+	return k == OptionsSheet::Kind::SmbShares ? "smb://" : "nfs://";
+}
+
+void Wipe(std::string& s)
+{
+	volatile char* c = s.data();
+	for (size_t i = 0; i < s.size(); i++)
+		c[i] = 0;
+	s.clear();
+}
+} // namespace
+
 void App::OpenPicker(OptionsSheet::Kind kind)
 {
 	m_picker = FolderPicker();
@@ -2389,6 +2415,7 @@ void App::OpenPicker(OptionsSheet::Kind kind)
 	m_picker.kind = kind;
 	PickerList("");
 	std::printf("[options] %s\n", kind == OptionsSheet::Kind::NfsShares ? "NFS share list" :
+	                              kind == OptionsSheet::Kind::SmbShares ? "SMB share list" :
 	                              kind == OptionsSheet::Kind::BiosFolder ? "folder picker for the BIOS folder" : "folder picker for game folders");
 	std::fflush(stdout);
 }
@@ -2399,11 +2426,13 @@ void App::PickerList(const std::string& dir, const std::string& focus)
 	p.dir = dir;
 	p.items.clear();
 	using T = PickerItem::Type;
-	if (p.kind == OptionsSheet::Kind::NfsShares)
+	if (IsShareList(p.kind))
 	{
-		p.items.push_back({T::Add, "Add a share", "", "nfs://"});
-		for (const std::string& share : SplitFolderList(m_sheet.OwnValue(kNfsSharesKey)))
-			p.items.push_back({T::Share, share, share, ""});
+		const bool smb = p.kind == OptionsSheet::Kind::SmbShares;
+		p.items.push_back({T::Add, "Add a share", "", ShareScheme(p.kind)});
+		for (const std::string& share : SplitFolderList(m_sheet.OwnValue(ShareKey(p.kind))))
+			p.items.push_back({T::Share, share, share,
+				smb && m_cfg.smb_has_password && m_cfg.smb_has_password(share) ? "Password set" : ""});
 	}
 	else if (dir.empty())
 	{
@@ -2445,6 +2474,22 @@ void App::PickerList(const std::string& dir, const std::string& focus)
 	p.scroll = p.scroll_target = 0;
 }
 
+void App::AskSharePassword(const std::string& url)
+{
+	FolderPicker& p = m_picker;
+	p.password_for = url;
+	if (m_cfg.text_entry.open && m_cfg.text_entry.open("Password for " + url, "", true, 255))
+	{
+		p.typing = true;
+		return;
+	}
+	p.osk = true;
+	p.osk_text.clear();
+	p.osk_page = 0;
+	p.osk_row = 1;
+	p.osk_col = 0;
+}
+
 // vk-285-139: what a keyboard (the PS5's or the panel's) gave for a share's address: r > 0 typed, else cancelled.
 void App::FinishShareText(int r, std::string text)
 {
@@ -2453,6 +2498,24 @@ void App::FinishShareText(int r, std::string text)
 		m_sheet_status = t;
 		m_sheet_status_time = m_time;
 	};
+	if (!p.password_for.empty())
+	{
+		const std::string url = p.password_for;
+		p.password_for.clear();
+		Wipe(p.osk_text);
+		std::string error;
+		if (r > 0 && m_cfg.smb_set_password && m_cfg.smb_set_password(url, text, error))
+			status(text.empty() ? "Password removed" : "Password saved: restart PS5SX2 to connect with it");
+		else
+			status(r > 0 ? "Password not saved: " + error : std::string("Password unchanged"));
+		Wipe(text);
+		PickerList("", url);
+		Sound(r > 0 && error.empty() ? Sfx::Move : Sfx::Edge, 0.3f);
+		return;
+	}
+	const char* const key = ShareKey(p.kind);
+	const char* const scheme = ShareScheme(p.kind);
+	const std::string kind_name = p.kind == OptionsSheet::Kind::SmbShares ? "SMB" : "NFS";
 	while (!text.empty() && (text.back() == ' ' || text.back() == ';'))
 		text.pop_back();
 	while (!text.empty() && text.front() == ' ')
@@ -2461,9 +2524,9 @@ void App::FinishShareText(int r, std::string text)
 	// what comes back takes its place.
 	const std::string editing = p.editing;
 	p.editing.clear();
-	if (r > 0 && text.size() > 6 && StartsWithNoCase(text, "nfs://") && text.find(';') == std::string::npos)
+	if (r > 0 && text.size() > 6 && StartsWithNoCase(text, scheme) && text.find(';') == std::string::npos)
 	{
-		std::vector<std::string> list = SplitFolderList(m_sheet.OwnValue(kNfsSharesKey));
+		std::vector<std::string> list = SplitFolderList(m_sheet.OwnValue(key));
 		const auto old = std::find(list.begin(), list.end(), editing);
 		if (!editing.empty() && old != list.end())
 		{
@@ -2473,16 +2536,20 @@ void App::FinishShareText(int r, std::string text)
 		else if (std::find(list.begin(), list.end(), text) == list.end())
 			list.push_back(text);
 		const bool changed = text != editing;
-		if (changed && m_sheet.SetOwn(kNfsSharesKey, JoinFolderList(list), (editing.empty() ? "NFS share added: " : "NFS share changed: ") + text))
+		if (changed && m_sheet.SetOwn(key, JoinFolderList(list), kind_name + (editing.empty() ? " share added: " : " share changed: ") + text))
 			status((editing.empty() ? "Added " : "Changed to ") + text + ": restart PS5SX2 to mount it");
 		else if (!changed)
 			status("Unchanged");
 		PickerList("", text);
 		Sound(Sfx::Move, 0.3f);
+		// A new SMB share with a user name: its password next.
+		if (changed && p.kind == OptionsSheet::Kind::SmbShares && text.find('@') != std::string::npos && m_cfg.smb_set_password &&
+			!(m_cfg.smb_has_password && m_cfg.smb_has_password(text)))
+			AskSharePassword(text);
 	}
 	else
 	{
-		status(r > 0 && !text.empty() && text != "nfs://" ? std::string("Not an nfs:// address: ") + (editing.empty() ? "nothing added" : "the share stays as it was")
+		status(r > 0 && !text.empty() && text != scheme ? std::string("Not an ") + scheme + " address: " + (editing.empty() ? "nothing added" : "the share stays as it was")
 		                                                   : std::string(editing.empty() ? "Nothing added" : "Unchanged"));
 		Sound(Sfx::Edge, 0.3f);
 	}
@@ -2665,8 +2732,9 @@ void App::UpdatePicker(double dt, const Input& in)
 			case T::Share: // vk-285-138: change it on the keyboard
 			case T::Add:
 				p.editing = item.type == T::Share ? item.path : std::string();
-				if (m_cfg.text_entry.open && m_cfg.text_entry.open("NFS share: nfs://server/shared folder", item.type == T::Share ? item.path : item.value,
-						false, 255))
+				if (m_cfg.text_entry.open &&
+					m_cfg.text_entry.open(p.kind == K::SmbShares ? "SMB share: smb://[user@]server/share" : "NFS share: nfs://server/shared folder",
+						item.type == T::Share ? item.path : item.value, false, 255))
 					p.typing = true;
 				else
 				{
@@ -2686,13 +2754,29 @@ void App::UpdatePicker(double dt, const Input& in)
 		}
 		return;
 	}
+	if (pressed(in.square, m_prev.square) && item.type == T::Share && p.kind == K::SmbShares)
+	{
+		if (!m_cfg.smb_set_password)
+			status("Passwords can't be set here");
+		else if (item.path.find('@') == std::string::npos)
+			status("A guest share: put user@ before the server for a password");
+		else
+			AskSharePassword(item.path);
+		Sound(Sfx::Move, 0.3f);
+		return;
+	}
 	if (pressed(in.triangle, m_prev.triangle) && (item.type == T::Listed || item.type == T::Share))
 	{
-		const char* const key = item.type == T::Share ? kNfsSharesKey : kGameFoldersKey;
+		const char* const key = item.type == T::Share ? ShareKey(p.kind) : kGameFoldersKey;
 		std::vector<std::string> list = SplitFolderList(m_sheet.OwnValue(key));
 		list.erase(std::remove(list.begin(), list.end(), item.path), list.end());
-		if (m_sheet.SetOwn(key, JoinFolderList(list), std::string(item.type == T::Share ? "NFS share" : "game folder") + " removed: " + item.path))
+		const std::string what = item.type != T::Share ? "game folder" : p.kind == K::SmbShares ? "SMB share" : "NFS share";
+		if (m_sheet.SetOwn(key, JoinFolderList(list), what + " removed: " + item.path))
 			status("Removed " + item.path + " (restart PS5SX2)");
+		std::string error;
+		if (item.type == T::Share && p.kind == K::SmbShares && m_cfg.smb_has_password && m_cfg.smb_has_password(item.path) &&
+			m_cfg.smb_set_password)
+			m_cfg.smb_set_password(item.path, "", error); // its password goes with it
 		const int keep = p.row;
 		PickerList(p.dir);
 		p.row = std::min(keep, std::max(0, static_cast<int>(p.items.size()) - 1));
@@ -2711,12 +2795,12 @@ void App::BuildPicker(std::vector<UiVertex>& ui, float x, float sw, float y, flo
 	const float list_top = y + kSheetListTop * k, list_bottom = y + sh - kSheetHelpH * k;
 
 	// Where it is: what for, and the folder shown.
-	const char* what = p.kind == K::NfsShares ? "NFS SHARES" : p.kind == K::BiosFolder ? "THE BIOS FOLDER" : "A GAME FOLDER";
-	const std::string head = p.kind == K::NfsShares ? std::string(what) : std::string("PICK ") + what;
+	const char* what = p.kind == K::NfsShares ? "NFS SHARES" : p.kind == K::SmbShares ? "SMB SHARES" : p.kind == K::BiosFolder ? "THE BIOS FOLDER" : "A GAME FOLDER";
+	const std::string head = IsShareList(p.kind) ? std::string(what) : std::string("PICK ") + what;
 	m_fonts->AddText(ui, head.c_str(), cx, list_top + 40 * k, 26 * k, lo, 0.45f);
 	if (!p.dir.empty())
 		m_fonts->AddText(ui, Fit(*m_fonts, p.dir, 30 * k, inner).c_str(), cx, list_top + 84 * k, 30 * k, mid, 0.3f);
-	else if (p.kind != K::NfsShares)
+	else if (!IsShareList(p.kind))
 		m_fonts->AddText(ui, "Where to look", cx, list_top + 84 * k, 30 * k, mid, 0.3f);
 
 	const float rows_top = list_top + 110 * k;
@@ -2768,23 +2852,32 @@ void App::BuildPicker(std::vector<UiVertex>& ui, float x, float sw, float y, flo
 	Fonts::AddRoundedRect(ui, cx, list_bottom + 44 * k, inner, 2 * k, 0, Rgba(1, 1, 1, 0.12f));
 	std::string help;
 	const PickerItem* it = p.items.empty() ? nullptr : &p.items[static_cast<size_t>(p.row)];
-	if (p.osk)
-		help = "Type the share's address, nfs://<server>/<shared folder>: Cross types the key, Square deletes, Options is done, Circle "
-		       "cancels. Add ?version=4 for an NFS v4 server.";
+	const bool smb = p.kind == K::SmbShares;
+	if (!p.password_for.empty())
+		help = "Type the password for " + p.password_for + (p.osk ? " (Cross types the key, Square deletes, Options is done, Circle cancels)" : "") +
+		       ". Empty removes it. It is kept on the console only.";
+	else if (p.osk)
+		help = smb ? "Type the share's address, smb://[user@]<server>/<share>: Cross types the key, Square deletes, Options is done, Circle cancels."
+		           : "Type the share's address, nfs://<server>/<shared folder>: Cross types the key, Square deletes, Options is done, Circle "
+		             "cancels. Add ?version=4 for an NFS v4 server.";
 	else if (p.typing)
-		help = "Type the share's address on the PS5's keyboard: nfs://<server>/<shared folder>, as the server shares it (a folder "
-		       "inside it works too). Add ?version=4 for an NFS v4 server.";
+		help = smb ? "Type the share's address on the PS5's keyboard: smb://[user@]<server>/<share>, a folder inside it works too. "
+		             "No password here: it is asked for next."
+		           : "Type the share's address on the PS5's keyboard: nfs://<server>/<shared folder>, as the server shares it (a folder "
+		             "inside it works too). Add ?version=4 for an NFS v4 server.";
 	else if (it && it->type == T::Use)
 		help = p.kind == K::BiosFolder ? "Cross: look for the BIOS here first. Circle: back."
 		                               : "Cross: list the games in this folder (and in the folders in it). Circle: back.";
 	else if (it && (it->type == T::Listed || it->type == T::Share))
-		help = it->type == T::Share ? std::string("Cross: change it on the PS5's keyboard. Triangle: remove it from the shares. Circle: back to the sheet.")
+		help = it->type == T::Share ? std::string("Cross: change it on the PS5's keyboard. ") + (smb ? "Square: its password. " : "") +
+		                                  "Triangle: remove it from the shares. Circle: back to the sheet."
 		                            : std::string("Triangle: remove it from the game folders. Circle: back to the sheet.");
 	else if (it && it->type == T::Add)
-		help = "Cross: type a share's address on the PS5's keyboard (nfs://<server>/<shared folder>). Circle: back to the sheet.";
+		help = smb ? "Cross: type a share's address on the PS5's keyboard (smb://[user@]<server>/<share>). Circle: back to the sheet."
+		           : "Cross: type a share's address on the PS5's keyboard (nfs://<server>/<shared folder>). Circle: back to the sheet.";
 	else
 		help = std::string("Cross: open the folder. ") + (p.dir.empty() ? "Circle: back to the sheet." : "Circle: up a folder.");
-	if (!p.typing && p.kind != K::NfsShares)
+	if (!p.typing && !IsShareList(p.kind))
 		help += " Changes take effect when PS5SX2 starts.";
 	float hy = list_bottom + 110 * k;
 	for (const std::string& line : Wrap(*m_fonts, help, 32 * k, inner, 4))
@@ -3054,13 +3147,14 @@ void App::BuildPickerKeyboard(std::vector<UiVertex>& ui, float W, float H, float
 	Fonts::AddRoundedRect(ui, x - 2 * k, fy - 2 * k, w + 4 * k, fh + 4 * k, 34 * k, Rgba(1, 1, 1, 0.16f));
 	Fonts::AddRoundedRect(ui, x, fy, w, fh, 32 * k, Rgba(0.045f, 0.050f, 0.105f, 0.985f));
 	Fonts::AddRoundedRect(ui, x + 28 * k, fy + 30 * k, 6 * k, fh - 60 * k, 3 * k, accent);
-	std::string shown = p.osk_text;
+	std::string shown = p.password_for.empty() ? p.osk_text : std::string(p.osk_text.size(), '*');
 	const float px = 44 * k, room = w - 120 * k;
 	while (shown.size() > 1 && m_fonts->Measure(shown.c_str(), px) > room)
 		shown.erase(0, 1);
 	const bool caret = std::fmod(m_time, 1.0) < 0.6;
 	m_fonts->AddText(ui, (shown + (caret ? "|" : " ")).c_str(), x + 60 * k, fy + fh * 0.5f + px * 0.36f, px, Rgba(1, 1, 1), 0.3f);
-	BuildPanelKeyboard(ui, x, ky, w, k, "NFS share", p.osk_page,
+	BuildPanelKeyboard(ui, x, ky, w, k,
+		!p.password_for.empty() ? "Password" : p.kind == OptionsSheet::Kind::SmbShares ? "SMB share" : "NFS share", p.osk_page,
 		p.osk_row, p.osk_col);
 }
 

@@ -103,7 +103,7 @@ private:
 std::string UsbDriveRoot(const std::string& path);
 
 // vk-285-156 (AI-assisted; testers: NFS games had no covers): a path on one of the app's NFS shares ("/nfs/<host>/...",
-// OrbisNfs.cpp), which only exist after the jailbreak, like USB drives.
+// OrbisNfs.cpp) or SMB shares ("/smb/...", OrbisSmb.cpp), which only exist after the jailbreak, like USB drives.
 bool OnNetworkShare(const std::string& path);
 
 // vk-285-156: the NFS shares' folders ("/nfs/192.168.1.10/volume1/PS2"), so a share's root works like a USB drive's for

@@ -597,6 +597,7 @@ void OptionsSheet::BuildRows()
 		add(Kind::GameFolders, "Game folders");
 		add(Kind::BiosFolder, "BIOS folder");
 		add(Kind::NfsShares, "NFS shares");
+		add(Kind::SmbShares, "SMB shares");
 	}
 	// 2026-10-08 (AI-assisted; testers: "ELF properties: disc path"): an ELF's disc, first, as PCSX2's ELF properties have it.
 	if (settings && m_elf)
@@ -734,8 +735,9 @@ std::string OptionsSheet::Value(const Row& r) const
 			return v.empty() ? "PCSX2/bios" : v;
 		}
 		case Kind::NfsShares:
+		case Kind::SmbShares:
 		{
-			const size_t n = SplitFolderList(OwnValue(kNfsSharesKey)).size();
+			const size_t n = SplitFolderList(OwnValue(r.kind == Kind::SmbShares ? kSmbSharesKey : kNfsSharesKey)).size();
 			return n == 0 ? "None" : n == 1 ? "1 share" : std::to_string(n) + " shares";
 		}
 		case Kind::CheatDisc: // vk-285-139
@@ -796,6 +798,8 @@ OptionsSheet::From OptionsSheet::Source(const Row& r) const
 			return OwnValue(kBiosFolderKey).empty() ? From::Default : From::Own;
 		case Kind::NfsShares:
 			return OwnValue(kNfsSharesKey).empty() ? From::Default : From::Own;
+		case Kind::SmbShares:
+			return OwnValue(kSmbSharesKey).empty() ? From::Default : From::Own;
 		default:
 			return From::Default;
 	}
@@ -909,6 +913,17 @@ std::string OptionsSheet::Help(const Row& r) const
 			                "v4; Windows: WinNFSd or haneWIN). Their games are listed like a drive's, from /nfs/<server>/. Read-only. "
 			                "Mounted when PS5SX2 starts; boot.log says how it went.";
 			const std::vector<std::string> list = SplitFolderList(OwnValue(kNfsSharesKey));
+			if (!list.empty())
+				h += " Now: " + JoinFolderList(list) + ".";
+			return h;
+		}
+		case Kind::SmbShares:
+		{
+			std::string h = "Cross: the SMB shares (Windows, NAS), and Add a share with the PS5's keyboard: "
+			                "smb://[user@]<server>/<share>[/folder]. Square there sets a share's password, kept on the console only. "
+			                "Their games are listed like a drive's, from /smb/<server>/<share>/. Read-only. Connected when PS5SX2 starts; "
+			                "boot.log says how it went.";
+			const std::vector<std::string> list = SplitFolderList(OwnValue(kSmbSharesKey));
 			if (!list.empty())
 				h += " Now: " + JoinFolderList(list) + ".";
 			return h;
@@ -1164,6 +1179,7 @@ bool OptionsSheet::Reset(const Row& r)
 			return SetOwn(kBiosFolderKey, "", "BIOS folder back to /data/PCSX2/bios");
 		case Kind::GameFolders:
 		case Kind::NfsShares:
+		case Kind::SmbShares:
 			m_status = "Cross: the list (Triangle there removes one)";
 			return false;
 		default:
@@ -1225,6 +1241,7 @@ bool OptionsSheet::Activate(const Row& r, double now)
 		case Kind::GameFolders: // vk-285-135: the app opens its picker or the share list (TakeFolderRequest)
 		case Kind::BiosFolder:
 		case Kind::NfsShares:
+		case Kind::SmbShares:
 			m_folder_request = r.kind;
 			return true;
 		case Kind::SystemMenu: // 2026-10-08: the first press arms, a second within 4 s asks the app to start it

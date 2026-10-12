@@ -271,7 +271,7 @@ std::vector<std::string> g_share_roots;
 
 bool OnNetworkShare(const std::string& path)
 {
-	return path.compare(0, 5, "/nfs/") == 0;
+	return path.compare(0, 5, "/nfs/") == 0 || path.compare(0, 5, "/smb/") == 0;
 }
 
 void SetShareRoots(const std::vector<std::string>& roots)

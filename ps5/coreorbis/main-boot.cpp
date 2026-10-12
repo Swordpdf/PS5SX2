@@ -69,6 +69,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/OrbisDiscDrive.h"   // PR #34: PS2 discs played straight from a drive (flag bootdisc)
 #include "SIO/Pad/PadGuitar.h"
 #include "OrbisNfs.h"                     // vk-285-135: games on NFS shares
+#include "OrbisSmb.h"
 #include <mutex>
 #include <set> // vk-285-134
 // vk-285-108 (GSRenderer.cpp): the helper threads' CPUs and the ticker's heartbeat for the GS thread's watchdog.
@@ -2150,6 +2151,37 @@ static std::vector<std::string> orbis_nfs_game_folders(const char* when)
   return dirs;
 }
 
+static const char kSmbPasswordsFile[] = "/data/PCSX2/smb-passwords.txt";
+
+// gs.ini's PS5SX2/SmbShares, as NfsShares; passwords in kSmbPasswordsFile.
+static std::vector<std::string> orbis_smb_game_folders(const char* when)
+{
+  std::vector<std::string> dirs;
+  OrbisSmb::SetCredentialsFile(kSmbPasswordsFile);
+  const std::string list = orbis_gs_ini_string("SmbShares");
+  if (list.find_first_not_of(" \t\r\n;") == std::string::npos)
+  {
+    OrbisSmb::SetShares(std::string());
+    return dirs;
+  }
+  std::vector<std::string> problems;
+  OrbisSmb::SetShares(list, &problems);
+  for (const std::string& p : problems)
+    printf("[boot] %s: SMB share left out (PS5SX2/SmbShares): %s\n", when, p.c_str());
+  const auto t0 = std::chrono::steady_clock::now();
+  for (const OrbisSmb::ShareInfo& s : OrbisSmb::MountAll(5000))
+  {
+    printf("[boot] %s: SMB share %s: %s%s\n", when, s.mount_point.c_str(), s.state.c_str(),
+      s.mounted ? ", its games listed" : "");
+    if (s.mounted)
+      dirs.push_back(s.mount_point);
+  }
+  printf("[boot] %s: SMB shares looked at in %.2f s\n", when,
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+  fflush(stdout);
+  return dirs;
+}
+
 static void orbis_scan_usb(const char* when)
 {
   s_usb_dirs = orbis_usb_game_dirs(when);
@@ -2162,6 +2194,11 @@ static void orbis_scan_usb(const char* when)
   if (std::strcmp(when, "after the jailbreak") == 0)
   {
     for (const std::string& dir : orbis_nfs_game_folders(when))
+    {
+      if (std::find(s_usb_dirs.begin(), s_usb_dirs.end(), dir) == s_usb_dirs.end())
+        s_usb_dirs.push_back(dir);
+    }
+    for (const std::string& dir : orbis_smb_game_folders(when))
     {
       if (std::find(s_usb_dirs.begin(), s_usb_dirs.end(), dir) == s_usb_dirs.end())
         s_usb_dirs.push_back(dir);
@@ -2244,6 +2281,15 @@ static OrbisFrontendPaths orbis_frontend_paths(bool allow_download)
   fe.usb_list = OrbisDir("cache") + "/usb-games.txt";
   for (const OrbisNfs::ShareInfo& s : OrbisNfs::Shares()) // vk-285-156: a share's covers/ and ART/ folders, like a drive's
     fe.share_roots.push_back(s.mount_point);
+  for (const OrbisSmb::ShareInfo& s : OrbisSmb::Shares())
+    fe.share_roots.push_back(s.mount_point);
+  fe.smb_set_password = [](const std::string& url, const std::string& password, std::string& error) {
+    return OrbisSmb::StoreCredential(kSmbPasswordsFile, url, password, error);
+  };
+  fe.smb_has_password = [](const std::string& url) {
+    OrbisSmb::SetCredentialsFile(kSmbPasswordsFile);
+    return OrbisSmb::HasCredential(url);
+  };
   fe.serial_cache = OrbisDir("cache") + "/chd-serials.txt"; // vk-285-108
   fe.gamedb_file = OrbisDir("resources") + "/GameIndex.yaml"; // vk-285-113: the games' names, for the shelf and the page
   fe.memcards_dir = OrbisDir("memcards"); // vk-285-113: the settings page's memory card list and creator
