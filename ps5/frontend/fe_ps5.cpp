@@ -22,6 +22,7 @@
 #include "fe_vk.h"
 #include "fe_web.h"
 #include "ps5/coreorbis/orbis-shims/ProsperoNotify.h" // 2026-10-05: the texture packs' popup
+#include "OrbisPaths.h" // live-22: OrbisLogPath for the disc-dump progress file the shelf shows
 #ifdef PS5SX2_ACHIEVEMENTS
 #include "ps5/coreorbis/orbis-shims/ProsperoAchievements.h"
 #include "pcsx2/Achievements.h"
@@ -511,6 +512,24 @@ struct TexHttp
 };
 TexHttp g_texhttp;
 TexHttp g_patchhttp("pcsx2-patches", "patches"); // 2026-10-08: the online patches' own client (fe_patchdl.h)
+TexHttp g_coverhttp("pcsx2-covers", "covers");   // 2026-10-10: the shelf's cover downloads (CoverGet)
+
+// 2026-10-10 (AI-assisted): the shelf's cover downloads, after the jailbreak, over our own HTTPS. libSceHttp2 fails there
+// (0x8095F00C; texnet6 fetched raw.githubusercontent.com with this client on the console), so the shelf's first download
+// failed, the network counted as down for the session, and NFS and USB games waited for the prefetch before the
+// jailbreak: 30 s a start, about 85 covers. Needs proper testing on the console.
+int CoverGet(const std::string& url, std::vector<uint8_t>& out)
+{
+	HttpsClient* c = g_coverhttp.Client();
+	if (!c)
+		return -1;
+	out.clear();
+	return c->Get(url, false, 0, 0, [&out](const void* p, size_t n) {
+		const uint8_t* b = static_cast<const uint8_t*>(p);
+		out.insert(out.end(), b, b + n);
+		return out.size() <= (16u << 20);
+	}, 20 * 1000);
+}
 
 // The free space of a folder's disk for the texture packs, or UINT64_MAX when the console won't say (the manager then
 // skips its room check; a full disk still fails the writes, which it reports). Two ways crashed the app on the console:
@@ -1580,7 +1599,7 @@ int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budge
 	dirs.insert(dirs.end(), paths.usb_dirs.begin(), paths.usb_dirs.end()); // test build 1: USB drives, when visible here
 	std::vector<GameInfo> games = ScanGames(dirs);
 	for (GameInfo& g : games)
-		g.serial = ReadSerial(g.path);
+		g.serial = ReadSerial(g); // 2.02: through the serial cache, keyed by what ScanGames already has
 	// Test build 1: the USB games seen after the jailbreak last time (the drives may not be visible here).
 	const int listed = AddUsbListGames(paths.usb_list, games);
 	CoverConfig cc;
@@ -1656,7 +1675,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	int on_usb = 0, on_nfs = 0;
 	for (GameInfo& g : games)
 	{
-		g.serial = ReadSerial(g.path);
+		g.serial = ReadSerial(g); // 2.02: through the serial cache, keyed by what ScanGames already has
 		// vk-285-113: a CHD (or an ISO) named after its file shows the game's name from the game database.
 		const std::string file_title = g.title;
 		const bool renamed = ApplyGameDbTitle(g);
@@ -1739,7 +1758,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	cc.url_template = kCoverUrl;
 	cc.allow_download = paths.allow_download;
 	cc.download_usb_only = true; // vk-285-110: the rest came from the prefetch, before the jailbreak
-	covers->Start(games, fonts, cc, [](const std::string& url, std::vector<uint8_t>& out) { return g_http.Get(url, out); });
+	covers->Start(games, fonts, cc, CoverGet); // 2026-10-10: was libSceHttp2 (g_http), which fails after the jailbreak
 
 	// The key sounds (vk-285-47). Without an audio port the shelf is simply quiet.
 	Mixer* mixer = nullptr;
@@ -1865,6 +1884,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.bios_present = paths.bios_check; // vk-285-134
 	acfg.bios_problem = paths.bios_problem;
 	acfg.bios_dir = paths.bios_dir;
+	// live-22 (AI-assisted): while a PS2 disc is being copied (orbis-shims/ProsperoDiscDump.cpp), the shelf shows a
+	// spinning-disc entry with the live percentage, read from this file (the same path the dumper writes).
+	acfg.disc_dump_progress = OrbisLogPath("disc-dump-progress.txt");
 	bool ok = app.Init(&renderer, fonts, games, covers, acfg);
 	std::printf("[frontend] up in %.0f ms (%s)\n", (Now() - t0) * 1000.0, ok ? "ok" : renderer.error().c_str());
 	std::fflush(stdout);
@@ -2002,6 +2024,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	// give it a moment, then leave it behind if need be.
 	covers->RequestStop();
 	g_http.Abort();
+	g_coverhttp.Abort(); // 2026-10-10
 	// 2026-10-05: the texture packs stop with the shelf: a download keeps its part for the next one.
 	if (texpacks)
 	{
@@ -2034,6 +2057,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		delete covers;
 		delete fonts;
 		g_http.Term();
+		g_coverhttp.Term(); // 2026-10-10
 	}
 	else
 		std::printf("[frontend] a cover download is still running; leaving it to finish\n");

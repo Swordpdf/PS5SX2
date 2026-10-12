@@ -137,8 +137,8 @@ std::vector<OptionDef> ButtonRows()
 		{"PS5SX2/ButtonR3", icon::Blank, "R3", "R3"},
 		{"PS5SX2/ButtonOptions", icon::Blank, "Options", "Start"},
 		{"PS5SX2/ButtonTouchpad", icon::Blank, "Touchpad click", "Select"},
-		{"PS5SX2/ButtonTouchLeft", icon::Blank, "Touchpad left", "None"},
-		{"PS5SX2/ButtonTouchRight", icon::Blank, "Touchpad right", "None"},
+		{"PS5SX2/ButtonTouchLeft", icon::Blank, "Touchpad left click", "None"},
+		{"PS5SX2/ButtonTouchRight", icon::Blank, "Touchpad right click", "None"},
 		{"PS5SX2/ButtonUp", icon::DpadUp, "D-pad up", "Up"},
 		{"PS5SX2/ButtonDown", icon::DpadDown, "D-pad down", "Down"},
 		{"PS5SX2/ButtonLeft", icon::DpadLeft, "D-pad left", "Left"},
@@ -365,7 +365,8 @@ const std::vector<OptionGroup>& OptionGroups()
 					{{"Auto 4:3/3:2", "Auto"}, {"4:3", "4:3"}, {"16:9", "16:9"}, {"Stretch", "Stretch"}}),
 				Toggle("EmuCore/EnableWideScreenPatches", "Widescreen patches", "false", "Widescreen %",
 					"Uses the game's 16:9 patch when there is one."),
-				Seg("TVShader", "Display filter", "0", "%", {{"6", "FSR"}, {"7", "FSR soft"}, {"0", "Classic"}, {"5", "CRT"}}),
+				Seg("TVShader", "Display filter", "0", "%", {{"6", "FSR"}, {"7", "FSR soft"}, {"0", "Classic"}, {"5", "CRT"}, {"1", "Scanlines"}, {"2", "VHS soft"}, {"3", "VHS"}},
+					"How the picture reaches the TV. FSR sharpens the upscale; CRT is a curved tube with beam lines; Scanlines draws a thin dark line between the 480 lines; VHS soft and VHS look like a tape (VHS: a worn one that wobbles)."),
 				// 2026-10-08 (AI-assisted): frame generation (GSDeviceVK.cpp), read when the game starts (main-boot.cpp).
 				Toggle("PS5SX2/FrameGeneration", "Frame generation", "false", "Frame gen %",
 					"Shows a frame made between two of the game's: a 60 fps game at 120 on a TV that takes 120 Hz (the TV switches to "
@@ -377,7 +378,9 @@ const std::vector<OptionGroup>& OptionGroups()
 		{"Graphics",
 			{
 				Seg("PS5SX2/Renderer", "Renderer", "Hardware", "%", {{"Hardware", "Hardware"}, {"Software", "Software"}}, "Software draws the game on the CPU, as a PS2 does it: slower, but right in games whose effects the hardware renderer gets wrong. Set it for one game in that game's settings. Takes effect when the game starts.", true), // vk-285-118
-				Seg("filter", "Texture filtering", "2", "% filtering", {{"0", "Nearest"}, {"2", "PS2"}, {"1", "Bilinear"}, {"3", "Not sprites"}}),
+				Seg("filter", "Texture filtering", "2", "% filtering", {{"0", "Nearest"}, {"2", "PS2"}, {"1", "Bilinear (forced)"}, {"3", "Not sprites"}},
+					"PS2 smooths what the game asks to be smoothed, as a PS2 does: the right one for nearly every game. Bilinear (forced) "
+					"smooths everything, full-screen effects too, which can blur, shift or ghost them (PCSX2 calls it unsafe)."),
 				Seg("MaxAnisotropy", "Anisotropic filtering", "0", "AF %", {{"0", "Off"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}),
 				Seg("accurate_blending_unit", "Blending accuracy", "1", "Blending %", {{"0", "Min"}, {"1", "Basic"}, {"2", "Med"}, {"3", "High"}},
 					"Higher fixes more effects and costs speed. Full and Max are left out for now: Max hung the GPU in Ratchet & Clank."),

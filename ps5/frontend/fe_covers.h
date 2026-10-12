@@ -1,7 +1,9 @@
 // PS5 port frontend: covers. A worker thread paints each game's spine and placeholder front, then
 // finds its cover -- a file the user put in the covers folder, one downloaded before (the cache),
 // or a download -- decodes it and picks the glow colour from it. The main thread polls the results
-// and turns them into textures.
+// and turns them into textures. 2026-10-10 (AI-assisted): only for the games the shelf asks for (Want: those near the
+// selection), so memory follows the shelf's window rather than the library (a tester's ~2,600 NFS games); a second
+// thread downloads the missing covers into the cache, nearest the selection first.
 //
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -134,6 +136,12 @@ public:
 	// Main thread: games nearer `selected` go first.
 	void SetSelected(int selected);
 
+	// 2026-10-10 (AI-assisted): main thread. Want: the shelf wants the game's spine, placeholder and cover (it came near
+	// the selection). Forget: it no longer does (its textures are gone); what was painted for it and not yet polled is
+	// dropped, and a download for it only goes to the cache. Needs proper testing on the console with a large library.
+	void Want(int index);
+	void Forget(int index);
+
 	// A line for the UI: "" when idle, else e.g. "Downloading covers  3 / 11".
 	std::string Status() const;
 
@@ -156,7 +164,11 @@ public:
 
 private:
 	static void* ThreadMain(void* self);
+	static void* DownloadThreadMain(void* self);
 	void Run();
+	void RunDownloads(); // 2026-10-10: the downloads, on a thread of their own so a slow one never holds up the painting
+	int NextWanted() const; // m_mutex held: the wanted game nearest the selection still to paint, or -1
+	bool Push(CoverImage& img); // to the results once there's room; false (dropped) when the game is forgotten or stopping
 	// vk-285-110: the covers on disk for every game first, then the downloads, so a slow or failing
 	// download never holds back a cover that is already there. `upgrade`: a download is still worth
 	// trying (no cover, or only an OPL ART one).
@@ -169,10 +181,12 @@ private:
 	const Fonts* m_fonts = nullptr;
 	CoverConfig m_cfg;
 	DownloadFn m_download;
-	pthread_t m_thread{};
-	bool m_thread_started = false;
+	pthread_t m_thread{}, m_dl_thread{};
+	bool m_thread_started = false, m_dl_thread_started = false;
 	std::atomic<bool> m_stop{false};
-	std::atomic<bool> m_finished{false};
+	std::atomic<int> m_running{0}; // threads not finished yet
+	std::condition_variable m_wake; // Want, Stop
+	std::vector<uint8_t> m_live, m_todo; // m_mutex: per game, wanted by the shelf / still to paint
 	std::atomic<int> m_selected{0};
 	mutable std::mutex m_mutex;
 	std::deque<CoverImage> m_results;

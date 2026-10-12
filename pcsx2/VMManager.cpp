@@ -1158,10 +1158,12 @@ void VMManager::UpdateDiscDetails(bool booting)
 	Console.WriteLn(Color_StrongGreen, fmt::format("  Version: {}", s_disc_version));
 	Console.WriteLn(Color_StrongGreen, fmt::format("  CRC: {:08X}", s_disc_crc));
 
+	if (orbis_stage) orbis_stage("UpdateDiscDetails: game settings");
 	UpdateGameSettingsLayer();
 	ApplySettings();
 
 	// Patches are game-dependent, thus should get applied after game settings ia loaded.
+	if (orbis_stage) orbis_stage("UpdateDiscDetails: patches and cheats");
 	Patch::ReloadPatches(s_disc_serial, HasBootedELF() ? s_current_crc : 0, true, true, false, false);
 
 	ReportGameChangeToHost();
@@ -1170,9 +1172,11 @@ void VMManager::UpdateDiscDetails(bool booting)
 
 	if (!GSDumpReplayer::IsReplayingDump())
 	{
+		if (orbis_stage) orbis_stage("UpdateDiscDetails: achievements");
 		Achievements::GameChanged(s_disc_crc, s_current_crc);
 		ReloadPINE();
 		UpdateDiscordPresence(s_state.load(std::memory_order_relaxed) == VMState::Initializing);
+		if (orbis_stage) orbis_stage("UpdateDiscDetails: memory cards");
 		FileMcd_Reopen(memcardFilters.empty() ? s_disc_serial : memcardFilters);
 	}
 }
@@ -1450,6 +1454,7 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	if (!GSDumpReplayer::IsReplayingDump())
 	{
 		Console.WriteLn("Loading BIOS...");
+		if (orbis_stage) orbis_stage("Loading BIOS");
 		if (!LoadBIOS())
 		{
 			Error::SetStringFmt(error,
@@ -1469,6 +1474,7 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 
 	Error cdvd_error;
 	Console.WriteLn("Opening CDVD...");
+	if (orbis_stage) orbis_stage("DoCDVDopen");
 	if (!DoCDVDopen(&cdvd_error))
 	{
 		Error::SetStringFmt(error, TRANSLATE_FS("VMManager", "Failed to open CDVD '{}': {}."),
@@ -1479,7 +1485,9 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	ScopedGuard close_cdvd(&DoCDVDclose);
 
 	// Figure out which game we're running! This also loads game settings.
+	if (orbis_stage) orbis_stage("UpdateDiscDetails: disc info, GameDB");
 	UpdateDiscDetails(true);
+	if (orbis_stage) orbis_stage("after UpdateDiscDetails");
 
 	ScopedGuard close_memcards(&FileMcd_EmuClose);
 

@@ -1,5 +1,6 @@
 // pcsx2-orbis boot smoke: VMManager init + Execute on worker + pc sampling.
 #include <atomic>
+#include <memory> // 2.02: orbis_probe_game_read
 #include <cstdarg>
 #include <vector>
 #include <algorithm>
@@ -65,6 +66,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/OrbisPadMap.h"     // vk-285-116: the controller remapping
 #include "orbis-shims/ProsperoUsbPad.h"  // vk-285-140: USB guitars and pads the PS5 doesn't take as controllers
 #include "orbis-shims/ProsperoDiscDump.h" // vk-285-144: PS2 discs in the drive
+#include "orbis-shims/OrbisDiscDrive.h"   // PR #34: PS2 discs played straight from a drive (flag bootdisc)
 #include "SIO/Pad/PadGuitar.h"
 #include "OrbisNfs.h"                     // vk-285-135: games on NFS shares
 #include <mutex>
@@ -468,6 +470,22 @@ static double orbis_mono_seconds()
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// 2.02 (AI-assisted; users: the black screen before the shelf got longer in 2.01): "[boot] t+N ms: <phase>" for each
+// startup phase, from main()'s first line, so a log shows where the time before the shelf goes. Through
+// orbis_boot_early_log, so the lines before elevation are kept on a console whose boot log starts only after it.
+static double g_boot_t0 = 0.0;
+static void orbis_boot_phase(const char* fmt, ...)
+{
+  char what[200];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(what, sizeof(what), fmt, ap);
+  va_end(ap);
+  char line[240];
+  snprintf(line, sizeof(line), "[boot] t+%.0f ms: %s", (orbis_mono_seconds() - g_boot_t0) * 1000.0, what);
+  orbis_boot_early_log(line);
+}
+
 static void orbis_browser_qr_fallback(const char* why)
 {
   printf("[browser] %s: the settings page's QR code goes over the game instead\n", why);
@@ -738,6 +756,7 @@ static void orbis_pad_apply(OrbisPadPort &p, const OrbisPadData &d)
     uint16_t tx = 0xffffu;
     memcpy(&tx, &d.rest[48], sizeof(tx));
     st.touch = (touches == 0 || tx >= 4096u) ? 0 : (tx < 640u) ? 1 : (tx >= 1280u) ? 2 : 0;
+    st.half = (touches == 0 || tx >= 4096u) ? 0 : (tx < 960u) ? 1 : 2; // 2.02: a click's side (the pad is 1920 wide)
   }
   const Out o = Apply(cfg, st);
   for (int t = 0; t < T_COUNT; t++)
@@ -1265,7 +1284,7 @@ static void orbis_output_default()
 
 // etaHEN non-whitelist jailbreak: send JAILBREAK_CMD to the legacy CMD server
 // (127.0.0.1:9028). Grants the process full ucred/caps (JIT, direct memory...).
-static void orbis_try_jailbreak()
+static bool orbis_try_jailbreak() // 2.02: true when a port answered (orbis_elevate's last resort)
 {
     struct HijackerCommand
     {
@@ -1292,7 +1311,7 @@ static void orbis_try_jailbreak()
         {
             printf("[jailbreak] socket failed errno=%d\n", errno);
             fflush(stdout);
-            return;
+            return false;
         }
         sockaddr_in sa = {};
         sa.sin_family = AF_INET;
@@ -1326,15 +1345,27 @@ static void orbis_try_jailbreak()
         if (cmd.ret == 0 || cmd.ret == -1337)
         {
             g_jailbreak_ok = 1;
-            return;
+            return true;
         }
     }
     printf("[jailbreak] all ports failed\n");
     fflush(stdout);
+    return false;
 }
 
+// 2.02 (AI-assisted): the step VMManager::Initialize is in, and since when, for the boot watchdog's lines. A 2.01 tester's
+// starts all hung after "Opening CDVD..." and the watchdog could only say "still in Initialize". Callers pass string
+// literals, so keeping the pointer is safe.
+static std::atomic<const char*> s_orbis_stage{nullptr};
+static std::atomic<long long> s_orbis_stage_ms{0};
+static long long orbis_now_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 extern "C" void orbis_stage(const char* stage)
 {
+    s_orbis_stage_ms.store(orbis_now_ms(), std::memory_order_relaxed);
+    s_orbis_stage.store(stage, std::memory_order_release);
     ps5::debug::set_line(5, "stage: %s", stage);
 }
 
@@ -1693,6 +1724,16 @@ void orbis_reload_gs_ini_cpu()
     printf("[gsini] the renderer, GS device options and MTVU keep their running values until the next launch\n");
     kept = true;
   }
+#ifdef ORBIS_VULKAN
+  // 2026-10-10: frame generation is read once, before the GS opens (the boot's "frame generation" block; the 120 Hz mode is
+  // picked with the swapchain), so a change to PS5SX2/FrameGeneration waits for the next launch: say so rather than "applied"
+  // (a GoW II tester turned it off mid-game and frames went on being generated for the rest of the session).
+  if ((trial.GetBoolValue("PS5SX2", "FrameGeneration", false) && !g_sw_renderer) != g_orbis_fg_wanted)
+  {
+    printf("[gsini] frame generation stays %s until the next launch\n", g_orbis_fg_wanted ? "on" : "off");
+    kept = true;
+  }
+#endif
   {
     std::unique_lock<std::mutex> lock = Host::GetSettingsLock();
     s_base_si = trial;
@@ -1723,7 +1764,7 @@ void orbis_reload_gs_ini_cpu()
       g_orbis_mtvu_batch.load(std::memory_order_relaxed), g_orbis_mtvu_ring_kb.load(std::memory_order_relaxed)); // vk-285-84/90
   }
   fflush(stdout);
-  orbis_eventf(kept ? "live apply: applied in the running game; MTVU and the other relaunch-only options wait for the next launch" :
+  orbis_eventf(kept ? "live apply: applied in the running game; MTVU, frame generation and the other relaunch-only options wait for the next launch" :
                       "live apply: applied in the running game");
   OrbisOSDLabel(kept ? "APPLIED (SOME AT NEXT LAUNCH)" : "GS.INI APPLIED");
 }
@@ -2260,7 +2301,7 @@ static std::string orbis_find_image(const std::string& want, const char* what)
   const auto is_file = [&](const std::string& p) { return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode); };
   if (want.find('/') != std::string::npos)
   {
-    if (is_file(want))
+    if (is_file(want) || (OrbisDiscDrive::IsDrivePath(want) && stat(want.c_str(), &st) == 0)) // PR #34: or a drive, "/dev/cd1"
       return want;
     printf("[boot] %s %s isn't there\n", what, want.c_str());
     return {};
@@ -2358,7 +2399,18 @@ void OrbisChangeDiscCpu(int req)
   }
   if (to.empty())
     return;
-  const bool ok = VMManager::ChangeDisc(CDVD_SourceType::Iso, to);
+  // PR #34 (AI-assisted port): to or from a disc drive's disc too (the cheat disc's game, in the drive), played from the
+  // disc itself; the disc watcher leaves that drive alone from then on (ProsperoDiscDump.cpp), so changing back to it
+  // never meets a copy.
+  const bool to_drive = OrbisDiscDrive::IsDrivePath(to);
+  if (to_drive && !OrbisDiscDumpClaim(to))
+  {
+    OrbisOSDLabel("DISC BEING COPIED");
+    printf("[disc] change disc: %s: its disc is being copied; try again when the copy ends\n", to.c_str());
+    fflush(stdout);
+    return;
+  }
+  const bool ok = VMManager::ChangeDisc(to_drive ? CDVD_SourceType::Disc : CDVD_SourceType::Iso, to);
   if (ok)
   {
     std::lock_guard<std::mutex> lock(s_disc_mutex);
@@ -2409,7 +2461,8 @@ static std::string orbis_disc_settings_stem(const std::string& device)
 // At the game's start: the set, and the disc it starts from (the cheat disc, when it's on and found).
 static std::string orbis_disc_boot(const std::string& game)
 {
-  std::vector<std::string> set = fe::DiscSet(game);
+  // PR #34: a drive is the disc in it (another goes in by hand); fe::DiscSet would look through /dev for "(Disc N)".
+  std::vector<std::string> set = OrbisDiscDrive::IsDrivePath(game) ? std::vector<std::string>{game} : fe::DiscSet(game);
   std::string start = game;
   MemorySettingsInterface peek;
   orbis_apply_ini_file(peek, "/data/PCSX2/gs.ini", "gs.ini", true);
@@ -2641,6 +2694,68 @@ static void orbis_wait_for_game_file(const std::string& path)
   fflush(stdout);
 }
 
+// 2.02 (AI-assisted): a 2.01 tester's games on a USB drive (bridge 14cd:1661) all hung at a black screen from one minute on,
+// across app restarts and reboots: emulog.txt (flushed every line) stopped at "Opening CDVD...", i.e. inside the image's
+// first read, and closing the app then crashed the PS5 (a thread can't leave a read the drive never answers). Before the VM
+// starts, the image's first 128 KiB are read here on a thread of their own: if they haven't come in 5 s, boot.log and
+// settings.log say so and a notification asks for the drive to be unplugged and plugged back in (a removed drive fails the
+// read, which lets the start carry on to a proper error). The read also leaves those sectors in the cache for the VM's own.
+static void orbis_probe_game_read(const std::string& path)
+{
+  struct stat st = {};
+  if (path.empty() || path[0] != '/' || stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+    return;
+  struct Probe
+  {
+    std::atomic<bool> done{false};
+    ssize_t got = 0;
+    int err = 0;
+  };
+  auto probe = std::make_shared<Probe>();
+  const long long t0 = orbis_now_ms();
+  std::thread([probe, path]() {
+    const int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0)
+      probe->err = errno;
+    else
+    {
+      std::vector<char> buf(128 * 1024);
+      probe->got = pread(fd, buf.data(), buf.size(), 0);
+      if (probe->got < 0)
+        probe->err = errno;
+      close(fd);
+    }
+    probe->done.store(true, std::memory_order_release);
+  }).detach();
+  long long next_warn = t0 + 5000;
+  bool notified = false;
+  while (!probe->done.load(std::memory_order_acquire))
+  {
+    usleep(50000);
+    const long long now = orbis_now_ms();
+    if (now < next_warn)
+      continue;
+    next_warn = now + 30000;
+    printf("[boot] game file: its first 128 KiB haven't come in %lld s: the drive isn't answering (%s)\n", (now - t0) / 1000,
+      path.c_str());
+    fflush(stdout);
+    if (!notified)
+    {
+      notified = true;
+      orbis_eventf("the game's drive isn't answering: the image's first read hasn't returned (%s)", path.c_str());
+      sys_notify("PS5SX2: the drive with this game isn't answering. Unplug it and plug it back in (don't close PS5SX2 while "
+                 "it waits).");
+    }
+  }
+  const long long took = orbis_now_ms() - t0;
+  if (probe->got <= 0 || took >= 1000 || notified)
+  {
+    printf("[boot] game file: first read %s in %lld ms (%zd bytes, errno %d)\n", probe->got > 0 ? "done" : "failed", took,
+      probe->got, probe->err);
+    fflush(stdout);
+  }
+}
+
 static void orbis_vk_param_json()
 {
   static const char* const paths[] = {"/mnt/sandbox/PPSA99203_000/app0/sce_sys/param.json", "/app0/sce_sys/param.json",
@@ -2783,6 +2898,7 @@ static void orbis_vk_environment()
 
 int main()
 {
+  g_boot_t0 = orbis_mono_seconds(); // 2.02: the origin of the [boot] t+ lines
   // Bigapp: no elfldr socket. Log to file (read back over FTP) + notify.
   // vk-285-33: in logs/ when that folder exists (OrbisPaths.h).
   // vk-285-113: a broken pipe (a network peer that went away) is an error return, not the end of the app.
@@ -2812,6 +2928,7 @@ int main()
   fprintf(stderr, "[boot] stderr-ok\n");
   printf("[boot] main=%p\n", (void*)&main);
   orbis_boot_early_log("[boot] build=" ORBIS_BUILD_TAG); // live-15: kept in memory on the deferred-log path
+  orbis_boot_phase("main started%s", g_boot_defer_hold ? " (boot log held until after elevation)" : "");
   {
     // vk-285-91: what VZEROUPPER costs on this CPU. The GS thread's profiles (vk-285-89/90) had 5-7% of
     // their samples on the instruction right after one, so the eboot is now built with -mno-vzeroupper
@@ -2906,24 +3023,49 @@ int main()
 #ifdef ORBIS_VULKAN
   orbis_log_flag_access("before the jailbreak");
   orbis_scan_usb("before the jailbreak"); // test build 1: whether the sandbox shows USB drives yet
+  orbis_boot_phase("cover prefetch starting");
   if (!orbis_flag("nofrontend") && !orbis_flag("nomenu") && !orbis_flag("nocoverdl"))
     orbis_frontend_prefetch_covers(orbis_frontend_paths(true), 30.0, sys_notify);
+  orbis_boot_phase("cover prefetch done");
 #endif
 
-  // Primary: the Lapy owned-root daemon cooperative elevation (live-15; see
-  // orbis-shims/ProsperoHenJailbreak.cpp). This runs here, after the single-
-  // threaded cover prefetch and BEFORE the deferred boot-log pump below, so the
-  // request is sent with only the main thread alive -- the daemon rejects a
-  // multi-threaded target and consumes the marker either way. On failure it
-  // takes the existing no-jailbreak fallback (orbis_try_jailbreak), unchanged.
-  extern bool orbis_lapy_jailbreak();
+  // Elevation (live-15, 2.02; see orbis-shims/ProsperoHenJailbreak.cpp). This runs
+  // here, after the single-threaded cover prefetch and BEFORE the deferred boot-log
+  // pump below, so a Lapy request is sent with only the main thread alive -- the
+  // daemon rejects a multi-threaded target and consumes the marker either way.
+  // 2.02 (AI-assisted): orbis_elevate tries the Lapy daemon AND the etaHEN/OnionHEN/Helper request (2.01 had only Lapy:
+  // 4 x 10 s of black screen on every other console, then no elevation), the one that worked last time first, and nothing
+  // when already root; the ports (orbis_try_jailbreak) are its last resort. cache/elevation.txt keeps what worked.
+  extern const char* orbis_elevate(const char* hint, bool (*try_ports)());
   extern bool orbis_probe_jit();
   extern void orbis_log_hen_config();
   orbis_log_hen_config();
-  if (orbis_lapy_jailbreak())
-    g_jailbreak_ok = 1;
-  else
-    orbis_try_jailbreak();
+  {
+    const std::string cache_path = OrbisDir("cache") + "/elevation.txt";
+    char last[32] = {};
+    if (FILE* f = fopen(cache_path.c_str(), "r"))
+    {
+      if (!fgets(last, sizeof(last), f))
+        last[0] = 0;
+      fclose(f);
+      last[strcspn(last, "\r\n \t")] = 0;
+    }
+    const double t_elev = orbis_mono_seconds();
+    const char* method = orbis_elevate(last, orbis_try_jailbreak);
+    if (std::strcmp(method, "none") != 0)
+      g_jailbreak_ok = 1;
+    orbis_boot_phase("elevation took %.0f ms via %s (last start: %s)", (orbis_mono_seconds() - t_elev) * 1000.0, method,
+      last[0] ? last : "not known");
+    // "already" says nothing about which one answers; keep what was there.
+    if (std::strcmp(method, "already") != 0 && std::strcmp(method, last) != 0)
+    {
+      if (FILE* f = fopen(cache_path.c_str(), "w"))
+      {
+        fprintf(f, "%s\n", method);
+        fclose(f);
+      }
+    }
+  }
   // live-15: elevation is done (the request window is over), so it is safe to
   // start the boot-log pump thread on the console where /data showed only now;
   // the early lines kept in memory are flushed into boot.log here.
@@ -2944,6 +3086,7 @@ int main()
   const bool jit_probe_ok = orbis_probe_jit();
   if (jit_probe_ok)
     g_jailbreak_ok = 1;
+  orbis_boot_phase("boot log live, console surveyed, JIT probe %s", jit_probe_ok ? "ok" : "failed");
   // vk-285-62: the memory probe (orbis-shims/orbis_memprobe.cpp): what direct memory can hold
   // (executable code, aliased guest pages, fixed mappings), with the flag file memprobe.
   if (orbis_flag("memprobe"))
@@ -3088,13 +3231,17 @@ int main()
   // with the nofrontend flag.
   // vk-285-50: the settings page (frontend/fe_web.cpp) for phones and PCs, before the shelf that
   // shows its QR code; it keeps running in the game. The nowebui flag leaves it off.
+  orbis_boot_phase("looking at USB drives and NFS shares");
   orbis_scan_usb("after the jailbreak"); // test build 1: games on USB drives
+  orbis_boot_phase("USB drives and NFS shares looked at; checking the BIOS");
   orbis_check_bios(); // vk-285-134: after the drives are seen, before the shelf
+  orbis_boot_phase("BIOS checked");
   orbis_boot_log_release("before the settings page starts"); // vk-285-113: still holding? (the folder can show up late)
   // vk-285-144 (AI-assisted): a PS2 DVD in the drive, copied to games/ and started (orbis-shims/ProsperoDiscDump.cpp).
   OrbisDiscDumpStart();
   if (!orbis_flag("nowebui"))
     orbis_web_start(orbis_frontend_paths(false), orbis_build_label().c_str());
+  orbis_boot_phase("settings page started");
   // vk-285-110: the shelf tries the missing covers of games on USB drives (the prefetch above can't see
   // the drives) in the background, after the covers on disk. Nothing else downloads after the jailbreak.
   // HTTPS failed there on vk-285-41/42, with etaHEN's jailbreak; with the PS5SX2 Helper's it hasn't been
@@ -3162,6 +3309,46 @@ int main()
           unlink(dlp.c_str());
       }
   }
+  // PR #34 (Heyde Moura; AI-assisted port): the bootdisc flag (flags/bootdisc). A PS2 disc in a disc drive (a USB DVD or BD
+  // drive on a PS5 without one of its own, or the PS5's drive) starts straight away, without the shelf, and plays from the
+  // disc itself (orbis-shims/OrbisIOCtlSrc.cpp), as a PS2 starts the disc it holds. A disc-launch request above goes first
+  // (it names a copy already made); with no PS2 disc in a drive the shelf opens as usual. The drives are looked at here
+  // only, once, because the flag asks for it; the disc watcher (ProsperoDiscDump.cpp) then leaves the drive alone. Not
+  // frontend_ran: a start that fails closes the app rather than coming back here in a loop.
+  if (s_game_path.empty() && orbis_flag("bootdisc"))
+  {
+    const std::vector<std::string> drives = OrbisDiscDrive::List();
+    if (drives.empty())
+      printf("[disc] bootdisc: no disc drive (/dev/cd0 to /dev/cd7); the shelf opens\n");
+    for (const std::string& drive : drives)
+    {
+      std::string why;
+      if (!OrbisDiscDrive::WaitReady(drive, 10000, &why))
+      {
+        printf("[disc] bootdisc: %s: %s\n", drive.c_str(), why.c_str());
+        continue;
+      }
+      if (!OrbisDiscDumpClaim(drive))
+      {
+        printf("[disc] bootdisc: %s: its disc is being copied; not started from the drive\n", drive.c_str());
+        continue;
+      }
+      const std::string serial = fe::ReadSerial(drive);
+      if (serial.empty())
+      {
+        printf("[disc] bootdisc: %s: the disc in it isn't a PS2 game (no SYSTEM.CNF naming its executable)\n", drive.c_str());
+        OrbisDiscDumpRelease(drive);
+        continue;
+      }
+      s_game_path = drive;
+      const char* shown = OrbisDiscDrive::SafeSerial(serial) ? serial.c_str() : "a PS2 game";
+      printf("[disc] bootdisc: %s holds %s; starting it from the drive without the shelf\n", drive.c_str(), shown);
+      orbis_eventf("bootdisc: starting the disc in %s (%s) without the shelf", drive.c_str(), shown);
+      break;
+    }
+    fflush(stdout);
+  }
+  orbis_boot_phase("shelf starting (its game scan and first frame are timed in its own [frontend] lines)");
   if (s_game_path.empty() && !orbis_flag("nofrontend") && !orbis_flag("nomenu"))
     s_game_path = orbis_frontend_run(orbis_frontend_paths(!orbis_flag("nocoverdl")), ORBIS_BUILD_TAG, &frontend_ran);
 #endif
@@ -3212,6 +3399,10 @@ int main()
       if (dot != std::string::npos && dot > 0)
         stem.erase(dot);
     }
+    // The disc dumper watches /dev/cdN too. A drive this is now playing is its to read; copying it at the same time
+    // starves the game's reads. A pass node is not what the dumper copies.
+    if (OrbisDiscDrive::IsDrivePath(s_game_path) && !OrbisDiscDumpClaim(s_game_path))
+      printf("[disc] %s: started while its disc is being copied: both read the drive\n", s_game_path.c_str());
     s_game_ini_path = "/data/PCSX2/settings/" + stem + ".ini";
   }
 #ifdef ORBIS_VULKAN
@@ -3663,7 +3854,10 @@ int main()
   else if (!s_game_path.empty() && !(s_game_path.size() > 4 && strcasecmp(s_game_path.c_str() + s_game_path.size() - 4, ".elf") == 0))
   {
     params.filename = orbis_disc_boot(s_game_path);
-    if (params.filename != s_game_path)
+    // PR #34: a disc drive plays from the disc itself, through PCSX2's disc reader (orbis-shims/OrbisIOCtlSrc.cpp).
+    if (OrbisDiscDrive::IsDrivePath(params.filename))
+      params.source_type = CDVD_SourceType::Disc;
+    else if (params.filename != s_game_path)
       params.source_type = CDVD_SourceType::Iso;
   }
   // 2026-10-08 (AI-assisted; testers: "mount ELFs", "ELF properties: disc path"): an .elf from the shelf boots as PCSX2 boots
@@ -3677,7 +3871,11 @@ int main()
     if (!disc.empty())
     {
       params.filename = disc;
-      params.source_type = CDVD_SourceType::Iso;
+      // PR #34: the ELF's disc in a drive ("/dev/cd1"), played from the drive
+      const bool drive = OrbisDiscDrive::IsDrivePath(disc);
+      if (drive && !OrbisDiscDumpClaim(disc))
+        printf("[disc] %s: started while its disc is being copied: both read the drive\n", disc.c_str());
+      params.source_type = drive ? CDVD_SourceType::Disc : CDVD_SourceType::Iso;
       std::lock_guard<std::mutex> lock(s_disc_mutex); // vk-285-139: the page can change it
       s_disc_set = {disc};
       s_disc_current = disc;
@@ -3724,7 +3922,11 @@ int main()
       std::this_thread::sleep_for(std::chrono::seconds(5));
       if (!init_done.load())
       {
-        printf("[boot] watchdog t+%ds: still in Initialize\n", (i + 1) * 5);
+        // 2.02: the step it's in (orbis_stage), so a stuck start's log names the call.
+        const char* stage = s_orbis_stage.load(std::memory_order_acquire);
+        const long long in_ms = orbis_now_ms() - s_orbis_stage_ms.load(std::memory_order_relaxed);
+        printf("[boot] watchdog t+%ds: still in Initialize, step: %s (for %lld s)\n", (i + 1) * 5,
+          stage ? stage : "before the first step", stage ? in_ms / 1000 : 0ll);
         fflush(stdout);
       }
     }
@@ -3846,6 +4048,8 @@ int main()
   printf("[boot] SysMemory::Reset done\n");
   fflush(stdout);
   orbis_wait_for_game_file(params.filename); // vk-285-134
+  orbis_stage("game file: first read");
+  orbis_probe_game_read(params.filename); // 2.02
   const VMBootResult res = VMManager::Initialize(params, &err);
   init_done = true;
   printf("[boot] Initialize=%d err=%s\n", (int)res, err.GetDescription().c_str());

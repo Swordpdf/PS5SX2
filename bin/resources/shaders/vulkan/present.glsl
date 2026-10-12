@@ -71,7 +71,69 @@ void ps_copy()
 }
 #endif
 
+// PS5 port (live-20, AI-assisted): the display filters testers asked for, matched to swordpdf's RE4 reference shots
+// (2026-10-10): Scanlines (slot 1), VHS soft (slot 2), VHS (slot 3) and CRT (slot 5, see below). They work on the
+// displayed picture (0..1 across the game's image, whatever the upscale), so the lines and the tape's softness stay the
+// same size at 1x and at 6x. With ORBIS_TVFX 0 the slots are PCSX2's own filters again.
+#ifndef ORBIS_TVFX
+#define ORBIS_TVFX 1
+#endif
+
+#if ORBIS_TVFX && (defined(ps_filter_scanlines) || defined(ps_filter_diagonal) || defined(ps_filter_triangular) || defined(ps_filter_lottes))
+// Where this pixel is in the game's picture, 0..1.
+vec2 tv_pos()
+{
+	return (v_tex - u_source_rect.xy) / max(u_source_rect.zw - u_source_rect.xy, vec2(1e-6));
+}
+
+// The texture coordinate of a point of the game's picture.
+vec2 tv_uv(vec2 p)
+{
+	return mix(u_source_rect.xy, u_source_rect.zw, p);
+}
+
+vec3 tv_fetch(vec2 p)
+{
+	return texture(samp0, tv_uv(clamp(p, vec2(0.0), vec2(1.0)))).rgb;
+}
+
+float tv_hash(vec2 p)
+{
+	p = fract(p * vec2(0.1031, 0.1030));
+	p += dot(p, p.yx + 33.33);
+	return fract((p.x + p.y) * p.x);
+}
+
+float tv_luma(vec3 c)
+{
+	return dot(c, vec3(0.299, 0.587, 0.114));
+}
+
+// Weight of a line of `count` lines across the picture at y (0..1): 1 on the line, `dark` in the gap between lines.
+// `gap` is the share of the pitch that is dark. Lines closer than 2 screen pixels blur into an even shade (no moire).
+float tv_lines(float y, float count, float gap, float dark)
+{
+	float l = y * count;
+	float d = abs(fract(l) - 0.5); // 0 mid-line .. 0.5 mid-gap
+	float aa = max(count / max(u_target_size.y, 1.0), 0.02); // lines per screen pixel (no derivatives: the PS5 driver)
+	float g = smoothstep(0.5 - gap - aa, 0.5 - gap + aa, d);
+	float w = mix(1.0, dark, g);
+	float even = mix(1.0, dark, 2.0 * gap);
+	return mix(w, even, clamp(aa * 2.0 - 0.5, 0.0, 1.0));
+}
+#endif
+
 #ifdef ps_filter_scanlines
+#if ORBIS_TVFX
+// Scanlines: the flat picture with a thin dark line between each of 480 lines (the PS2's frame lines).
+void ps_filter_scanlines()
+{
+	vec2 p = tv_pos();
+	vec3 c = sample_c(v_tex).rgb;
+	c *= tv_lines(p.y, 480.0, 0.17, 0.30) * 1.18;
+	o_col0 = vec4(c, 1.0);
+}
+#else
 void ps_filter_scanlines() // scanlines
 {
 	uvec4 p = uvec4(gl_FragCoord);
@@ -79,16 +141,85 @@ void ps_filter_scanlines() // scanlines
 	o_col0 = ps_scanlines(p.y % 2);
 }
 #endif
+#endif
+
+#if ORBIS_TVFX && (defined(ps_filter_diagonal) || defined(ps_filter_triangular))
+// A VHS tape: luma blurred across the line (about 3 lines of a 640-wide picture), colour blurred much more and pulled to
+// the right, a faint echo of each edge to the left, washed-out contrast, grain, faint 240-line structure. `wave` adds
+// the wobble of a worn tape (the picture bends a few pixels, ripples up the screen) and a rolling tracking band.
+vec3 tv_vhs(vec2 p, float wave, float grain, float soft)
+{
+	const float TAU = 6.2831853;
+	float t = u_time;
+	if (wave > 0.0)
+	{
+		float ripple = 0.0013 * sin(p.y * 36.0 * TAU + t * 4.0) + 0.0006 * sin(p.y * 13.0 * TAU - t * 1.3);
+		float roll = fract(p.y * 0.6 - t * 0.05);
+		float band = exp(-pow((roll - 0.5) * 30.0, 2.0));
+		p.x += wave * (ripple + 0.0035 * band * sin(t * 23.0 + p.y * 400.0));
+		grain += 0.10 * wave * band;
+	}
+
+	const float w[7] = float[7](0.135, 0.411, 0.801, 1.0, 0.801, 0.411, 0.135);
+	float sl = 0.00045 * soft; // luma tap spacing
+	float sc = 0.0022 * soft;  // colour tap spacing
+	float shift = 0.0010 * soft; // colour sits to the right of the luma
+	float y = 0.0;
+	vec2 iq = vec2(0.0);
+	for (int k = 0; k < 7; k++)
+	{
+		float o = float(k - 3);
+		vec3 a = tv_fetch(vec2(p.x + o * sl, p.y));
+		y += w[k] * tv_luma(a);
+		vec3 b = tv_fetch(vec2(p.x + shift + o * sc, p.y));
+		iq += w[k] * vec2(dot(b, vec3(0.596, -0.274, -0.322)), dot(b, vec3(0.211, -0.523, 0.312)));
+	}
+	y /= 3.694;
+	iq /= 3.694;
+
+	float echo = tv_luma(tv_fetch(vec2(p.x - 0.0045, p.y)));
+	y = mix(y, echo, 0.03 + 0.09 * wave);
+
+	y = y * 0.90 + 0.045;           // tape black and white levels
+	iq *= 0.82;                     // less saturated
+	vec2 px = floor(gl_FragCoord.xy * 0.5);
+	float n = tv_hash(px + fract(t * 7.31) * vec2(1789.0, 431.0)) - 0.5;
+	y += n * grain;
+	iq += (vec2(tv_hash(px.yx + t), tv_hash(px + 17.0 + t)) - 0.5) * grain * 0.35;
+	y *= tv_lines(p.y, 240.0, 0.25, 0.90);
+
+	vec3 c;
+	c.r = y + 0.956 * iq.x + 0.621 * iq.y;
+	c.g = y - 0.272 * iq.x - 0.647 * iq.y;
+	c.b = y - 1.106 * iq.x + 1.703 * iq.y;
+	return clamp(c, 0.0, 1.0);
+}
+#endif
 
 #ifdef ps_filter_diagonal
+#if ORBIS_TVFX
+// VHS soft: a good tape: soft and a little washed out, no wobble.
+void ps_filter_diagonal()
+{
+	o_col0 = vec4(tv_vhs(tv_pos(), 0.0, 0.02, 1.0), 1.0);
+}
+#else
 void ps_filter_diagonal() // diagonal
 {
 	uvec4 p = uvec4(gl_FragCoord);
 	o_col0 = ps_crt((p.x + (p.y % 3)) % 3);
 }
 #endif
+#endif
 
 #ifdef ps_filter_triangular
+#if ORBIS_TVFX
+// VHS: a worn tape: the same plus the wobble, the tracking band and more grain.
+void ps_filter_triangular()
+{
+	o_col0 = vec4(tv_vhs(tv_pos(), 1.0, 0.08, 0.8), 1.0);
+}
+#else
 void ps_filter_triangular() // triangular
 {
 	uvec4 p = uvec4(gl_FragCoord);
@@ -96,6 +227,7 @@ void ps_filter_triangular() // triangular
 	// output.c = ps_crt(input, ((p.x + (p.y & 1) * 3) >> 1) % 3);
 	o_col0 = ps_crt(((p.x + ((p.y >> 1) & 1) * 3) >> 1) % 3);
 }
+#endif
 #endif
 
 #ifdef ps_filter_complex
@@ -114,7 +246,7 @@ void ps_filter_complex() // triangular
 #ifndef ORBIS_LOTTES
 #define ORBIS_LOTTES 1
 #endif
-#if defined(ps_filter_lottes) && !ORBIS_LOTTES
+#if defined(ps_filter_lottes) && !ORBIS_LOTTES && !ORBIS_TVFX
 void ps_filter_lottes()
 {
 	vec3 c = sample_c(v_tex).rgb;
@@ -124,7 +256,7 @@ void ps_filter_lottes()
 }
 #endif
 
-#if defined(ps_filter_lottes) && ORBIS_LOTTES
+#if defined(ps_filter_lottes) && ORBIS_LOTTES && !ORBIS_TVFX
 
 #define MaskingType 4                      //[1|2|3|4] The type of CRT shadow masking used. 1: compressed TV style, 2: Aperture-grille, 3: Stretched VGA style, 4: VGA style.
 #define ScanBrightness -8.00               //[-16.0 to 1.0] The overall brightness of the scanline effect. Lower for darker, higher for brighter.
@@ -419,6 +551,40 @@ void ps_filter_lottes()
 	o_col0 = LottesCRTPass();
 }
 
+#endif
+
+#if defined(ps_filter_lottes) && ORBIS_TVFX
+// CRT (live-20): a curved tube inside a black bezel, 240 bright beam lines that widen with brightness, a faint aperture
+// grille and darker corners. (Lottes' CRT, which drew its lines at the upscaled resolution and so showed none at 4x-6x,
+// is kept above for ORBIS_TVFX 0.)
+void ps_filter_lottes()
+{
+	vec2 c = tv_pos() * 2.0 - 1.0;
+	c *= vec2(1.0 / 0.90, 1.0 / 0.87);                            // the bezel
+	c *= vec2(1.0 + c.y * c.y * 0.045, 1.0 + c.x * c.x * 0.065); // the curve
+	vec2 e = 1.0 - abs(c);
+	if (e.x <= 0.0 || e.y <= 0.0)
+	{
+		o_col0 = vec4(0.0, 0.0, 0.0, 1.0);
+		return;
+	}
+	vec2 q = c * 0.5 + 0.5;
+	float corner = length(max(vec2(0.07) - e * vec2(1.0, 1.15), vec2(0.0)));
+	float edge = smoothstep(0.0, 0.006, min(e.x, e.y)) * (1.0 - smoothstep(0.062, 0.07, corner));
+
+	vec3 col = tv_fetch(q);
+	float l = q.y * 240.0;
+	float f = fract(l) - 0.5;
+	float sigma = mix(0.15, 0.30, tv_luma(col));
+	float beam = exp(-0.5 * f * f / (sigma * sigma));
+	beam = mix(beam, 0.62, clamp(240.0 / max(u_target_size.y, 1.0) * 2.0 - 1.0, 0.0, 1.0));
+	col *= beam * 1.5;
+
+	float m = mod(floor(gl_FragCoord.x), 3.0);
+	col *= vec3(m == 0.0 ? 1.06 : 0.95, m == 1.0 ? 1.06 : 0.95, m == 2.0 ? 1.06 : 0.95);
+	col *= 1.0 - 0.22 * dot(c * c, vec2(0.5));
+	o_col0 = vec4(clamp(col, 0.0, 1.0) * edge, 1.0);
+}
 #endif
 
 #if defined(ps_4x_rgss) || defined(ps_automagical_supersampling)

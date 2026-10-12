@@ -419,6 +419,33 @@ int main()
 		CHECK(w.Update(c.fast, c.hold_ms, st, 0, block) && !w.Update(c.fast, c.hold_ms, st, 10, block));
 	}
 
+	{
+		// 2.02: the touchpad's sides press on a click on that half, not a resting finger. A click on a side with its own
+		// input presses only that side's; a click on a side with nothing set is the touchpad click as before.
+		const Config c = From({{"ButtonTouchLeft", "Select"}, {"ButtonTouchRight", "Start"}, {"ButtonTouchpad", "None"}});
+		State s = Held(0);
+		s.half = 1;
+		CHECK(Only(Apply(c, s), {})); // a finger resting on the left half: nothing
+		s.buttons = 0x00100000u;
+		CHECK(Only(Apply(c, s), {T_SELECT})); // clicked on the left half
+		s.half = 2;
+		CHECK(Only(Apply(c, s), {T_START})); // clicked on the right half
+		s.half = 0;
+		CHECK(Only(Apply(c, s), {})); // a click with no finger seen: the touchpad click, here Nothing
+		const Config d = From({{"ButtonTouchLeft", "Select"}}); // the right side unset, the click is Select by default
+		State t = Held(0x00100000u);
+		t.half = 1;
+		CHECK(Only(Apply(d, t), {T_SELECT}));
+		t.half = 2;
+		CHECK(Only(Apply(d, t), {T_SELECT})); // no right-side input: the plain click
+		const Config e = From({{"ButtonTouchLeft", "Triangle"}}); // the left side and the plain click differ
+		State u = Held(0x00100000u);
+		u.half = 1;
+		CHECK(Only(Apply(e, u), {T_TRIANGLE})); // only the side's, not also the click's Select
+		u.half = 2;
+		CHECK(Only(Apply(e, u), {T_SELECT}));
+	}
+
 	if (s_failures == 0)
 		printf("test_pad_map: all checks passed\n");
 	return s_failures == 0 ? 0 : 1;

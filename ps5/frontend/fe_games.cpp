@@ -480,13 +480,18 @@ std::string s_serial_file;
 bool s_serial_loaded = false;
 std::unordered_map<std::string, std::string> s_serials; // "<path>\t<size>\t<mtime>" -> serial
 
+std::string MakeSerialKey(const std::string& path, long long size, long long mtime)
+{
+	return path + "\t" + std::to_string(size) + "\t" + std::to_string(mtime);
+}
+
 std::string SerialKey(const std::string& path)
 {
 	struct stat st = {};
-	if (stat(path.c_str(), &st) != 0)
+	// 2.02: regular files only -- the disc drive's node (ProsperoDiscDump.cpp reads /dev/cd0) holds another disc tomorrow.
+	if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
 		return {};
-	return path + "\t" + std::to_string(static_cast<long long>(st.st_size)) + "\t" +
-	       std::to_string(static_cast<long long>(st.st_mtime));
+	return MakeSerialKey(path, static_cast<long long>(st.st_size), static_cast<long long>(st.st_mtime));
 }
 
 void LoadSerialsLocked()
@@ -510,28 +515,51 @@ void LoadSerialsLocked()
 	std::fclose(f);
 }
 
-std::string ChdSerial(const std::string& path)
+// 2.02: a serial the cache file has for this key (only found serials are kept).
+bool CachedSerial(const std::string& key, std::string& serial)
 {
-	const std::string key = SerialKey(path);
-	if (!key.empty())
-	{
-		std::lock_guard<std::mutex> lock(s_serial_mutex);
-		LoadSerialsLocked();
-		const auto it = s_serials.find(key);
-		if (it != s_serials.end())
-			return it->second;
-	}
-	std::string serial;
+	if (key.empty())
+		return false;
+	std::lock_guard<std::mutex> lock(s_serial_mutex);
+	LoadSerialsLocked();
+	const auto it = s_serials.find(key);
+	if (it == s_serials.end() || it->second.empty())
+		return false;
+	serial = it->second;
+	return true;
+}
+
+// The serial read from the image itself: a .chd through libchdr, a .cso/.zso decompressed (vk-285-113), anything else
+// as an ISO 9660 image (2026-10-08: a raw .bin/.img's sector layout detected).
+std::string ImageSerial(const std::string& path)
+{
 	if (HasExtension(path.c_str(), ".chd"))
 	{
 		ChdSectors disc;
-		serial = disc.Open(path) ? SerialFromDisc(disc) : std::string();
+		return disc.Open(path) ? SerialFromDisc(disc) : std::string();
 	}
-	else
+	if (HasExtension(path.c_str(), ".cso") || HasExtension(path.c_str(), ".zso"))
 	{
 		CsoSectors disc; // vk-285-113
-		serial = disc.Open(path) ? SerialFromDisc(disc) : std::string();
+		return disc.Open(path) ? SerialFromDisc(disc) : std::string();
 	}
+	const int fd = open(path.c_str(), O_RDONLY);
+	if (fd < 0)
+		return {};
+	IsoSectors disc(fd);
+	disc.Detect();
+	const std::string serial = SerialFromDisc(disc);
+	close(fd);
+	return serial;
+}
+
+// vk-285-108 (the CHDs), 2.02 (every format): the cache file first, else the image, and a serial found is kept.
+std::string KeyedSerial(const std::string& path, const std::string& key)
+{
+	std::string serial;
+	if (CachedSerial(key, serial))
+		return serial;
+	serial = ImageSerial(path);
 	if (!serial.empty() && !key.empty())
 	{
 		std::lock_guard<std::mutex> lock(s_serial_mutex);
@@ -586,16 +614,15 @@ void SetSerialCacheFile(const std::string& path)
 
 std::string ReadSerial(const std::string& image_path)
 {
-	if (HasExtension(image_path.c_str(), ".chd") || HasExtension(image_path.c_str(), ".cso") || HasExtension(image_path.c_str(), ".zso"))
-		return ChdSerial(image_path); // vk-285-113: the compressed formats keep their serials in the cache file
-	const int fd = open(image_path.c_str(), O_RDONLY);
-	if (fd < 0)
-		return {};
-	IsoSectors disc(fd);
-	disc.Detect(); // 2026-10-08: a raw .bin/.img's sector layout
-	const std::string serial = SerialFromDisc(disc);
-	close(fd);
-	return serial;
+	// 2.02: every format through the serial cache (was the compressed ones only, vk-285-108/113).
+	return KeyedSerial(image_path, SerialKey(image_path));
+}
+
+std::string ReadSerial(const GameInfo& g)
+{
+	if (g.mtime == 0)
+		return ReadSerial(g.path);
+	return KeyedSerial(g.path, MakeSerialKey(g.path, static_cast<long long>(g.bytes), static_cast<long long>(g.mtime)));
 }
 
 // Read ISO9660 files without touching the emulator's global CDVD state. (AI-assisted)
@@ -1062,7 +1089,10 @@ void ScanDir(const std::string& dir, std::vector<GameInfo>& games, std::vector<s
 		}
 		// 2026-10-08: a .bin or .img under 16 MB is no PS2 disc (a BIOS dump, a memory card), and one without an ISO 9660
 		// volume in any sector layout is no data disc (the audio tracks of a .cue/.bin set, "Game (Track 2).bin"): not listed.
-		if (HasExtension(file.c_str(), ".bin") || HasExtension(file.c_str(), ".img"))
+		std::string cached_serial;
+		if ((HasExtension(file.c_str(), ".bin") || HasExtension(file.c_str(), ".img")) &&
+			// 2.02: one with a serial in the cache was a data disc already (no open: on an NFS share each costs ~30 ms)
+			!CachedSerial(MakeSerialKey(g.path, static_cast<long long>(st.st_size), static_cast<long long>(st.st_mtime)), cached_serial))
 		{
 			if (st.st_size < (16LL << 20))
 				continue;
@@ -1078,6 +1108,7 @@ void ScanDir(const std::string& dir, std::vector<GameInfo>& games, std::vector<s
 		g.file = file;
 		g.stem = file.substr(0, file.size() - 4); // ".iso", ".chd", ".cso", ".zso", ".bin", ".img"
 		g.bytes = static_cast<uint64_t>(st.st_size);
+		g.mtime = static_cast<int64_t>(st.st_mtime); // 2.02: the serial cache's key (ReadSerial(const GameInfo&))
 		MakeTitle(g.stem, g.title, g.region, g.extra);
 		games.push_back(g);
 	}

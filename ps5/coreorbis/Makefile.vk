@@ -342,7 +342,7 @@ SHIM_SRCS := ./orbis-shims/ProsperoInput.cpp ./orbis-shims/ProsperoCDVD.cpp \
   ./orbis-shims/ProsperoAchievementBrowser.cpp \
   ./orbis-shims/orbis_gs_shaders.cpp \
   ./orbis-shims/ps5_framegen.cpp \
-  ./orbis-shims/OrbisNfs.cpp
+  ./orbis-shims/OrbisNfs.cpp ./orbis-shims/OrbisDiscDrive.cpp ./orbis-shims/OrbisIOCtlSrc.cpp
 
 SHIM_ASM := ./orbis-shims/ProsperoTLS.S
 

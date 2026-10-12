@@ -1104,6 +1104,16 @@ constexpr OrbisSpeedHackFix kOrbisSpeedHackFixes[] = {
 	{"SLPM-65406", "Castlevania [Limited Edition]", 0, 0},
 	{"SLPM-66325", "Castlevania [Konami Dendou Selection]", 0, 0},
 	{"SLPM-61062", "Castlevania [Trial]", 0, 0},
+	// Castlevania: Curse of Darkness (Lament of Innocence's engine): froze opening the in-game menu with MTVU (tester's
+	// notes, vk-285-139, US): VU1's menu program MSCAL 0x10 ran out the 3M-cycle budget without its E-bit ([vulong]/
+	// [vurunaway]), then either the EE looped at 00402654/00750000 with VIF1 and VU1 idle (VU 100%, GS 0%, as Lament of
+	// Innocence's stalls) or the EE thread stopped outright (cycles frozen for 110 s).
+	{"SLUS-21168", "Castlevania - Curse of Darkness", 0, 0},
+	{"SLES-53755", "Castlevania - Curse of Darkness", 0, 0},
+	{"SLKA-25328", "Castlevania - Curse of Darkness", 0, 0},
+	{"SLPM-66175", "Akumajou Dracula - Yami no Juin", 0, 0},
+	{"SLPM-66668", "Akumajou Dracula - Yami no Juin [KONAMI The BEST]", 0, 0},
+	{"SLPM-61138", "Akumajo Dracula - Yami no Juin [Store Demo]", 0, 0},
 };
 
 void OrbisSetSpeedHack(GameDatabaseSchema::GameEntry& entry, SpeedHack id, int value)

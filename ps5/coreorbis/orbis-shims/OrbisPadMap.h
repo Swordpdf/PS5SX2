@@ -12,7 +12,7 @@
 //     itself stays in the middle).
 //   PS5SX2/SaveButton1, SaveButton2, LoadButton1, LoadButton2 = the two buttons held together to save or load the state
 //     (slot 1): L3R3 (both stick clicks) Cross Circle Square Triangle L1 R1 L2 R2 L3 R3 Options Touchpad (its click)
-//     TouchLeft TouchRight (a finger on the touchpad's left or right third) Up Down Left Right, or None. Unset: L3R3 + Up
+//     TouchLeft TouchRight (a finger on the touchpad's left or right third; the combos keep the touch) Up Down Left Right, or None. Unset: L3R3 + Up
 //     saves, L3R3 + Down loads. PS5SX2/StateHold = how long (seconds, 0 to 10) they're held first; 0, the default: at once.
 // PS5SX2's own button combos (save states, the menu, the settings page) read the controller's real buttons before this.
 #pragma once
@@ -66,8 +66,8 @@ enum Source : uint8_t
 	S_R3,
 	S_OPTIONS,
 	S_TOUCHPAD,
-	S_TOUCHLEFT,  // a finger on the touchpad's left third
-	S_TOUCHRIGHT, // a finger on the touchpad's right third
+	S_TOUCHLEFT,  // the touchpad clicked on its left half (2.02: a click, not a touch)
+	S_TOUCHRIGHT, // the touchpad clicked on its right half
 	S_UP,
 	S_DOWN,
 	S_LEFT,
@@ -497,7 +497,8 @@ struct State
 	uint32_t buttons = 0;
 	uint8_t l2 = 0, r2 = 0;
 	uint8_t lx = 128, ly = 128, rx = 128, ry = 128;
-	int touch = 0; // 0 no finger or middle third, 1 left third, 2 right third
+	int touch = 0; // 0 no finger or middle third, 1 left third, 2 right third (the combos' touch zones)
+	int half = 0;  // 2.02: the finger's half for a click: 0 no finger, 1 left, 2 right
 };
 
 // What the PS2 controller gets: each input's value (0 released .. 1 fully pressed; the face buttons, the D-pad and the
@@ -555,10 +556,16 @@ inline Out Apply(const Config& c, const State& s)
 			const bool to_trigger = t == T_L2 || t == T_R2;
 			v = (to_trigger || raw >= kTriggerPress) ? raw / 255.0f * c.pressure[src] : 0.0f;
 		}
-		else if (src == S_TOUCHLEFT)
-			v = (s.touch == 1) ? c.pressure[src] : 0.0f;
-		else if (src == S_TOUCHRIGHT)
-			v = (s.touch == 2) ? c.pressure[src] : 0.0f;
+		else if (src == S_TOUCHLEFT || src == S_TOUCHRIGHT)
+		{
+			// 2.02 (swordpdf: "click (instead of touch)"): the touchpad's sides press on a click, chosen by the finger's
+			// half, as PS4 and PS5 games read a left or right click. Resting a finger on the pad presses nothing.
+			const bool clicked = (s.buttons & 0x00100000u) != 0;
+			v = (clicked && s.half == (src == S_TOUCHLEFT ? 1 : 2)) ? c.pressure[src] : 0.0f;
+		}
+		else if (src == S_TOUCHPAD && s.half != 0 &&
+		         c.target[s.half == 1 ? S_TOUCHLEFT : S_TOUCHRIGHT] < T_NONE && (s.buttons & 0x00100000u))
+			v = 0.0f; // a click on a side with its own input presses only that side's (the keyboard's Backspace still counts)
 		else
 			v = (s.buttons & SourceAt(src).bits) ? c.pressure[src] : 0.0f;
 		// PCSX2 reads the analog button and the pressure modifier as on or off (it acts when they change).
