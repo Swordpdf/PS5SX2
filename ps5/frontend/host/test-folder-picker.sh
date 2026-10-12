@@ -40,7 +40,7 @@ run() {
 }
 ini() { grep -s "^$1=" "$data/gs.ini" | head -1 | cut -d= -f2-; }
 # The sheet for all games (Square, then R1), its first rows (vk-285-135b: Folders at the top): Recommended for all games, then
-# Game folders, BIOS folder, NFS shares, Textures folder (2026-10-16), Scan USB drives, Scan subfolders. Each step below goes down from the top.
+# Game folders, BIOS folder, NFS shares, SMB shares, Textures folder (2026-10-16), Scan USB drives, Scan subfolders, OpenPS2BIOS. Each step below goes down from the top.
 open_all="game 0;wait 1;press square;wait 0.4;press r1;wait 0.3;press up 80;wait 0.1"
 steps() { tr ';' '\n' <<<"$1" | sed '/^$/d'; }
 script="$work/script.txt"
@@ -82,15 +82,15 @@ run bios-folder-reset --script "$script"
 check "PS5SX2/BiosFolder is unset again" test -z "$(ini PS5SX2/BiosFolder)"
 
 # 2026-10-16: the Textures folder (the row after NFS shares): USB drive 1 > Use this folder; then Triangle on the row sets it back.
-steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;expect picker=1;press down 2;press cross;wait 0.2;press cross;wait 0.3;expect picker=0" > "$script"
+steps "$open_all;press down 5;wait 0.2;press cross;wait 0.3;expect picker=1;press down 2;press cross;wait 0.2;press cross;wait 0.3;expect picker=0" > "$script"
 run textures-folder --script "$script"
 check "PS5SX2/TexturesDir is the drive" test "$(ini PS5SX2/TexturesDir)" = "$data/usb0"
-steps "$open_all;press down 4;wait 0.2;press triangle;wait 0.3;expect picker=0" > "$script"
+steps "$open_all;press down 5;wait 0.2;press triangle;wait 0.3;expect picker=0" > "$script"
 run textures-folder-reset --script "$script"
 check "PS5SX2/TexturesDir is unset again" test -z "$(ini PS5SX2/TexturesDir)"
 # Review 2026-10-16: a folder whose name has a '#' is refused by the settings writer: nothing is saved for the textures folder, the BIOS folder
 # or the game folders, and the picker still closes (its status line then says "Couldn't save", not that the folder is in use).
-steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;expect picker=1;press down 2;press cross;wait 0.2;press down 3;press cross;wait 0.2;press cross;wait 0.3;expect picker=0" > "$script"
+steps "$open_all;press down 5;wait 0.2;press cross;wait 0.3;expect picker=1;press down 2;press cross;wait 0.2;press down 3;press cross;wait 0.2;press cross;wait 0.3;expect picker=0" > "$script"
 run textures-folder-refused --script "$script"
 check "a folder with a # in its name isn't saved as the textures folder" test -z "$(ini PS5SX2/TexturesDir)"
 steps "$open_all;press down 2;wait 0.2;press cross;wait 0.3;press down 2;press cross;wait 0.2;press down 3;press cross;wait 0.2;press cross;wait 0.3;expect picker=0" > "$script"
@@ -102,13 +102,13 @@ check "a folder with a # in its name isn't saved as a game folder" test -z "$(in
 
 # 2026-10-16: the two switches under the folder rows (Scan USB drives, Scan subfolders; both on by default): Cross turns one off, Triangle
 # puts it back to the default (the key is removed).
-steps "$open_all;press down 5;wait 0.2;press cross;wait 0.3;expect picker=0" > "$script"
+steps "$open_all;press down 6;wait 0.2;press cross;wait 0.3;expect picker=0" > "$script"
 run scan-usb-off --script "$script"
 check "PS5SX2/ScanUsb is false" test "$(ini PS5SX2/ScanUsb)" = "false"
-steps "$open_all;press down 6;wait 0.2;press cross;wait 0.3;expect picker=0" > "$script"
+steps "$open_all;press down 7;wait 0.2;press cross;wait 0.3;expect picker=0" > "$script"
 run scan-subfolders-off --script "$script"
 check "PS5SX2/ScanSubfolders is false" test "$(ini PS5SX2/ScanSubfolders)" = "false"
-steps "$open_all;press down 5;wait 0.2;press triangle;wait 0.3;press down;press triangle;wait 0.3" > "$script"
+steps "$open_all;press down 6;wait 0.2;press triangle;wait 0.3;press down;press triangle;wait 0.3" > "$script"
 run scan-switches-reset --script "$script"
 check "PS5SX2/ScanUsb is back to the default" test -z "$(ini PS5SX2/ScanUsb)"
 check "PS5SX2/ScanSubfolders is back to the default" test -z "$(ini PS5SX2/ScanSubfolders)"
@@ -144,6 +144,32 @@ run nfs-share-osk-removed --script "$script"
 steps "$open_all;press down 3;wait 0.2;press cross;wait 0.3;press cross;wait 0.4" > "$script"
 run nfs-share-refused --ime-text "smb://pc/games" --script "$script"
 check "an smb:// address isn't added" test -z "$(ini PS5SX2/NfsShares)"
+
+# SMB shares (the row under NFS shares). A share with a user: added, then its password asked for at once.
+pw="$data/smb-passwords.txt"
+steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;expect picker=1;press cross;wait 0.4;shot picker-smb;expect picker=1" > "$script"
+run smb-share --ime-text "smb://user@nas/PS2" --script "$script"
+check "the share is in PS5SX2/SmbShares" test "$(ini PS5SX2/SmbShares)" = "smb://user@nas/PS2"
+check "its password was asked for and stored" grep -qx "smb://user@nas/PS2	hunter2-preview" "$pw"
+check "no password in gs.ini" bash -c "! grep -q hunter2 '$data/gs.ini'"
+# A guest share: no password asked; Square on it doesn't ask either.
+steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;press cross;wait 0.4;press down 2;press square;wait 0.3;expect picker=1" > "$script"
+run smb-guest --ime-text "smb://nas/Public" --script "$script"
+check "both shares listed" test "$(ini PS5SX2/SmbShares)" = "smb://user@nas/PS2;smb://nas/Public"
+check "no password for the guest share" bash -c "! grep -q 'Public' '$pw'"
+# Square on the share with a user, no PS5 keyboard: the panel's keyboard, its text hidden. Up to "1", Cross three times.
+steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;press down;press square;wait 0.3;press up;press cross 3;wait 0.2;shot picker-smb-password;press options;wait 0.3;expect picker=1" > "$script"
+run smb-password-osk --script "$script"
+check "the password was changed" grep -qx "smb://user@nas/PS2	111" "$pw"
+# Triangle removes the share and its password.
+steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;press down;press triangle;wait 0.3" > "$script"
+run smb-share-removed --script "$script"
+check "the share is gone from gs.ini" test "$(ini PS5SX2/SmbShares)" = "smb://nas/Public"
+check "its password is gone" bash -c "! grep -q 'user@nas' '$pw'"
+# Not an smb:// address: nothing added.
+steps "$open_all;press down 4;wait 0.2;press cross;wait 0.3;press cross;wait 0.4" > "$script"
+run smb-share-refused --ime-text "nfs://pc/games" --script "$script"
+check "an nfs:// address isn't added" test "$(ini PS5SX2/SmbShares)" = "smb://nas/Public"
 
 if [[ $failed != 0 ]]; then
   echo "folder picker: FAILED"

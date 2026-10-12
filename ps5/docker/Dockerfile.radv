@@ -1,0 +1,45 @@
+# PS5SX2 RADV build environment (ps5/docs/build-dependencies.md): the public driver route. On top of the base image
+# (Dockerfile), mihawk-99's RADV for the PS5 and its platform layer, in PS5SX2_DEPS/radv/ where link-radv.sh reads them.
+#
+# Copyright (C) 2026 swordpdf
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+ARG BASE=ps5sx2-build
+FROM ${BASE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bison flex glslang-tools pkg-config python3-mako python3-packaging python3-pip python3-yaml rsync wget \
+      libclang-18-dev libclang-cpp18-dev libclc-18-dev libllvmspirvlib-18-dev llvm-18-dev llvm-spirv-18 spirv-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir --break-system-packages meson==1.12.1
+
+ARG VULKAN_REV=3f3ee69
+ARG SDK_FORK_REV=95c08f27386fc698f6bbe21dde3030140a41d10b
+ARG MESA_REV=0b2d6d1a61d9bbf89cf8beb88a696144f67c61f8
+ENV RADV_WORK=/opt/radv-work
+RUN mkdir -p "$RADV_WORK" && cd "$RADV_WORK" \
+    && git clone -q https://github.com/mihawk-99/PS5_Vulkan.git && git -C PS5_Vulkan checkout -q "$VULKAN_REV" \
+    && for repo in PS5_PayloadSDK:$SDK_FORK_REV PS5_Mesa:$MESA_REV; do \
+         name=${repo%%:*}; rev=${repo#*:}; \
+         git init -q "$name" && git -C "$name" fetch -q --depth 1 "https://github.com/mihawk-99/$name.git" "$rev"; \
+       done
+
+RUN cd "$RADV_WORK" && PS5_PAYLOAD_SDK_FORK="$RADV_WORK/PS5_PayloadSDK" bash PS5_Vulkan/tools/setup-native-dependencies.sh
+RUN cd "$RADV_WORK" && CC=clang-18 CXX=clang++-18 PS5_MESA_FORK="$RADV_WORK/PS5_Mesa" bash PS5_Vulkan/tools/build-radv.sh release
+
+# The AGC import stubs RADV calls (link-time symbols only), from the SDK fork's add-agc-stubs branch, built as its
+# sce_stubs/Makefile builds stubs, into the SDK the port links with.
+ARG AGC_STUBS_REV=69f362e78b960e53e152a9bea6ad383654fb7c7a
+RUN cd "$RADV_WORK/PS5_PayloadSDK" && git fetch -q --depth 1 https://github.com/mihawk-99/PS5_PayloadSDK.git "$AGC_STUBS_REV" \
+    && for lib in libSceAgc libSceAgcDriver; do \
+         git show "$AGC_STUBS_REV:sce_stubs/$lib.c" > "/tmp/$lib.c" \
+         && clang-18 -c -ffreestanding -fno-builtin -nostdlib -fPIC -target x86_64-sie-ps5 -fno-plt -fno-stack-protector \
+              -Wall -Werror -fvisibility-nodllstorageclass=default -o "/tmp/$lib.o" "/tmp/$lib.c" \
+         && ld.lld-18 -m elf_x86_64 -shared -soname "$lib.sprx" -o "$PS5_PAYLOAD_SDK/target/lib/$lib.so" "/tmp/$lib.o"; \
+       done
+
+RUN native="$RADV_WORK/PS5_Vulkan/.deps/native" && mkdir -p "$PS5SX2_DEPS/radv" \
+    && cp "$native/radv-release/lib/libvulkan_radeon.ps5.a" "$native/radv-release/PROVENANCE.txt" "$PS5SX2_DEPS/radv/" \
+    && cp "$native/ps5-payload-sdk/target/lib/libps5platform.a" "$PS5SX2_DEPS/radv/" \
+    && cp /usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.builtins-x86_64.a "$PS5SX2_DEPS/radv/"
