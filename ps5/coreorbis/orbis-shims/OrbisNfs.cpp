@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "OrbisNfs.h"
+#include "OrbisSmb.h"
 
 #include <nfsc/libnfs.h>
 
@@ -473,6 +474,18 @@ void Fill(struct stat* st, const Attr& a)
 	st->st_blocks = static_cast<blkcnt_t>((a.size + 511) / 512);
 }
 
+Attr FromStat(const struct stat& st)
+{
+	Attr a;
+	a.mode = st.st_mode;
+	a.size = static_cast<uint64_t>(st.st_size);
+	a.ino = st.st_ino;
+	a.nlink = st.st_nlink;
+	a.mtime = st.st_mtim.tv_sec;
+	a.mtime_nsec = static_cast<uint32_t>(st.st_mtim.tv_nsec);
+	return a;
+}
+
 void FillFolder(struct stat* st)
 {
 	Attr a;
@@ -483,6 +496,8 @@ void FillFolder(struct stat* st)
 
 int StatPath(const char* path, struct stat* st, bool follow)
 {
+	if (OrbisSmb::IsPath(path))
+		return OrbisSmb::Stat(path, st, follow);
 	Where w;
 	if (!Resolve(path, w))
 	{
@@ -561,6 +576,7 @@ struct NfsFile
 	std::mutex mutex;
 	std::shared_ptr<Share> share;
 	nfsfh* fh = nullptr;
+	int smb = -1; // an OrbisSmb handle instead of share/fh
 	std::string path;
 	bool is_fd = false;
 	Attr attr;
@@ -645,6 +661,12 @@ ssize_t Fetch(NfsFile& f, uint8_t* dst, size_t n, uint64_t off)
 // Up to `n` bytes at `off` (the file's mutex held): from the window when it has them, else the server.
 ssize_t ReadAt(NfsFile& f, uint8_t* dst, size_t n, uint64_t off)
 {
+	if (f.smb >= 0)
+	{
+		const ssize_t got = OrbisSmb::PRead(f.smb, dst, n, off);
+		f.error = f.error || got < 0;
+		return got;
+	}
 	f.reads++;
 	g_reads++;
 	if (n == 0 || off >= f.attr.size)
@@ -693,9 +715,60 @@ ssize_t ReadAt(NfsFile& f, uint8_t* dst, size_t n, uint64_t off)
 	return static_cast<ssize_t>(done);
 }
 
+int PutInSlot(const std::shared_ptr<NfsFile>& f)
+{
+	std::lock_guard<std::mutex> lock(g_slots_mutex);
+	for (int i = 0; i < kSlots; i++)
+	{
+		if (!g_slots[i])
+		{
+			g_slots[i] = f;
+			return i;
+		}
+	}
+	return -1;
+}
+
+void ResetFile(int slot)
+{
+#if defined(__PROSPERO__)
+	std::memset(&g_files[slot], 0, sizeof(FILE));
+	g_files[slot]._flags = __SRD;
+	g_files[slot]._file = -1;
+#else
+	(void)slot;
+#endif
+}
+
+int OpenSmbFile(const char* path, bool is_fd)
+{
+	const int h = OrbisSmb::Open(path);
+	if (h < 0)
+		return -1;
+	auto f = std::make_shared<NfsFile>();
+	f->smb = h;
+	f->path = path;
+	f->is_fd = is_fd;
+	struct stat st;
+	OrbisSmb::FStat(h, &st);
+	f->attr = FromStat(st);
+	const int slot = PutInSlot(f);
+	if (slot < 0)
+	{
+		OrbisSmb::Close(h);
+		Log("too many files open on shares (%d): %s not opened", kSlots, path);
+		errno = EMFILE;
+		return -1;
+	}
+	ResetFile(slot);
+	return slot;
+}
+
 // Opens `path` for reading into a free slot (its number), or -1 and errno.
 int OpenFile(const char* path, bool is_fd)
 {
+	if (OrbisSmb::IsPath(path))
+		return OpenSmbFile(path, is_fd);
 	Where w;
 	if (!Resolve(path, w))
 	{
@@ -739,19 +812,7 @@ int OpenFile(const char* path, bool is_fd)
 		f->fh = fh;
 		f->attr = FromNfs(st);
 	}
-	int slot = -1;
-	{
-		std::lock_guard<std::mutex> lock(g_slots_mutex);
-		for (int i = 0; i < kSlots; i++)
-		{
-			if (!g_slots[i])
-			{
-				slot = i;
-				g_slots[i] = f;
-				break;
-			}
-		}
-	}
+	const int slot = PutInSlot(f);
 	if (slot < 0)
 	{
 		std::lock_guard<std::mutex> lock(f->share->mutex);
@@ -760,11 +821,7 @@ int OpenFile(const char* path, bool is_fd)
 		errno = EMFILE;
 		return -1;
 	}
-#if defined(__PROSPERO__)
-	std::memset(&g_files[slot], 0, sizeof(FILE));
-	g_files[slot]._flags = __SRD;
-	g_files[slot]._file = -1;
-#endif
+	ResetFile(slot);
 	g_opens++;
 	Log("opened %s (%llu bytes)", f->path.c_str(), static_cast<unsigned long long>(f->attr.size));
 	return slot;
@@ -784,6 +841,8 @@ int CloseSlot(int slot)
 		return -1;
 	}
 	std::lock_guard<std::mutex> flock(f->mutex);
+	if (f->smb >= 0)
+		return OrbisSmb::Close(f->smb);
 	{
 		std::lock_guard<std::mutex> lock(f->share->mutex);
 		if (f->fh)
@@ -847,6 +906,11 @@ bool Number(const std::string& s, long lo, long hi, long& out)
 		return false;
 	out = std::strtol(s.c_str(), nullptr, 10);
 	return out >= lo && out <= hi;
+}
+
+bool Ours(const char* path)
+{
+	return IsPath(path) || OrbisSmb::IsPath(path);
 }
 } // namespace
 
@@ -1132,7 +1196,7 @@ using namespace OrbisNfs;
 extern "C" {
 FILE* __wrap_fopen(const char* path, const char* mode)
 {
-	if (!IsPath(path))
+	if (!Ours(path))
 		return __real_fopen(path, mode);
 	if (!ReadOnlyMode(mode))
 	{
@@ -1145,7 +1209,7 @@ FILE* __wrap_fopen(const char* path, const char* mode)
 
 FILE* __wrap_freopen(const char* path, const char* mode, FILE* fp)
 {
-	if (SlotOfFile(fp) >= 0 || IsPath(path))
+	if (SlotOfFile(fp) >= 0 || Ours(path))
 	{
 		errno = ENOTSUP;
 		return nullptr;
@@ -1396,7 +1460,7 @@ int __wrap_open(const char* path, int flags, ...)
 		mode = va_arg(ap, int);
 		va_end(ap);
 	}
-	if (!IsPath(path))
+	if (!Ours(path))
 		return __real_open(path, flags, mode);
 	if ((flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC | O_APPEND)))
 	{
@@ -1487,27 +1551,29 @@ int __wrap_fstat(int fd, struct stat* st)
 		errno = EBADF;
 		return -1;
 	}
+	if (f->smb >= 0)
+		return OrbisSmb::FStat(f->smb, st);
 	Fill(st, f->attr);
 	return 0;
 }
 
 int __wrap_stat(const char* path, struct stat* st)
 {
-	if (!IsPath(path))
+	if (!Ours(path))
 		return __real_stat(path, st);
 	return StatPath(path, st, true);
 }
 
 int __wrap_lstat(const char* path, struct stat* st)
 {
-	if (!IsPath(path))
+	if (!Ours(path))
 		return __real_lstat(path, st);
 	return StatPath(path, st, false);
 }
 
 int __wrap_access(const char* path, int mode)
 {
-	if (!IsPath(path))
+	if (!Ours(path))
 		return __real_access(path, mode);
 	struct stat st;
 	if (StatPath(path, &st, true) != 0)
@@ -1522,7 +1588,7 @@ int __wrap_access(const char* path, int mode)
 
 char* __wrap_realpath(const char* path, char* resolved)
 {
-	if (!IsPath(path))
+	if (!Ours(path))
 		return __real_realpath(path, resolved);
 	std::vector<std::string> c;
 	struct stat st;
@@ -1555,7 +1621,8 @@ struct dirent* __real_readdir(DIR* d);
 int __real_closedir(DIR* d);
 struct FakeDir
 {
-	void* nfs;
+	void* dir;
+	bool smb;
 	struct dirent entry;
 };
 static std::mutex s_fake_dirs_mutex;
@@ -1568,12 +1635,13 @@ static FakeDir* AsFake(DIR* d)
 }
 DIR* __wrap_opendir(const char* path)
 {
-	if (!IsPath(path))
+	if (!Ours(path))
 		return __real_opendir(path);
-	void* nfs = OrbisNfs::OpenDir(path);
-	if (!nfs)
+	const bool smb = OrbisSmb::IsPath(path);
+	void* dir = smb ? OrbisSmb::OpenDir(path) : OrbisNfs::OpenDir(path);
+	if (!dir)
 		return nullptr;
-	FakeDir* f = new FakeDir{nfs, {}};
+	FakeDir* f = new FakeDir{dir, smb, {}};
 	std::lock_guard<std::mutex> lock(s_fake_dirs_mutex);
 	s_fake_dirs.push_back(f);
 	return reinterpret_cast<DIR*>(f);
@@ -1583,7 +1651,8 @@ struct dirent* __wrap_readdir(DIR* d)
 	FakeDir* f = AsFake(d);
 	if (!f)
 		return __real_readdir(d);
-	return OrbisNfs::ReadDir(f->nfs, &f->entry) ? &f->entry : nullptr;
+	const bool got = f->smb ? OrbisSmb::ReadDir(f->dir, &f->entry) : OrbisNfs::ReadDir(f->dir, &f->entry);
+	return got ? &f->entry : nullptr;
 }
 int __wrap_closedir(DIR* d)
 {
@@ -1594,7 +1663,10 @@ int __wrap_closedir(DIR* d)
 		std::lock_guard<std::mutex> lock(s_fake_dirs_mutex);
 		s_fake_dirs.erase(std::find(s_fake_dirs.begin(), s_fake_dirs.end(), f));
 	}
-	OrbisNfs::CloseDir(f->nfs);
+	if (f->smb)
+		OrbisSmb::CloseDir(f->dir);
+	else
+		OrbisNfs::CloseDir(f->dir);
 	delete f;
 	return 0;
 }

@@ -15,7 +15,11 @@
 #     link-vk.sh resolves them, and if_nameindex/if_freenameindex stay the port's (orbis-shims/ProsperoMisc.cpp);
 #   - the directory functions are the platform's as a family (RADV uses dirfd and rewinddir on its DIRs), so the port's
 #     own opendir/readdir/closedir (orbis-shims/dirshim.cpp) are left out of this link;
-#   - the archive carries its own zlib (a Mesa subproject), so the port's inflate sources (ps5/third_party/zlib) are left out.
+#   - the archive carries its own zlib (a Mesa subproject), so the port's inflate sources (ps5/third_party/zlib) are left out;
+#   - NFS and SMB shares: OrbisNfs.wrap's calls and the directory calls go through OrbisNfs-radv.o (Makefile.vk), whose
+#     fclose and fflush pass on to the platform's own wrappers, renamed ps5_platform_fclose and ps5_platform_fflush, and
+#     opendir, readdir, closedir and access to the platform's ps5_ functions (so those four aren't --defsym'd: a --defsym
+#     of a wrapped name replaces the wrapper).
 # The eboot finds out which driver it has at run time (include-orbis/OrbisDriver.h); nothing is compiled differently.
 #
 #   make -f Makefile.vk -j2 && PS5_RADV_ARCHIVE=... PS5_RADV_PLATFORM=... bash link-radv.sh
@@ -48,6 +52,7 @@ TAG=${ORBIS_BUILD_TAG:-vk-285-1-radv}
 TEST_BUILD=${ORBIS_TEST_BUILD:-0}
 LLD=${LLD:-ld.lld-18}
 NM=${NM:-llvm-nm-18}
+OBJCOPY=${OBJCOPY:-llvm-objcopy-18}
 export PS5_PAYLOAD_SDK=$SDK
 export PS5_CLANG=${PS5_CLANG:-$(command -v clang-18 || command -v clang)}
 
@@ -103,39 +108,20 @@ sh "$NATIVE/tooling/prospero-clang18" -c "$here/radv-bindings.S" -o "$OUT/build/
 echo "[link-radv] main-boot ($TAG, test build $TEST_BUILD), crt and binding objects OK"
 
 # 2. The port's objects (Makefile.vk's list, in its order), without the ones RADV's link replaces (above).
-make -C "$here" -f Makefile.vk -s objects.txt PCSX2="$PCSX2" RYML="$RYML" PS5_PAYLOAD_SDK="$SDK"
+make -C "$here" -f Makefile.vk -s objects.txt obj-vk/shim/orbis-shims/OrbisNfs-radv.o PCSX2="$PCSX2" RYML="$RYML" \
+  PS5_PAYLOAD_SDK="$SDK"
 OBJS="$OUT/build/obj/app_crt.o $OUT/build/obj/app_cpp_runtime.o $OUT/build/obj/main-boot.o $OUT/build/obj/radv-bindings.o"
 left_out=()
 while IFS= read -r o; do
   case $o in
     */ps5/third_party/zlib/*.o | */orbis-shims/dirshim.o) left_out+=("$o") ;;
+    */orbis-shims/OrbisNfs.o) OBJS="$OBJS $here/obj-vk/shim/orbis-shims/OrbisNfs-radv.o" ;;
     *) OBJS="$OBJS $here/$o" ;;
   esac
 done < "$here/objects.txt"
 echo "[link-radv] $(( $(wc -l < "$here/objects.txt") - ${#left_out[@]} )) port objects (left out for RADV: ${left_out[*]##*/})"
 (( ${#left_out[@]} == 7 )) || { echo "[link-radv] error: expected 7 objects to leave out (6 zlib, dirshim), found ${#left_out[@]}" >&2; exit 1; }
 
-# 2026-11-23: games on NFS shares (link-vk.sh's NFS_WRAP, vk-285-135) and the platform layer's memory streams both wrap fclose
-# and fflush. Chained: the C library's call -> orbis-shims/OrbisNfs.cpp's __wrap_ (NFS files) -> the platform's wrapper, renamed
-# ps5plat_wrap_ (memory streams) -> the C library (__real_). Copies of OrbisNfs.o and the platform archive carry the renames.
-OBJCOPY=${OBJCOPY:-llvm-objcopy-18}
-NFS_WRAP=()
-while IFS= read -r name; do
-  [[ -z $name || $name == \#* ]] && continue
-  NFS_WRAP+=("--wrap=$name")
-done < "$here/orbis-shims/OrbisNfs.wrap"
-nfs_obj=$(grep -o '[^ ]*orbis-shims/OrbisNfs\.o' <<<"$OBJS" | head -n 1)
-[[ -n $nfs_obj ]] || { echo "[link-radv] error: OrbisNfs.o is not among the port objects" >&2; exit 1; }
-"$OBJCOPY" --redefine-sym __real_fclose=ps5plat_wrap_fclose --redefine-sym __real_fflush=ps5plat_wrap_fflush \
-  "$nfs_obj" "$OUT/build/obj/OrbisNfs-radv.o"
-OBJS=${OBJS/"$nfs_obj"/"$OUT/build/obj/OrbisNfs-radv.o"}
-rm -rf "$OUT/build/platform" && mkdir -p "$OUT/build/platform"
-cp "$RADV_PLATFORM" "$OUT/build/platform/libps5platform.a"
-(cd "$OUT/build/platform" && ar x libps5platform.a memstream.o &&
-  "$OBJCOPY" --redefine-sym __wrap_fclose=ps5plat_wrap_fclose --redefine-sym __wrap_fflush=ps5plat_wrap_fflush memstream.o &&
-  ar r libps5platform.a memstream.o && rm memstream.o)
-RADV_PLATFORM="$OUT/build/platform/libps5platform.a"
-echo "[link-radv] NFS shares: ${#NFS_WRAP[@]} C library calls wrapped; fclose/fflush chained to the platform's memory streams"
 
 GLSLANG_LIBS=(
   "$GLSLANG/glslang/libglslang.a"
@@ -144,7 +130,16 @@ GLSLANG_LIBS=(
 )
 
 # 3. The platform layer's bindings (PS5_Vulkan tools/radv-link.sh at d609d71, less the names noted at the top).
-radv_flags=(--wrap=pthread_create --wrap=pthread_join --wrap=pthread_detach --wrap=fclose --wrap=fflush)
+mkdir -p "$OUT/driver"
+cp "$RADV_PLATFORM" "$OUT/driver/libps5platform.a"
+"$OBJCOPY" --redefine-sym __wrap_fclose=ps5_platform_fclose --redefine-sym __wrap_fflush=ps5_platform_fflush \
+  "$OUT/driver/libps5platform.a"
+RADV_PLATFORM="$OUT/driver/libps5platform.a"
+radv_flags=(--wrap=pthread_create --wrap=pthread_join --wrap=pthread_detach --wrap=opendir --wrap=readdir --wrap=closedir)
+while IFS= read -r name; do
+  [[ -z $name || $name == \#* ]] && continue
+  radv_flags+=("--wrap=$name")
+done < "$here/orbis-shims/OrbisNfs.wrap"
 for name in malloc calloc realloc free posix_memalign aligned_alloc memalign \
     malloc_usable_size reallocf reallocarray getline getdelim; do
   radv_flags+=("--wrap=$name")
@@ -160,8 +155,8 @@ bound=(mkstemps openlog popen pclose open_memstream __xuname __assert
   __cxa_thread_atexit_impl
   arc4random arc4random_buf arc4random_uniform statvfs fstatvfs
   futimens
-  opendir fdopendir readdir rewinddir dirfd closedir nl_langinfo nl_langinfo_l getpwuid_r
-  posix_fallocate access
+  fdopendir rewinddir dirfd nl_langinfo nl_langinfo_l getpwuid_r
+  posix_fallocate
   openat unlinkat fchmodat fstatat mkdirat renameat memfd_create)
 # 2026-11-23 (PS5_Vulkan 7f492b4's radv-link.sh): names bound only when the platform layer has them. strcasestr and mkstemp are
 # defined only by libScePosixForWebKit's stub and readlink, link and symlink only by libkernel_sys's, each import null at run time
@@ -194,7 +189,7 @@ if [[ $ORDER_FILE != none && -f $ORDER_FILE ]]; then
 fi
 pie_link() {
   # shellcheck disable=SC2086
-  "$LLD" -m elf_x86_64 -pie -z max-page-size=0x4000 -mllvm -emulated-tls "${NFS_WRAP[@]}" \
+  "$LLD" -m elf_x86_64 -pie -z max-page-size=0x4000 -mllvm -emulated-tls \
     --hash-style=gnu -T "$NATIVE/tooling/native/ps5-pie.ld" -T "$here/orbis-shims/ehframe.ld" --eh-frame-hdr \
     --version-script "$NATIVE/tooling/native/app-symbols.map" "${ORDER_ARGS[@]}" "${radv_flags[@]}" "$@" -e _start \
     ${LLD_EXTRA:---no-dynamic-linker} \
