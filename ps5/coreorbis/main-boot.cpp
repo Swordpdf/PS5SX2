@@ -3315,7 +3315,9 @@ int main()
   // (it names a copy already made); with no PS2 disc in a drive the shelf opens as usual. The drives are looked at here
   // only, once, because the flag asks for it; the disc watcher (ProsperoDiscDump.cpp) then leaves the drive alone. Not
   // frontend_ran: a start that fails closes the app rather than coming back here in a loop.
-  if (s_game_path.empty() && orbis_flag("bootdisc"))
+  // discplay too: a PS2 DVD already in the console's own drive (/dev/cd0) starts from that node. A USB drive that
+  // only has a pass node is still the watcher's job. Needs proper testing on the console's own drive.
+  if (s_game_path.empty() && (orbis_flag("bootdisc") || orbis_flag("discplay")))
   {
     const std::vector<std::string> drives = OrbisDiscDrive::List();
     if (drives.empty())
@@ -3333,7 +3335,9 @@ int main()
         printf("[disc] bootdisc: %s: its disc is being copied; not started from the drive\n", drive.c_str());
         continue;
       }
-      const std::string serial = fe::ReadSerial(drive);
+      std::string serial = OrbisDiscSerial(drive);
+      if (serial.empty())
+        serial = fe::ReadSerial(drive);
       if (serial.empty())
       {
         printf("[disc] bootdisc: %s: the disc in it isn't a PS2 game (no SYSTEM.CNF naming its executable)\n", drive.c_str());

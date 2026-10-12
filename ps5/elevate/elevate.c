@@ -13,6 +13,7 @@
  * Copyright (C) 2026 swordpdf
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -20,6 +21,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/disk.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #include <ps5/kernel.h>
@@ -62,8 +65,33 @@ static void elevate_self(void) {
 	kernel_set_ucred_caps(getpid(), all);
 }
 
+/* The title is already uid 0, so it never asks Lapy for the step that sets its
+ * root to the system root. Its /dev is still the sandbox, which has no cd0.
+ * This process can open /dev/cd0; give the title that same root, jail and prison. */
+static void share_view(pid_t pid) {
+	const pid_t self = getpid();
+	const intptr_t root = kernel_get_proc_rootdir(self);
+	const intptr_t jail = kernel_get_proc_jaildir(self);
+	intptr_t prison = kernel_get_ucred_prison(self);
+	if (!prison)
+		prison = KERNEL_ADDRESS_PRISON0;
+	const intptr_t old_root = kernel_get_proc_rootdir(pid);
+	const intptr_t old_jail = kernel_get_proc_jaildir(pid);
+	const intptr_t old_prison = kernel_get_ucred_prison(pid);
+	const int32_t rr = root ? kernel_set_proc_rootdir(pid, root) : -1;
+	const int32_t rj = jail ? kernel_set_proc_jaildir(pid, jail) : -1;
+	const int rp = prison ? kernel_set_ucred_prison(pid, prison) : -1;
+	say("pid %d view: root %llx -> %llx (%d), jail %llx -> %llx (%d), prison %llx -> %llx (%d)",
+		(int)pid,
+		(unsigned long long)old_root, (unsigned long long)kernel_get_proc_rootdir(pid), rr,
+		(unsigned long long)old_jail, (unsigned long long)kernel_get_proc_jaildir(pid), rj,
+		(unsigned long long)old_prison, (unsigned long long)kernel_get_ucred_prison(pid), rp);
+	if (root && kernel_get_proc_rootdir(pid) == root)
+		notify("PS5SX2 disk gorunumu verildi");
+}
+
 /* uid 0 plus the decid authid and full caps, same grant the title asks the jailbreak
- * ports for. The sandbox root is left as it is: this title already sees /data and /dev. */
+ * ports for. Then the filesystem view of this process, which can open /dev/cd0. */
 static int elevate_pid(pid_t pid, const char *why) {
 	if (pid <= 0 || !kernel_get_proc(pid)) {
 		say("pid %d is not a process (%s)", (int)pid, why);
@@ -82,6 +110,8 @@ static int elevate_pid(pid_t pid, const char *why) {
 	const uint64_t after = kernel_get_ucred_authid(pid);
 	say("pid %d (%s): authid %llx -> %llx", (int)pid, why,
 		(unsigned long long)before, (unsigned long long)after);
+	if (after == AUTHID)
+		share_view(pid);
 	return after == AUTHID;
 }
 
@@ -104,6 +134,68 @@ static pid_t pid_from_marker(void) {
 	return (pid_t)atoi(p + 1);
 }
 
+/* Same open("/dev/cd0") the disc-auto payload uses. This is this process, not the
+ * title: a successful open does not add the node to the title's /dev. */
+static void probe_cd0(void) {
+	static int last_err = -1;
+	static long long last_size = -1;
+	char nodes[240];
+	size_t used = 0;
+	nodes[0] = 0;
+	DIR *dir = opendir("/dev");
+	if (!dir) {
+		say("/dev: opendir errno %d", errno);
+	} else {
+		struct dirent *ent;
+		while ((ent = readdir(dir))) {
+			if (strncmp(ent->d_name, "cd", 2) != 0 && strncmp(ent->d_name, "pass", 4) != 0)
+				continue;
+			const size_t n = strlen(ent->d_name);
+			if (used + n + 2 >= sizeof(nodes))
+				break;
+			if (used)
+				nodes[used++] = ' ';
+			memcpy(nodes + used, ent->d_name, n);
+			used += n;
+			nodes[used] = 0;
+		}
+		closedir(dir);
+	}
+
+	const int fd = open("/dev/cd0", O_RDONLY);
+	if (fd < 0) {
+		if (errno != last_err || last_size != 0) {
+			last_err = errno;
+			last_size = 0;
+			say("/dev/cd0: open errno %d; nodes: %s", errno, nodes[0] ? nodes : "none");
+			char msg[80];
+			snprintf(msg, sizeof(msg), "cd0 acilamadi errno %d", errno);
+			notify(msg);
+		}
+		return;
+	}
+	off_t size = 0;
+	const int rc = ioctl(fd, DIOCGMEDIASIZE, &size);
+	const int ioerr = errno;
+	close(fd);
+	if (rc != 0)
+		size = 0;
+	if (last_err == 0 && last_size == (long long)size)
+		return;
+	last_err = 0;
+	last_size = (long long)size;
+	if (rc != 0)
+		say("/dev/cd0: open ok, size ioctl errno %d; nodes: %s", ioerr, nodes[0] ? nodes : "none");
+	else
+		say("/dev/cd0: open ok, %lld bytes; nodes: %s", (long long)size, nodes[0] ? nodes : "none");
+	char msg[96];
+	if (size > 0)
+		snprintf(msg, sizeof(msg), "cd0 acildi, %lld bayt", (long long)size);
+	else
+		snprintf(msg, sizeof(msg), "cd0 acildi, disk yok");
+	notify(msg);
+}
+
 static pid_t pid_from_bootlog(void) {
 	FILE *f = fopen(BOOTLOG, "r");
 	if (!f)
@@ -124,8 +216,10 @@ int main(void) {
 	g_out = fopen(OUTLOG, "a");
 	say("elevate payload up, pid %d", (int)getpid());
 	notify("PS5SX2: yetki payload'u acik");
+	probe_cd0();
 
 	pid_t done = -1;
+	unsigned tick = 0;
 	for (;;) {
 		const pid_t asked = pid_from_marker();
 		if (asked > 0) {
@@ -143,6 +237,10 @@ int main(void) {
 				notify("PS5SX2 yetkisi yukseldi");
 				done = booted;
 			}
+		}
+		if (++tick >= 15) {
+			tick = 0;
+			probe_cd0();
 		}
 		usleep(200 * 1000);
 	}

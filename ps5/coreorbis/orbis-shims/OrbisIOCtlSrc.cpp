@@ -224,7 +224,25 @@ bool IOCtlSrc::Reopen(Error* error)
   }
 
   // DVD first, as on Linux: cd(4) answers the table of contents for both.
-  const bool known = ReadDVDInfo() || ReadCDInfo();
+  bool known = ReadDVDInfo() || ReadCDInfo();
+  if (!known && m_device >= 0 && !usb && !pass_only)
+  {
+    // A PS2 DVD on /dev/cd0: sector 16 is ISO 9660 and the drive reports its size, even when the structure ioctl and
+    // the pass device both failed. One layer; a dual-layer disc still needs the structure read above.
+    uint8_t pvd[2048] = {};
+    off_t bytes = 0;
+    const bool iso = pread(m_device, pvd, sizeof(pvd), 16 * 2048) == 2048 && pvd[0] == 1 && std::memcmp(pvd + 1, "CD001", 5) == 0;
+    if (iso && ioctl(m_device, DIOCGMEDIASIZE, &bytes) == 0 && bytes >= 2048)
+    {
+      m_media_type = 0;
+      m_layer_break = 0;
+      m_sectors = static_cast<u32>(static_cast<u64>(bytes) / 2048);
+      m_toc.clear();
+      known = m_sectors != 0;
+      std::printf("[disc] %s: playing from the drive size, %u sectors (one layer)\n", m_filename.c_str(), m_sectors);
+      std::fflush(stdout);
+    }
+  }
   if (!known)
   {
     // No disc, one still spinning up, or not a data disc. The device stays open: DiscReady asks the drive again (at most
@@ -240,8 +258,7 @@ bool IOCtlSrc::Reopen(Error* error)
     return false;
   }
   m_said_unreadable = false;
-  if (usb || pass_only)
-    SetSpindleSpeed(false);
+  SetSpindleSpeed(false);
   std::string drive = m_pass >= 0 ? OrbisDiscDrive::Describe(m_pass) : std::string();
   if (drive.empty() && (usb || pass_only))
     drive = pass_name;
@@ -273,7 +290,18 @@ bool IOCtlSrc::ReadDVDInfo()
   ds.format = DVD_STRUCT_PHYSICAL;
   ds.layer_num = 0;
   if (ioctl(m_device, DVDIOCREADSTRUCTURE, &ds) != 0)
-    return false;
+  {
+    // The PS5's own drive reads a PS2 DVD with pread. Its DVD-structure ioctl can fail; the SCSI read through the
+    // pass device is what discplay used for the layer break. Needs proper testing on the console's own drive.
+    OrbisDiscLayer layer;
+    if (!OrbisDiscReadLayer(m_device, &layer) || !layer.ok || layer.sectors == 0)
+      return false;
+    m_media_type = layer.media_type;
+    m_sectors = layer.sectors;
+    m_layer_break = layer.layer_break;
+    m_toc.clear();
+    return true;
+  }
   struct dvd_layer l0;
   std::memcpy(&l0, ds.data, sizeof(l0));
   const u32 start_sector = l0.start_sector;
@@ -380,8 +408,8 @@ bool IOCtlSrc::ReadCDInfo()
 
 void IOCtlSrc::SetSpindleSpeed(bool restore_defaults) const
 {
-  // /dev/cdN keeps the speed the cd driver left. A USB drive takes SET CD SPEED: 4x DVD (5540) or 8x CD (1408) on a
-  // pass node, 2x DVD / 4x CD on the bulk pipe. Needs proper testing on a console with a USB DVD drive.
+  // A USB drive takes SET CD SPEED: 4x DVD (5540) or 8x CD (1408) on a pass node, 2x DVD / 4x CD on the bulk pipe.
+  // /dev/cdN gets Sony's 3.2x command below. Needs proper testing on the console's own drive.
   if (OrbisUsbDiscPath(m_filename))
   {
     const uint16_t kbs = restore_defaults ? 0xFFFF : (m_media_type >= 0 ? 2770 : 706);
@@ -392,7 +420,11 @@ void IOCtlSrc::SetSpindleSpeed(bool restore_defaults) const
   {
     const uint16_t kbs = restore_defaults ? 0xFFFF : (m_media_type >= 0 ? 5540 : 1408);
     OrbisPassSetSpeed(m_pass, kbs);
+    return;
   }
+  // The console's own drive: Sony's 3.2x command. A drive that refuses it still plays at the speed it had.
+  if (m_device >= 0)
+    OrbisDiscSetPlaySpeed(m_device, restore_defaults);
 }
 
 u32 IOCtlSrc::GetSectorCount() const

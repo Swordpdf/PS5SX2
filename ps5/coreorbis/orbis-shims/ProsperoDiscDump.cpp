@@ -76,6 +76,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "ProsperoDiscDump.h"
+#include "OrbisDiscDrive.h"
 #include "ProsperoDiscSpeed.h"
 #include "OrbisDiscCopy.h"
 #include "ProsperoNotify.h"
@@ -1114,7 +1115,13 @@ namespace
 							}
 						}
 						else
-							pc.serial = fe::ReadSerial(path);
+						{
+							// /dev/cd0 gives a PS2 DVD's sectors, but fe::ReadSerial opens it like a file and can miss
+							// SYSTEM.CNF. Whole sectors through the same open the probe used.
+							pc.serial = OrbisDiscDrive::IsDrivePath(path) ? OrbisDiscSerial(path) : fe::ReadSerial(path);
+							if (pc.serial.empty() && OrbisDiscDrive::IsDrivePath(path))
+								pc.serial = fe::ReadSerial(path);
+						}
 					}
 				}
 				if (log)
@@ -1242,6 +1249,20 @@ static void* AliveThread(void*)
 		sleep(2);
 	}
 	return nullptr;
+}
+
+std::string OrbisDiscSerial(const std::string& device)
+{
+	const int fd = OrbisOpenDev(device.c_str(), O_RDONLY);
+	if (fd < 0)
+		return {};
+	const auto read = [&](uint32_t lba, void* buf, uint32_t count) {
+		const ssize_t want = static_cast<ssize_t>(count) * 2048;
+		return pread(fd, buf, static_cast<size_t>(want), static_cast<off_t>(lba) * 2048) == want;
+	};
+	const std::string serial = SerialFromSectors(read);
+	close(fd);
+	return serial;
 }
 
 void OrbisDiscDumpStart()
