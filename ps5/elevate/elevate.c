@@ -1,4 +1,4 @@
-/* Elevate the PS5SX2 title so it can open /dev/cd and /dev/pass (AI-assisted).
+/* Elevate the PS5SX2 title so it can open /dev/cd and /dev/pass.
  *
  * The signed eboot asks the Lapy owned-root daemon by writing /download0/elevate_proc
  * and, if nobody answers, the etaHEN ports 9028 and 9069. This console has kstuff and

@@ -1,4 +1,4 @@
-# Elevate the PS5SX2 title's credential (AI-assisted). make -> Elevate.elf
+# Elevate the PS5SX2 title's credential. make -> Elevate.elf
 PS5_PAYLOAD_SDK ?= /home/claude/ps5deps/sdk285
 CC := $(PS5_PAYLOAD_SDK)/bin/prospero-clang
 Elevate.elf: elevate.c
