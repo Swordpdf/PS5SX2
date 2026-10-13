@@ -417,6 +417,12 @@ const std::vector<OptionGroup>& OptionGroups()
 					"Rewired; their DNS goes in the game's network settings). It costs nothing until a game uses it. Turn it off for a "
 					"game that misbehaves with it. Takes effect when the game starts.",
 					true),
+				// PS5SX2: the PS2's internal HDD (DEV9/Hdd), a raw image file; its path is on the settings page.
+				Toggle("DEV9/Hdd/HddEnable", "Internal HDD (raw image)", "false", "HDD %",
+					"The PS2's HDD as a raw image file, for games that use it (Final Fantasy XI, BB Navigator). Without a path "
+					"on the settings page it is /data/PCSX2/DEV9hdd.raw, created at 40 GiB the first time. An existing .raw image is "
+					"used as it is. Takes effect when the game starts.",
+					true),
 				// 2026-10-08 (AI-assisted; testers: "Enable Host Filesystem"): PCSX2's host: device (EmuCore/HostFs).
 				Toggle("EmuCore/HostFs", "Host filesystem", "false", "Host files %",
 					"Lets homebrew read and write files in its own folder (host:), as PCSX2's Enable Host Filesystem: the ELF's folder, "
