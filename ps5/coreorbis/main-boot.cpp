@@ -53,6 +53,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "debug_overlay.h"
 #include "OrbisPaths.h" // vk-285-33: the /data/PCSX2 folder layout
 #include "OrbisDriver.h" // vk-285-115: ps5vk or RADV
+#include "OrbisForwarderArgs.h" // PS5 Forwarder Format launch arguments
 #include "SIO/Pad/Pad.h"
 #include "SIO/Pad/PadDualshock2.h"
 #include "SIO/Memcard/MemoryCardFile.h" // vk-285-48: FileMcd_EmuClose/Open
@@ -91,6 +92,7 @@ extern std::atomic<int> g_orbis_state_request; // eerec-282 (StubHost.cpp)
 // OrbisBackToMenuCpu() at vsync on the CPU thread, which stops the VM; main() writes the memory
 // cards and the NVRAM back and re-executes the eboot, whose startup ends in the frontend again.
 static std::atomic<bool> g_orbis_menu_request{false};
+static bool g_orbis_forwarder_exit_after_game = false;
 
 // vk-285-51: the settings log (frontend/fe_ps5.h orbis_event_log): what the app did, beside what
 // the settings page changed, so a setting that breaks a game shows up in one place.
@@ -2048,6 +2050,12 @@ static void orbis_back_to_menu()
   // a notification says so when they don't make it. Returns at once when nothing is waiting.
   Achievements::OrbisFlushBeforeExit(5000);
 #endif
+  if (g_orbis_forwarder_exit_after_game)
+  {
+    printf("[forwarder] game ended; returning to the PS5 home screen\n");
+    fflush(stdout);
+    orbis_exit_quietly(0);
+  }
   const char* path = "/data/homebrew/PPSA99203/eboot.bin";
   struct stat st{};
   if (stat(path, &st) != 0)
@@ -2867,8 +2875,10 @@ static void orbis_vk_environment()
 #endif
 
 
-int main()
+int main(int argc, char* argv[])
 {
+  const OrbisForwarderArgs forwarder = OrbisParseForwarderArgs(argc, const_cast<const char* const*>(argv));
+  g_orbis_forwarder_exit_after_game = forwarder.exit_after_game;
   g_boot_t0 = orbis_mono_seconds(); // 2.02: the origin of the [boot] t+ lines
   // Bigapp: no elfldr socket. Log to file (read back over FTP) + notify.
   // vk-285-33: in logs/ when that folder exists (OrbisPaths.h).
@@ -2995,7 +3005,7 @@ int main()
   orbis_log_flag_access("before the jailbreak");
   orbis_scan_usb("before the jailbreak"); // test build 1: whether the sandbox shows USB drives yet
   orbis_boot_phase("cover prefetch starting");
-  if (!orbis_flag("nofrontend") && !orbis_flag("nomenu") && !orbis_flag("nocoverdl"))
+  if (forwarder.rom.empty() && !forwarder.invalid && !orbis_flag("nofrontend") && !orbis_flag("nomenu") && !orbis_flag("nocoverdl"))
     orbis_frontend_prefetch_covers(orbis_frontend_paths(true), 30.0, sys_notify);
   orbis_boot_phase("cover prefetch done");
 #endif
@@ -3204,6 +3214,25 @@ int main()
   // shows its QR code; it keeps running in the game. The nowebui flag leaves it off.
   orbis_boot_phase("looking at USB drives and NFS shares");
   orbis_scan_usb("after the jailbreak"); // test build 1: games on USB drives
+  if (forwarder.invalid)
+  {
+    printf("[forwarder] invalid launch arguments; closing\n");
+    sys_notify("PS5SX2: invalid forwarder arguments");
+    orbis_exit_quietly(1);
+  }
+  if (!forwarder.rom.empty())
+  {
+    s_game_path = orbis_find_image(forwarder.rom, "forwarder game");
+    if (s_game_path.empty())
+    {
+      printf("[forwarder] game not found: %s\n", forwarder.rom.c_str());
+      sys_notify("PS5SX2: forwarder game not found");
+      orbis_exit_quietly(1);
+    }
+    printf("[forwarder] launching %s%s\n", s_game_path.c_str(),
+      forwarder.exit_after_game ? "; exit after game" : "");
+    fflush(stdout);
+  }
   orbis_boot_phase("USB drives and NFS shares looked at; checking the BIOS");
   orbis_check_bios(); // vk-285-134: after the drives are seen, before the shelf
   orbis_boot_phase("BIOS checked");
@@ -3227,6 +3256,14 @@ int main()
   // exec.txt and self-exec so PS5SX2 comes to the foreground.  Skip disc-launch.txt now to avoid
   // starting the game twice (once here in the background and again on the foreground boot).
   // Leave disc-launch.txt on disk; the disc watcher's self-exec boot will pick it up cleanly.
+  // An explicit forwarder launch takes priority over a pending disc autostart request.
+  // Clear pending transient markers so the disc watcher does not re-exec over the game.
+  if (!forwarder.rom.empty())
+  {
+    unlink(OrbisLogPath("disc-launch.txt").c_str());
+    unlink(OrbisLogPath("disc-launch-exec.txt").c_str());
+  }
+  else
   {
       const std::string dlp = OrbisLogPath("disc-launch.txt");
       const std::string dep = OrbisLogPath("disc-launch-exec.txt");
@@ -4378,6 +4415,9 @@ int main()
     printf("[boot] execute loop done exits=%u\n", exits);
     fflush(stdout);
   }
+
+  if (g_orbis_forwarder_exit_after_game)
+    orbis_back_to_menu(); // saves the cards and NVRAM, then closes the title
 
   printf("[boot] smoke test window done - keeping emulator running\n");
   fflush(stdout);

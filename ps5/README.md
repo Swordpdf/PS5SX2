@@ -38,6 +38,10 @@ Public dependency preparation and the remaining release-build blockers are
 recorded in [Preparing the PS5 build dependencies](docs/build-dependencies.md)
 (AI-assisted).
 
+## Home-screen forwarders
+
+A [PS5 Forwarder Format](https://github.com/heydemoura/ps5-forwarder-format) tile can launch a game directly into PS5SX2 (`PPSA99203`) with `--rom <path-or-file-name>`. See [creating a forwarder and the supported launch behavior](docs/forwarders.md).
+
 ## Build
 
 The initial softcore RetroAchievements integration, its account screen, game achievement browser and
