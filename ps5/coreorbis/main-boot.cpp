@@ -2010,14 +2010,21 @@ static void orbis_mark_relaunch()
   }
 }
 
+// Issue #59 (AI-assisted): the path our own eboot is re-executed from. The system resolves it for the new process,
+// after the old one has gone. With ShadowMount+ 1.7-beta5fix1 the title's /data mount is removed at that exit, and
+// /data/homebrew/PPSA99203/eboot.bin, which stat() still finds from the old process, failed there with
+// "Exit spawn failed : 0x80aa001a" (errno 2): the app closed instead of opening the shelf. /app0/eboot.bin is
+// the path the system starts the app from its home-screen tile.
+static const char* orbis_relaunch_path()
+{
+  return "/app0/eboot.bin";
+}
+
 // vk-285-109: our own eboot again, into the shelf, after a start that failed (the VM never ran, so no memory
 // card or NVRAM to write back). Returns when LoadExec doesn't take.
 static void orbis_restart_to_menu()
 {
-  const char* path = "/data/homebrew/PPSA99203/eboot.bin";
-  struct stat st{};
-  if (stat(path, &st) != 0)
-    path = "/app0/eboot.bin";
+  const char* path = orbis_relaunch_path();
   printf("[menu] the game didn't start: re-executing %s\n", path);
   orbis_mark_relaunch(); // vk-285-144
   orbis_output_default();
@@ -2048,10 +2055,7 @@ static void orbis_back_to_menu()
   // a notification says so when they don't make it. Returns at once when nothing is waiting.
   Achievements::OrbisFlushBeforeExit(5000);
 #endif
-  const char* path = "/data/homebrew/PPSA99203/eboot.bin";
-  struct stat st{};
-  if (stat(path, &st) != 0)
-    path = "/app0/eboot.bin";
+  const char* path = orbis_relaunch_path();
   printf("[menu] re-executing %s\n", path);
   orbis_mark_relaunch(); // vk-285-144
   orbis_output_default();
