@@ -997,6 +997,104 @@ const char* const kPortugueseBrazil[kCount] = {
 	"Nenhuma BIOS do PS2 encontrada: os jogos não podem iniciar. Copie seu arquivo de BIOS (4 MB, ex.: SCPH-70012.bin) para %s",
 };
 
+const char* const kRussian[kCount] = {
+	"Играть",
+	"Обзор",
+	"Перейти",
+	"Настройки игры: нет сети",
+	"Нет игр в /data/PCSX2/games",
+	"Загрузка обложек  %d / %d",
+	"%s ГБ",
+	"%s МБ",
+	",",
+	"PS5SX2: запуск",
+	"PS5SX2 (тестовая сборка): запуск",
+	"PS5SX2: загрузка обложек: %d",
+	"PS5SX2: загрузка обложек: %d",
+	"Сейчас играем: %s\n%s · приятной игры!",
+	"нативно, %s",
+	"программный рендеринг",
+	"PS5SX2: нет игры для запуска. Положите файлы .iso или .chd в /data/PCSX2/games/ или на USB-накопитель и снова запустите PS5SX2.",
+	"PS5SX2: игра не запустилась.\n%s",
+	"PS5SX2: не удалось открыть меню, возврат в игру",
+	"PS5SX2: игра остановлена",
+	"Настройки",
+	"Выбор",
+	"Изменить",
+	"Сбросить",
+	"Назад",
+	"Эта игра",
+	"Все игры",
+	"PS5SX2: BIOS PS2 не найден. Скопируйте файл BIOS (4 МБ, например SCPH-70012.bin) в %s и снова запустите игру.",
+	"PS5SX2: графика игры не запустилась. Запустите её снова; если ошибка повторится, переустановите PS5SX2 его установщиком.",
+	"Управление",
+	"QR-код",
+	"Достижения",
+	"Все",
+	"Получено",
+	"Не получено",
+	"очков",
+	"Обновить",
+	"Назад",
+	"Далее",
+	"Загрузка достижений...",
+	"Загрузка значков...",
+	"Нет достижений для этого фильтра.",
+	"У этой игры нет опубликованных достижений.",
+	"Выберите запущенную игру, чтобы увидеть её достижения.",
+	"Показать запущенную игру",
+	"Запустите игру, чтобы видеть достижения в реальном времени. До запуска используйте вкладку «Достижения» на полке игр.",
+	"Просмотр достижений недоступен.",
+	"Войдите в RetroAchievements и запустите игру.",
+	"Подключение к RetroAchievements...",
+	"Нет данных о достижениях для этой игры.",
+	"Не удалось обновить достижения: ",
+	"Выберите «Эта игра», чтобы увидеть её достижения.",
+	"Завершается предыдущий запрос. Нажмите «Треугольник», чтобы загрузить эту игру.",
+	"Треугольник: обновить",
+	"Войдите в RetroAchievements с полки игр.",
+	"Не удалось определить загрузочный файл этого диска.",
+	"Не удалось установить защищённое соединение.",
+	"Не удалось создать просмотр достижений.",
+	"Не удалось подключиться. Проверьте соединение или войдите снова.",
+	"Набор достижений не найден или сервис недоступен.",
+	"Не удалось прочитать список достижений.",
+	"Данные игры или аккаунта недоступны.",
+	"Не удалось получить открытые достижения. Нажмите «Треугольник», чтобы повторить.",
+	"Не удалось прочитать основной набор достижений.",
+	"Загрузка отменена. Нажмите «Треугольник», чтобы повторить.",
+	"Не удалось запустить просмотр достижений.",
+	"Получено",
+	"Не получено",
+	"Войдите в аккаунт RetroAchievements, чтобы получать достижения во время игры.",
+	"Имя пользователя",
+	"Пароль",
+	"Ваше имя пользователя RetroAchievements",
+	"Ваш пароль",
+	"Войти",
+	"Вход...",
+	"Выйти",
+	"Нажмите ещё раз, чтобы выйти",
+	"Вы вошли как %s",
+	"Достижения открываются во время игры. Пароль не хранится на консоли.",
+	"Выбрать",
+	"Изменить",
+	"Показать пароль",
+	"Скрыть пароль",
+	"Удалить",
+	"Готово",
+	"Пробел",
+	"HD-текстуры",
+	"HD-текстуры готовы",
+	"Ошибка HD-текстур",
+	"Загрузить",
+	"Отмена",
+	"RetroAchievements: ошибка сервера",
+	"Не удалось связаться с RetroAchievements. Вы по-прежнему в аккаунте: достижения вернутся со следующей игрой.",
+	"Не удалось отправить открытое достижение в RetroAchievements до закрытия (нет соединения). Его не будет в вашем аккаунте.",
+	"Нет BIOS PS2: игры не запустятся. Скопируйте BIOS (4 МБ, напр. SCPH-70012.bin) в %s",
+};
+
 // The region names fe_games.cpp takes from a file name's first group (kRegions there), in its order.
 constexpr int kRegionCount = 19;
 const char* const kRegionsEnglish[kRegionCount] = {"USA", "Europe", "Japan", "Korea", "Asia", "World", "Australia",
@@ -1022,6 +1120,9 @@ const char* const kRegionsPortuguese[kRegionCount] = {"EUA", "Europa", "Japão",
 const char* const kRegionsPortugueseBrazil[kRegionCount] = {"EUA", "Europa", "Japão", "Coreia", "Ásia", "Mundo",
 	"Austrália", "França", "Alemanha", "Itália", "Espanha", "Reino Unido", "Canadá", "Brasil", "Rússia", "China",
 	"Taiwan", "Holanda", "Suécia"};
+const char* const kRegionsRussian[kRegionCount] = {"США", "Европа", "Япония", "Корея", "Азия", "Весь мир",
+	"Австралия", "Франция", "Германия", "Италия", "Испания", "Великобритания", "Канада", "Бразилия", "Россия", "Китай",
+	"Тайвань", "Нидерланды", "Швеция"};
 
 struct Language
 {
@@ -1040,6 +1141,7 @@ const Language kLanguages[] = {
 	{"nl", kDutch, kRegionsDutch},
 	{"pt", kPortuguese, kRegionsPortuguese},
 	{"pt-BR", kPortugueseBrazil, kRegionsPortugueseBrazil},
+	{"ru", kRussian, kRegionsRussian},
 };
 
 const Language* s_lang = &kLanguages[0];
@@ -1047,7 +1149,7 @@ std::vector<std::string> s_text_over(kCount);
 std::vector<std::string> s_region_over(kRegionCount);
 
 // The PS5's language ids (as the PS4's: 0 Japanese, 1 English (US), 2 French, 3 Spanish, 4 German, 5 Italian,
-// 6 Dutch, 7 Portuguese, 17 Portuguese (Brazil), 18 English (UK), 20 Spanish (Latin America), 22 French
+// 6 Dutch, 7 Portuguese, 8 Russian, 17 Portuguese (Brazil), 18 English (UK), 20 Spanish (Latin America), 22 French
 // (Canada); the others have no table here).
 const Language* LanguageFor(int ps5)
 {
@@ -1070,6 +1172,8 @@ const Language* LanguageFor(int ps5)
 			return &kLanguages[7];
 		case 17:
 			return &kLanguages[8];
+		case 8:
+			return &kLanguages[9];
 		default:
 			return &kLanguages[0];
 	}
