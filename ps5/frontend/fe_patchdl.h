@@ -14,6 +14,18 @@
 // wrote). The sheet then lists the groups under Patches and Cheats, each off until turned on. Needs proper testing on the
 // console.
 //
+// 2.16 (AI-assisted): when no source has a file for the disc's own "<serial>_<crc>" (a fan translation or a rebuilt disc:
+// its executable differs, so its CRC does, and some boot "NORG_RUS.00" instead of "SLUS_205.00", which gives no serial at
+// all), the game's own serial is looked for inside its executable: a PS2 game names its memory card folder after it
+// ("BASLUS-20500", "BESLES-52478"). For each one found, each patch source's file list (GitHub's tree API, one request a
+// source) gives the files of that serial; when it has just one, that file is fetched and kept under the DISC's name
+// ("<disc serial>_<disc crc>_<serial>.pnach"), so PCSX2 loads it for this game. Every group gets "(from <serial>_<crc>)" in
+// its name and stays off: a patch made for another executable may not fit this one (a translation that moved code would
+// crash or misdraw), so turning one on is the player's own test. Two files for one serial (two releases) are left alone,
+// and the first serial anything is found for wins. The disc's own serial is tried first (a translation that kept it).
+// Asked only when the disc's own file wasn't found; each list once a run (GitHub allows 60 such requests an hour without
+// an account). Not tried on a console yet: needs proper testing there.
+//
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -70,6 +82,7 @@ struct OnlinePatchSource
 	bool cheats;          // into the cheats folder (else the patches folder)
 	const char* suffix;   // the local file's name after "<serial>_<crc>" ("" or "_gabominated")
 	const char* tag;      // groups renamed "<name> (<tag>)" ("" leaves them)
+	const char* tree;     // 2.16: GitHub's tree API for the source's folder (its file names), for the fallback by serial
 };
 const std::vector<OnlinePatchSource>& OnlinePatchSources();
 // A source's URL for "<serial>_<crc>": its first "%s" replaced by `key`. vk-285-134b: not through snprintf, since the URL
@@ -95,6 +108,12 @@ PnachKind ClassifyPnach(const std::string& text);
 std::string TagPnachGroups(const std::string& text, const std::string& tag, const std::string& unnamed);
 // How many groups ("[...]" lines) a pnach text has, and whether it has patch lines outside any group.
 int CountPnachGroups(const std::string& text, bool* unnamed = nullptr);
+// 2.16 (AI-assisted): the serials a PS2 executable names its memory card folders after ("BASLUS-20500" -> "SLUS-20500";
+// region letter A, E or I, then the 4 letters, a dash and 5 digits), in the order found, each once. Most games have one;
+// some have two regions' (Red Dead Revolver's Russian rebuild: SLUS-20500 and SLES-52478).
+std::vector<std::string> ExecutableSerials(const std::vector<uint8_t>& elf);
+// 2.16: the "<serial>_<CRC>.pnach" names in a GitHub tree API answer ({"tree":[{"path":"..."}]}) for one serial, in order.
+std::vector<std::string> TreeFilesForSerial(const std::string& json, const std::string& serial);
 
 class OnlinePatches
 {
@@ -117,8 +136,13 @@ public:
 	static uint32_t DiscCrc(const std::string& image, std::string& error);
 	// Fetch with a CRC already known (the test's games have no executable).
 	OnlinePatchStatus FetchWithCrc(const std::string& serial, uint32_t crc);
+	// 2.16: FetchWithCrc, then, when it found nothing, the fallback by the serials in the executable (see above).
+	OnlinePatchStatus FetchWithExecutable(const std::string& serial, uint32_t crc, const std::vector<uint8_t>& elf);
 
 private:
+	OnlinePatchStatus FetchBySerial(const std::string& disc_serial, uint32_t crc, const std::vector<std::string>& serials);
+	// One source's file list, asked once a run (the same lists serve every game asked after it).
+	const std::string* SourceTree(const OnlinePatchSource& src, int& status);
 	void Run();
 	void SetStatus(const std::string& serial, OnlinePatchStatus::State state, const std::string& message);
 	void Log(const std::string& line) const;
@@ -134,5 +158,6 @@ private:
 	bool m_stop = false, m_running = false;
 	std::deque<GameInfo> m_queue;
 	std::map<std::string, OnlinePatchStatus> m_status; // by serial
+	std::map<std::string, std::string> m_trees;        // 2.16: a source's tree API answer, by source name (worker thread only)
 };
 } // namespace fe
