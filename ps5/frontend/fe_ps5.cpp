@@ -2147,8 +2147,10 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		OnlinePatchPlatform op;
 		op.get_text = [](const std::string& url, std::string& body) {
 			body.clear();
-			return g_patchhttp.Get(url, false, 0, 0, [&body](const void* d, size_t n) {
-				if (body.size() + n > (2u << 20))
+			// 2.16: a source's file list (GitHub's tree API, 1.4 MB for PCSX2's in October 2026, and growing) may be bigger than a pnach
+			const size_t cap = url.rfind("https://api.github.com/", 0) == 0 ? (8u << 20) : (2u << 20);
+			return g_patchhttp.Get(url, false, 0, 0, [&body, cap](const void* d, size_t n) {
+				if (body.size() + n > cap)
 					return false;
 				body.append(static_cast<const char*>(d), n);
 				return true;
