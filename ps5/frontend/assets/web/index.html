@@ -419,6 +419,11 @@ const GROUPS = [
     { key: "DEV9/Eth/EthEnable", label: "Network adapter", type: "toggle", def: "true", restart: true, later: "the network adapter",
       short: "Network %",
       hint: "The PS2's network adapter, on the PS5's own connection, for online and LAN play (on revival servers such as PS Rewired; their DNS goes in the game's network settings). It costs nothing until a game uses it. Turn it off for a game that misbehaves with it. Takes effect when the game starts." },
+    // PS5SX2: the PS2's internal HDD (DEV9/Hdd), a raw image file. Created at 40 GiB when missing (pcsx2/DEV9/DEV9.cpp).
+    { key: "DEV9/Hdd/HddEnable", label: "Internal HDD (raw image)", type: "toggle", def: "false", restart: true, later: "the HDD", short: "HDD %",
+      hint: "The PS2's HDD as a raw image file, for games that use it. An existing .raw image is used as it is; a missing one is created at 40 GiB the first time (it can take a moment). Takes effect when the game starts." },
+    { key: "DEV9/Hdd/HddFile", label: "HDD image file", type: "text", def: "", restart: true, later: "the HDD image", placeholder: "/data/PCSX2/DEV9hdd.raw",
+      hint: "Optional: the full path of the image, e.g. on a USB or extended-storage drive. Empty = DEV9hdd.raw in /data/PCSX2. Use a different file per game if a game needs its own HDD." },
     // 2026-10-08 (AI-assisted; testers: "Enable Host Filesystem"): PCSX2's host: device (EmuCore/HostFs), read when the game starts.
     { key: "EmuCore/HostFs", label: "Host filesystem", type: "toggle", def: "false", restart: true, later: "the host filesystem", short: "Host files %",
       hint: "Lets homebrew read and write files in its own folder (host:), as PCSX2's Enable Host Filesystem: the ELF's folder, or the disc image's. Only for homebrew that asks for it." },
