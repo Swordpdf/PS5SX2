@@ -1,9 +1,9 @@
 // PS5 port frontend: the shelf's and the notifications' text in the PS5's language (vk-285-110).
 //
 // The PS5's system language (sceSystemServiceParamGetInt parameter 1) picks a table: English, French,
-// Spanish (Spain and Latin America), German, Italian, Dutch and Portuguese (Portugal and Brazil). Other
-// languages get English: the shelf's font has the accented Latin letters (Latin-1) but no Cyrillic, Greek
-// or CJK. A file <lang_dir>/<code>.txt, when present, replaces entries ("hint.play = Jugar"), so a wrong
+// Spanish (Spain and Latin America), German, Italian, Dutch, Portuguese (Portugal and Brazil) and Ukrainian.
+// Other languages get English: the shelf's font has the accented Latin letters (Latin-1) and Cyrillic but
+// no Greek or CJK. A file <lang_dir>/<code>.txt, when present, replaces entries ("hint.play = Jugar"), so a wrong
 // word can be fixed without a new build.
 //
 // Copyright (C) 2026 swordpdf
@@ -132,7 +132,7 @@ void SetLanguage(int ps5_language, const std::string& lang_dir);
 // The text in the current language (English where the table or the file has nothing).
 const char* Tr(Str id);
 
-// "en", "fr", "es", "es-419", "de", "it", "nl", "pt" or "pt-BR".
+// "en", "fr", "es", "es-419", "de", "it", "nl", "pt", "pt-BR" or "uk".
 const char* LanguageCode();
 
 // The override file's key of an entry ("hint.play"), for messages and tests.
