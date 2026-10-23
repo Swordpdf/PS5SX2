@@ -23,6 +23,8 @@
 
 #include "Config.h"
 #include "GameDatabase.h" // vk-285-115: the GameDB's MTVU for the live apply
+#include "USB/USB.h"               // (AI-assisted) the Buzz! buzzers (OrbisBuzzPump)
+#include "USB/usb-pad/usb-buzz.h"
 #include "VMManager.h"
 #include "R5900.h"
 #include "R3000A.h"
@@ -67,6 +69,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/OrbisTextureRoots.h" // vk-285-113: a game's texture pack on a USB drive
 #include "orbis-shims/ProsperoKbdMouse.h" // vk-285-72, vk-285-113: the PS5's USB keyboard and mouse
 #include "orbis-shims/OrbisPadMap.h"     // vk-285-116: the controller remapping
+#include "orbis-shims/OrbisBuzzMap.h"    // (AI-assisted) the Buzz! buzzers' buttons
 #include "orbis-shims/ProsperoUsbPad.h"  // vk-285-140: USB guitars and pads the PS5 doesn't take as controllers
 #include "orbis-shims/ProsperoDiscDump.h" // vk-285-144: PS2 discs in the drive
 #include "orbis-shims/OrbisDiscDrive.h"   // PR #34: PS2 discs played straight from a drive (flag bootdisc)
@@ -460,6 +463,15 @@ std::atomic<int> g_orbis_fast_speed{0};
 static std::mutex g_orbis_padmap_mutex;
 static orbis_padmap::Config g_orbis_padmap;
 static std::atomic<unsigned> g_orbis_padmap_version{0};
+// (AI-assisted) the Buzz! buzzers (orbis-shims/OrbisBuzzMap.h: PS5SX2/Buzz, BuzzRed..BuzzYellow). g_orbis_buzz: PCSX2's Buzz
+// device is on a PS2 USB port for this game (set at boot); the controllers then press its buttons instead of a DualShock 2's.
+// The map is set by orbis_ps5opts_from like the remapping; the pad thread writes what each player holds into
+// g_orbis_buzz_held (5 bits a player, players 1 to 4) and OrbisBuzzPump hands it to the device on the CPU thread.
+static std::atomic<bool> g_orbis_buzz{false};
+static std::mutex g_orbis_buzzmap_mutex;
+static orbis_buzzmap::Config g_orbis_buzzmap;
+static std::atomic<unsigned> g_orbis_buzzmap_version{0};
+static std::atomic<uint32_t> g_orbis_buzz_held{0};
 extern "C" void orbis_pad_vibration(unsigned pad_index, float large, float small)
 {
   if (pad_index > 7)
@@ -833,6 +845,28 @@ static void orbis_pad_apply_guitar(OrbisPadPort &p, const OrbisPadData &d, const
   }
 }
 
+// (AI-assisted) a controller as buzzer `player` (0..3): the buttons the Buzz! map picks, into that player's 5 bits of
+// g_orbis_buzz_held. The pad thread's own copy of the map, as orbis_padmap_current.
+static void orbis_buzz_apply(int player, const OrbisPadData &d)
+{
+  static orbis_buzzmap::Config s_cfg;
+  static unsigned s_version = 0;
+  const unsigned version = g_orbis_buzzmap_version.load(std::memory_order_acquire);
+  if (version != s_version)
+  {
+    std::lock_guard<std::mutex> lock(g_orbis_buzzmap_mutex);
+    s_cfg = g_orbis_buzzmap;
+    s_version = version;
+  }
+  const uint32_t held = orbis_buzzmap::Apply(s_cfg, d.buttons, d.l2, d.r2);
+  const unsigned shift = static_cast<unsigned>(player) * orbis_buzzmap::COUNT;
+  const uint32_t mask = 0x1Fu << shift;
+  uint32_t cur = g_orbis_buzz_held.load(std::memory_order_relaxed);
+  while (!g_orbis_buzz_held.compare_exchange_weak(cur, (cur & ~mask) | (held << shift), std::memory_order_relaxed))
+  {
+  }
+}
+
 // vk-285-113: one controller's rumble: what the game last asked for (or nothing: Rumble off, or leaving for the menu),
 // sent when it changes. The first few changes and any failure are logged (a DualSense in PS4 mode takes the same
 // two-motor call).
@@ -1118,7 +1152,9 @@ static void *orbis_pad_thread(void *)
         if (s_click_consumed)
           d.buttons &= ~0x00100000u;
       }
-      if (g_orbis_port1_guitar.load(std::memory_order_relaxed))
+      if (g_orbis_buzz.load(std::memory_order_relaxed))
+        orbis_buzz_apply(0, d); // (AI-assisted) buzzer 1 only: PS2 port 1's DualShock 2 stays untouched
+      else if (g_orbis_port1_guitar.load(std::memory_order_relaxed))
         orbis_pad_apply_guitar(port1, d, have_usb ? &usb_now : nullptr); // vk-285-140
       else
         orbis_pad_apply(port1, d);
@@ -1126,7 +1162,8 @@ static void *orbis_pad_thread(void *)
     {
       static OrbisRumbleOut s_rumble1, s_rumble_extra[3];
       orbis_rumble_send(0, handle, s_rumble1);
-      for (int i = 0; i < g_orbis_extra_count; i++)
+      // (AI-assisted) with the buzzers on, players 2..4 have no PS2 pad behind them: nothing to rumble.
+      for (int i = 0; i < g_orbis_extra_count && !g_orbis_buzz.load(std::memory_order_relaxed); i++)
         orbis_rumble_send(static_cast<int>(extra[i].port), extra[i].handle, s_rumble_extra[i]);
     }
     if (++reads == 250u || (rc != 0 && reads % 1000u == 0u))
@@ -1140,15 +1177,25 @@ static void *orbis_pad_thread(void *)
       memset(&d2, 0, sizeof(d2));
       const int rc2 = p_read(px.handle, &d2);
       const bool on = rc2 == 0 && orbis_pad_connected(d2);
+      // (AI-assisted) with the buzzers on, player i + 2 is buzzer i + 2 and no PS2 pad.
+      const bool buzz = g_orbis_buzz.load(std::memory_order_relaxed);
       if (on)
-        orbis_pad_apply(px, d2);
+      {
+        if (buzz)
+          orbis_buzz_apply(i + 1, d2);
+        else
+          orbis_pad_apply(px, d2);
+      }
       else
       {
         // Released buttons, centred sticks: nothing held on this port while its controller is off.
         OrbisPadData idle;
         memset(&idle, 0, sizeof(idle));
         idle.lx = idle.ly = idle.rx = idle.ry = 128;
-        orbis_pad_apply(px, idle);
+        if (buzz)
+          orbis_buzz_apply(i + 1, idle);
+        else
+          orbis_pad_apply(px, idle);
       }
       static int s_on[3] = {-1, -1, -1};
       if (s_on[i] != (on ? 1 : 0))
@@ -1165,6 +1212,30 @@ static void *orbis_pad_thread(void *)
   return nullptr;
 }
 } // namespace
+
+// (AI-assisted) at each vsync on the CPU thread (StubHost.cpp, after OrbisKbdMousePump): the buzzer buttons that changed
+// since the last call, to PCSX2's Buzz device on whichever PS2 USB port holds it. Needs proper testing on a console with
+// the Buzz! games.
+void OrbisBuzzPump()
+{
+  if (!g_orbis_buzz.load(std::memory_order_relaxed))
+    return;
+  static const s32 buzz_type = USB::DeviceTypeNameToIndex("BuzzDevice");
+  static uint32_t s_sent = 0;
+  const uint32_t held = g_orbis_buzz_held.load(std::memory_order_relaxed);
+  const uint32_t changed = held ^ s_sent;
+  if (changed == 0)
+    return;
+  for (u32 port = 0; port < USB::NUM_PORTS; port++)
+  {
+    if (EmuConfig.USB.Ports[port].DeviceType != buzz_type)
+      continue;
+    for (u32 i = 0; i < usb_pad::CID_BUZZ_COUNT; i++)
+      if (changed & (1u << i))
+        USB::SetDeviceBindValue(port, usb_pad::CID_BUZZ_PLAYER1_RED + i, (held & (1u << i)) ? 1.0f : 0.0f);
+  }
+  s_sent = held;
+}
 
 extern "C" volatile unsigned long long orbis_fault_count;
 volatile unsigned long long orbis_fault_count = 0;
@@ -1576,6 +1647,27 @@ static void orbis_ps5opts_from(const SettingsInterface& si)
       g_orbis_padmap_version.fetch_add(1, std::memory_order_release);
       printf("[boot] controls: %s (PS5SX2/Button*, SwapSticks, InvertLeft, InvertRight, LeftStickDpad, DeadzoneLeft, DeadzoneRight, SaveButton*, LoadButton*, StateHold)\n",
         orbis_padmap::Describe(map).c_str());
+      fflush(stdout);
+    }
+  }
+  // (AI-assisted) the Buzz! buzzers' buttons (the Controls tab's Buzz! buzzers group), live like the remapping.
+  {
+    const orbis_buzzmap::Config map = orbis_buzzmap::FromSettings([&](const char* key, std::string& value) {
+      return si.GetStringValue("PS5SX2", key, &value);
+    });
+    bool changed = false;
+    {
+      std::lock_guard<std::mutex> lock(g_orbis_buzzmap_mutex);
+      if (map != g_orbis_buzzmap)
+      {
+        g_orbis_buzzmap = map;
+        changed = true;
+      }
+    }
+    if (changed)
+    {
+      g_orbis_buzzmap_version.fetch_add(1, std::memory_order_release);
+      printf("[boot] buzzers: %s (PS5SX2/BuzzRed..BuzzYellow)\n", orbis_buzzmap::Describe(map).c_str());
       fflush(stdout);
     }
   }
@@ -4361,6 +4453,7 @@ int main()
   // vk-285-140 (AI-assisted): USB guitars and pads the PS5 doesn't take as controllers (orbis-shims/ProsperoUsbPad.cpp). Started
   // here so that a guitar plugged in before the game can make PS2 port 1 a Guitar below (up to a second's wait for it).
   bool guitar_game = false;
+  bool buzz_game = false; // (AI-assisted) a Buzz! game: the game database's titles all start "Buzz!"
   {
     // vk-285-142: in a Guitar Hero / Rock Band game a USB device known only by its reports' shape is taken as a guitar.
     fe::GameInfo gi;
@@ -4374,8 +4467,30 @@ int main()
       ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
     guitar_game = low.find("guitar hero") != std::string::npos || low.find("rock band") != std::string::npos ||
                   low.find("band hero") != std::string::npos;
+    buzz_game = low.find("buzz!") != std::string::npos;
     OrbisUsbPadSetGuitarHint(guitar_game);
     printf("[boot] USB pads: %s (\"%s\")\n", guitar_game ? "a Guitar Hero or Rock Band game" : "not a guitar game", gi.title.c_str());
+  }
+  // (AI-assisted) the Buzz! buzzers: PS5SX2/Buzz, the game's file or gs.ini: auto (the default: on for a Buzz! game), 0 off,
+  // 1 on. PCSX2's Buzz device (4 buzzers on one USB device) goes on the PS2's USB port 1, the keyboard's; a game's own
+  // USB1/Type still wins. Player 1's controller is buzzer 1 and the other logged-in users' controllers buzzers 2 to 4 (the
+  // users block below); they press only the buzzers then. Takes a restart of the game. Needs proper testing on a console.
+  {
+    MemorySettingsInterface peek = s_base_si;
+    orbis_apply_gs_ini(peek, true);
+    const std::string mode = peek.GetStringValue("PS5SX2", "Buzz", "auto");
+    const bool want = mode == "1" || mode == "true" || (mode != "0" && mode != "false" && buzz_game);
+    if (want)
+      s_base_si.SetStringValue("USB1", "Type", "BuzzDevice");
+    MemorySettingsInterface after = s_base_si;
+    orbis_apply_gs_ini(after, true);
+    const bool on = after.GetStringValue("USB1", "Type", "") == "BuzzDevice" || after.GetStringValue("USB2", "Type", "") == "BuzzDevice";
+    g_orbis_buzz.store(on, std::memory_order_relaxed);
+    printf("[boot] Buzz! buzzers: %s (PS5SX2/Buzz %s%s)\n",
+      on ? (want ? "on USB port 1, in place of the USB keyboard" : "on, from the game's own USB1/USB2 Type") :
+           (want ? "off: the game's own file sets USB1/Type" : "off"),
+      mode.c_str(), buzz_game ? ", a Buzz! game" : "");
+    fflush(stdout);
   }
   OrbisUsbPadStart();
   const bool usb_guitar_at_start = OrbisUsbPadWaitGuitar(1000);
@@ -4399,17 +4514,25 @@ int main()
       if (mt == 0 && peek.GetBoolValue("Pad", "MultitapPort2", false))
         mt = 2;
       g_orbis_multitap = mt;
+      // (AI-assisted) the buzzers take the other users' controllers: no multitap, no PS2 pads for them.
+      if (g_orbis_buzz.load(std::memory_order_relaxed))
+        g_orbis_multitap = 0;
     }
     int32_t others[3] = {-1, -1, -1};
     const int n_others = orbis_find_other_users(first, others);
     static const u32 slots[3][3] = {{1, 0, 0}, {2, 3, 4}, {1, 5, 6}};
-    g_orbis_extra_count = g_orbis_multitap == 0 ? std::min(n_others, 1) : n_others;
+    const bool buzz = g_orbis_buzz.load(std::memory_order_relaxed);
+    g_orbis_extra_count = (g_orbis_multitap == 0 && !buzz) ? std::min(n_others, 1) : n_others;
     for (int i = 0; i < 3; i++)
     {
       g_orbis_extra_user[i] = i < g_orbis_extra_count ? others[i] : -1;
       g_orbis_extra_index[i] = slots[g_orbis_multitap][i];
     }
-    if (g_orbis_multitap != 0)
+    if (buzz)
+    {
+      // buzzers 2..4: nothing to plug into the PS2's controller ports
+    }
+    else if (g_orbis_multitap != 0)
     {
       s_base_si.SetBoolValue("Pad", g_orbis_multitap == 1 ? "MultitapPort1" : "MultitapPort2", true);
       // the multitap's other slots answer as DualShock 2s with no controller behind them yet, so games count 4 ports
@@ -4420,8 +4543,8 @@ int main()
       s_base_si.SetStringValue("Pad2", "Type", "DualShock2");
     std::string who;
     for (int i = 0; i < g_orbis_extra_count; i++)
-      who += " player " + std::to_string(i + 2) + "=user " + std::to_string(g_orbis_extra_user[i]) + " on pad " +
-             std::to_string(g_orbis_extra_index[i] + 1);
+      who += " player " + std::to_string(i + 2) + "=user " + std::to_string(g_orbis_extra_user[i]) +
+             (buzz ? " on buzzer " + std::to_string(i + 2) : " on pad " + std::to_string(g_orbis_extra_index[i] + 1));
     printf("[boot] users: first %d, %d more; multitap %s (PS5SX2/Multitap);%s\n", first, n_others,
       g_orbis_multitap == 0 ? "off" : g_orbis_multitap == 1 ? "in port 1" : "in port 2",
       who.empty() ? " PS2 port 2 stays empty" : who.c_str());

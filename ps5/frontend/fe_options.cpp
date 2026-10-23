@@ -161,6 +161,50 @@ std::vector<OptionDef> ButtonRows()
 	return out;
 }
 
+// (AI-assisted) the Buzz! buzzers group (orbis-shims/OrbisBuzzMap.h), as the page's BUZZ_BUTTONS and its Buzz! buzzers group.
+std::vector<OptionChoice> BuzzButtonChoices()
+{
+	return {{"Cross", Sym(icon::Cross, "Cross")}, {"Circle", Sym(icon::Circle, "Circle")}, {"Square", Sym(icon::Square, "Square")},
+		{"Triangle", Sym(icon::Triangle, "Triangle")}, {"L1", "L1"}, {"R1", "R1"}, {"L2", "L2"}, {"R2", "R2"}, {"L3", "L3"}, {"R3", "R3"},
+		{"Options", "Options"}, {"Touchpad", "Touchpad click"}, {"Up", Sym(icon::DpadUp, "D-pad up")}, {"Down", Sym(icon::DpadDown, "D-pad down")},
+		{"Left", Sym(icon::DpadLeft, "D-pad left")}, {"Right", Sym(icon::DpadRight, "D-pad right")}, {"None", "Nothing"}};
+}
+
+std::vector<OptionDef> BuzzGroup()
+{
+	std::vector<OptionDef> out = {
+		Seg("PS5SX2/Buzz", "Buzz! buzzers", "auto", "", {{"auto", "Auto"}, {"0", "Off"}, {"1", "On"}},
+			"Four Buzz! buzzers on the PS2's USB port, for the Buzz! quiz games. Your controller is buzzer 1; the other PS5 users "
+			"logged in when the game starts are buzzers 2 to 4, each on their own controller. While it's on, the controllers press "
+			"only the buzzers. Auto turns it on for Buzz! games. It takes the USB keyboard's port. Takes effect when the game starts.",
+			true),
+	};
+	static const struct
+	{
+		const char* key;
+		const char* name;
+		const char* def;
+	} rows[] = {
+		{"PS5SX2/BuzzRed", "Red (the buzzer)", "R2"},
+		{"PS5SX2/BuzzBlue", "Blue", "Triangle"},
+		{"PS5SX2/BuzzOrange", "Orange", "Circle"},
+		{"PS5SX2/BuzzGreen", "Green", "Cross"},
+		{"PS5SX2/BuzzYellow", "Yellow", "Square"},
+	};
+	for (const auto& r : rows)
+	{
+		OptionDef d;
+		d.key = r.key;
+		d.label = r.name;
+		d.def = r.def;
+		d.choices = BuzzButtonChoices();
+		d.hint = std::string("The controller button that presses a buzzer's ") + r.name +
+		         " button, on every player's controller. Several can share a button; Nothing turns it off.";
+		out.push_back(std::move(d));
+	}
+	return out;
+}
+
 // vk-285-118: how hard each button presses (OrbisPadMap.h Config::pressure, PS5SX2/Button<Name>Pressure), as the page's
 // STRENGTHS and its Button strength group.
 std::vector<OptionChoice> StrengthChoices()
@@ -510,6 +554,7 @@ const std::vector<OptionGroup>& OptionGroups()
 					"The controller's microphone as a PS2 USB microphone, for games that need one (Lifeline - Voice Action Adventure). Auto turns it on for those games; Headset suits a game that asks for a USB headset. Takes effect when the game starts.", true),
 			},
 			kTabControls},
+		{"Buzz! buzzers", BuzzGroup(), kTabControls}, // (AI-assisted)
 		{"Keyboard and mouse",
 			{
 				Seg("PS5SX2/KeyboardMouse", "Keyboard and mouse", "0", "Keyboard and mouse %",

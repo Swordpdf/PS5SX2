@@ -300,6 +300,13 @@ const BUTTON_TARGETS = [["Cross","Cross"],["Circle","Circle"],["Square","Square"
   ["L2","L2"],["R2","R2"],["L3","L3"],["R3","R3"],["Start","Start"],["Select","Select"],["Up","D-pad up"],["Down","D-pad down"],
   ["Left","D-pad left"],["Right","D-pad right"],["Analog","Analog button"],["Pressure","Light press"],["None","Nothing"]];
 const button = (name, label, def) => ({ key: "PS5SX2/Button" + name, label, type: "pick", def, options: BUTTON_TARGETS });
+// (AI-assisted) the controller button that presses a Buzz! buzzer's button (ps5/coreorbis/orbis-shims/OrbisBuzzMap.h's names),
+// as the sheet's BuzzButtonChoices(). Applied while the game runs.
+const BUZZ_BUTTONS = [["Cross","Cross"],["Circle","Circle"],["Square","Square"],["Triangle","Triangle"],["L1","L1"],["R1","R1"],
+  ["L2","L2"],["R2","R2"],["L3","L3"],["R3","R3"],["Options","Options"],["Touchpad","Touchpad click"],["Up","D-pad up"],
+  ["Down","D-pad down"],["Left","D-pad left"],["Right","D-pad right"],["None","Nothing"]];
+const buzz = (name, label, def) => ({ key: "PS5SX2/Buzz" + name, label, type: "pick", def, options: BUZZ_BUTTONS,
+  hint: "The controller button that presses a buzzer's " + label + " button, on every player's controller. Several can share a button; Nothing turns it off." });
 // vk-285-118: how hard each button presses (OrbisPadMap.h Config::pressure), as the sheet's StrengthChoices().
 // vk-285-118: the sticks' dead zones (OrbisPadMap.h Config::deadzone_left/right), as the sheet's DeadzoneChoices().
 const DEADZONES = [["0","Off"],["5","5%"],["10","10%"],["15","15%"],["20","20%"],["25","25%"],["30","30%"]];
@@ -541,6 +548,17 @@ const GROUPS = [
     { key: "PS5SX2/Microphone", label: "Microphone", type: "seg", def: "auto", cols: 4, restart: true,
       options: [["auto","Auto"],["0","Off"],["1","Mic"],["2","Headset"]],
       hint: "The controller's microphone as a PS2 USB microphone, for games that need one (Lifeline - Voice Action Adventure). Auto turns it on for those games; Headset suits a game that asks for a USB headset. Takes effect when the game starts." },
+  ]},
+  // (AI-assisted) the Buzz! buzzers (main-boot.cpp, orbis-shims/OrbisBuzzMap.h), as the sheet's BuzzGroup().
+  { title: "Buzz! buzzers", tab: "controls", items: [
+    { key: "PS5SX2/Buzz", label: "Buzz! buzzers", type: "seg", def: "auto", cols: 3, restart: true,
+      options: [["auto","Auto"],["0","Off"],["1","On"]],
+      hint: "Four Buzz! buzzers on the PS2's USB port, for the Buzz! quiz games. Your controller is buzzer 1; the other PS5 users logged in when the game starts are buzzers 2 to 4, each on their own controller. While it's on, the controllers press only the buzzers. Auto turns it on for Buzz! games. It takes the USB keyboard's port. Takes effect when the game starts." },
+    buzz("Red", "Red", "R2"),
+    buzz("Blue", "Blue", "Triangle"),
+    buzz("Orange", "Orange", "Circle"),
+    buzz("Green", "Green", "Cross"),
+    buzz("Yellow", "Yellow", "Square"),
   ]},
   // vk-285-113: a USB keyboard and mouse plugged into the PS5 (orbis-shims/ProsperoKbdMouse.cpp, main-boot.cpp).
   { title: "Keyboard and mouse", tab: "controls", items: [
