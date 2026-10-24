@@ -2921,6 +2921,40 @@ static const char* const kOrbisReleaseFlags[] = {"fastmem", "jitdirect", "sw_ren
                                                  "vk_latewait", "vk_nocrumbs", "vk_noevict", "vk_renderer",
                                                  "vk_triple", "vk_widemem"};
 
+// 2026-10-24 (AI-assisted): the cards a console without memcards/ kept in the top folder (OrbisDir("memcards") answered it),
+// moved into the new memcards/ so its saves aren't left behind: files ending .ps2, .mcr, .mcd or .mc2 and folder cards
+// (_pcsx2_superblock); not .bin (BIOS dumps end so too). Tested on a PS5 on firmware 13.40.
+static void orbis_move_top_cards(const std::string& top, const std::string& memcards)
+{
+  DIR* d = opendir(top.c_str());
+  if (!d)
+    return;
+  std::vector<std::string> names;
+  while (const dirent* e = readdir(d))
+    if (e->d_name[0] != '.')
+      names.push_back(e->d_name);
+  closedir(d);
+  for (const std::string& name : names)
+  {
+    const std::string from = top + "/" + name, to = memcards + "/" + name;
+    struct stat st{};
+    if (stat(from.c_str(), &st) != 0)
+      continue;
+    bool card = false;
+    if (S_ISREG(st.st_mode))
+    {
+      for (const char* ext : {".ps2", ".mcr", ".mcd", ".mc2"})
+        card = card || (name.size() > 4 && name.compare(name.size() - 4, 4, ext) == 0);
+    }
+    else if (S_ISDIR(st.st_mode))
+      card = stat((from + "/_pcsx2_superblock").c_str(), &st) == 0;
+    if (!card)
+      continue;
+    const int rc = rename(from.c_str(), to.c_str());
+    printf("[boot] data layout: moved the card %s into memcards/ (rc=%d errno=%d)\n", name.c_str(), rc, rc ? errno : 0);
+  }
+}
+
 static void orbis_ensure_data_layout()
 {
   static const char kRoot[] = "/data/PCSX2";
@@ -2949,6 +2983,29 @@ static void orbis_ensure_data_layout()
     printf("[boot] data layout: created %s (rc=%d errno=%d)\n", settings.c_str(), rc, rc ? errno : 0);
     if (rc == 0)
       orbis_eventf("created /data/PCSX2/settings/ for the games' own settings");
+  }
+  // 2026-10-24 (AI-assisted): memcards/ and the folder card memcards/MemoryCard/ (PCSX2 keeps each game's saves in a folder of
+  // their own in it) are made when missing, so both are offered in a slot (fe_settings.cpp, ListCards). PCSX2 takes any folder
+  // in memcards/ for a folder card and formats it the first time a game saves. MemoryCard/ gets the empty _pcsx2_superblock
+  // PCSX2's FileMcd_CreateNewCard writes: save sync tools (argosy-sigil) tell a folder card by the files in it.
+  const std::string memcards = std::string(kRoot) + "/memcards";
+  if (stat(memcards.c_str(), &st) != 0)
+  {
+    const int rc = mkdir(memcards.c_str(), 0777);
+    printf("[boot] data layout: created %s (rc=%d errno=%d)\n", memcards.c_str(), rc, rc ? errno : 0);
+    if (rc == 0)
+      orbis_move_top_cards(kRoot, memcards);
+  }
+  const std::string folder_card = memcards + "/MemoryCard";
+  if (stat(memcards.c_str(), &st) == 0 && S_ISDIR(st.st_mode) && stat(folder_card.c_str(), &st) != 0)
+  {
+    int rc = mkdir(folder_card.c_str(), 0777);
+    if (rc == 0)
+    {
+      const int fd = open((folder_card + "/_pcsx2_superblock").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+      rc = fd >= 0 ? close(fd) : -1;
+    }
+    printf("[boot] data layout: created %s with its _pcsx2_superblock (rc=%d errno=%d)\n", folder_card.c_str(), rc, rc ? errno : 0);
   }
   const std::string flags = std::string(kRoot) + "/flags";
   const bool have_dir = stat(flags.c_str(), &st) == 0 && S_ISDIR(st.st_mode);

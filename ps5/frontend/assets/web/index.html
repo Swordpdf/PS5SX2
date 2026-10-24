@@ -1047,6 +1047,7 @@ function render() {
 
 // ---- vk-285-113: memory cards
 function cardSize(bytes) {
+  if (bytes === 0) return "folder"; // a folder card (ListCards)
   if (bytes === 131072) return "PS1";
   for (const mb of [8, 16, 32, 64]) if (bytes === mb * 1081344 || bytes === mb * 1048576) return mb + " MB";
   return (bytes / 1048576).toFixed(1) + " MB";

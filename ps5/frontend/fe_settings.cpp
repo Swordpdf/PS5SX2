@@ -209,10 +209,18 @@ std::vector<CardFile> ListCards(const std::string& dir)
 	{
 		const std::string name = e->d_name;
 		// Names the settings file can hold (no '#', no line breaks) and the page can show.
-		if (name.empty() || name[0] == '.' || !HasCardExtension(name) || !SafeValue(name))
+		if (name.empty() || name[0] == '.' || !SafeValue(name))
 			continue;
 		struct stat st = {};
-		if (stat((dir + "/" + name).c_str(), &st) != 0 || !S_ISREG(st.st_mode) || static_cast<uint64_t>(st.st_size) < kPs1CardBytes)
+		if (stat((dir + "/" + name).c_str(), &st) != 0)
+			continue;
+		// 2026-10-24 (AI-assisted): a folder is a folder card (bytes 0), as the core's FileMcd_SetType takes any folder there.
+		if (S_ISDIR(st.st_mode))
+		{
+			out.push_back({name, 0});
+			continue;
+		}
+		if (!HasCardExtension(name) || !S_ISREG(st.st_mode) || static_cast<uint64_t>(st.st_size) < kPs1CardBytes)
 			continue;
 		out.push_back({name, static_cast<uint64_t>(st.st_size)});
 	}
