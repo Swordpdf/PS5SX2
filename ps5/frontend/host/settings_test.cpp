@@ -4,6 +4,7 @@
 //   settings_test <folder> web    the page's API over HTTP (127.0.0.1): responses and the files it leaves
 //   settings_test <folder> sheet  the same changes through fe::settings, as the sheet makes them (this tree only)
 //   settings_test <folder> nosettings  vk-285-121: both save into a missing settings/ folder (this tree only)
+//   settings_test <folder> cards  2026-10-24: a folder in memcards/ is listed as a folder card (this tree only)
 // The files must match line for line apart from comment lines (each side names itself in the file's first line).
 //
 // Copyright (C) 2026 swordpdf
@@ -302,6 +303,24 @@ int RunNoSettings(const std::string& data, const std::string& presets)
 		std::printf("%s\n", answer.c_str());
 	return sheet && sheet_file && page_file ? 0 : 1;
 }
+
+// 2026-10-24 (AI-assisted): memcards/MemoryCard/, a folder card, is offered beside the card files (bytes 0); hidden folders are not.
+int RunCards(const std::string& data)
+{
+	using namespace settings;
+	MakeDir(data + "/memcards/MemoryCard");
+	MakeDir(data + "/memcards/.hidden");
+	bool folder = false, file = false, hidden = false;
+	for (const CardFile& c : ListCards(data + "/memcards"))
+	{
+		folder |= c.name == "MemoryCard" && c.bytes == 0;
+		file |= c.name == "Mcd001.ps2" && c.bytes > 0;
+		hidden |= c.name == ".hidden";
+	}
+	const bool ok = folder && file && !hidden;
+	std::printf("%s: the folder card and the card file are listed (folder %d, file %d, hidden %d)\n", ok ? "PASS" : "FAIL", folder, file, hidden);
+	return ok ? 0 : 1;
+}
 #endif
 } // namespace
 
@@ -324,6 +343,8 @@ int main(int argc, char** argv)
 		return RunSheet(data, presets);
 	if (mode == "nosettings")
 		return RunNoSettings(data, presets);
+	if (mode == "cards")
+		return RunCards(data);
 #endif
 	std::fprintf(stderr, "mode %s is not in this build\n", mode.c_str());
 	return 2;

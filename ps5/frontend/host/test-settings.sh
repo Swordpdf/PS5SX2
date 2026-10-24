@@ -65,6 +65,12 @@ if "$work/settings_test_new" "$work/new" nosettings "$presets" > "$work/nosettin
 else
   echo "FAIL: a save into a missing settings/ (see $work/nosettings.txt)"; fail=1
 fi
+# 2026-10-24: a folder in memcards/ is offered as a folder card.
+if "$work/settings_test_new" "$work/new" cards "$presets" > "$work/cards.txt" 2> "$work/cards.log"; then
+  echo "PASS: memcards/ folders are listed as folder cards"
+else
+  echo "FAIL: the folder card listing (see $work/cards.txt)"; fail=1
+fi
 # vk-285-116: the sheet's options against the page's GROUPS (order, tabs, keys, labels, defaults, values).
 "$CXX" -std=c++20 "${flags[@]}" "$here/options_dump.cpp" "$fe/fe_options.cpp" "$fe/fe_settings.cpp" "${common[@]}" \
   -o "$work/options_dump" -lz -lpthread

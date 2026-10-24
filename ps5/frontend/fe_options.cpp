@@ -288,6 +288,8 @@ const char* kSlotDefault[3] = {"", "Mcd001.ps2", "Mcd002.ps2"};
 
 std::string CardSize(uint64_t bytes)
 {
+	if (bytes == 0) // a folder card (ListCards)
+		return "folder";
 	if (bytes == kPs1CardBytes)
 		return "PS1";
 	for (uint64_t mb : {8, 16, 32, 64})
@@ -918,7 +920,7 @@ std::string OptionsSheet::Help(const Row& r) const
 				}
 			return "Which memory card is in slot " + std::to_string(r.slot) + "." + size + " " +
 			       (Source(r) == From::Own ? std::string("Set for ") + (m_global ? "all games." : "this game.") : "Follows " + follows + ".") +
-			       " Cards are the files in memcards/.";
+			       " Cards are the files and folders in memcards/; a folder card keeps each game's saves apart.";
 		}
 		case Kind::NewCard:
 			return "A blank card, named Card 1, Card 2 and so on. The game, or the PS2 browser, formats it the first time. Most games are "
