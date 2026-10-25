@@ -72,6 +72,15 @@
  * live-2: USB DVD drives through their pass device (the CD device doesn't attach on the 4.03 phat), dumped by
  *   the daemon itself; see usb_dump.
  * live-1: builds are now named live-N (swordpdf, 2026-10-09); live-1 = vk-285-160k daemon + 160l eboot.
+ * 171h (disc speed, 2026-10-25; what the PS5SX3 helper learned, see disc_fastread.h): the copies made here read the disc in sector order with
+ *   bigger reads and ask the drive nothing while they read: a disc in a USB drive that has a /dev/cdN of its own is read from that node in
+ *   1 MiB preads (READ(10)/(12) of 64 KiB through the pass device as before when it has none, or when a read fails); a PS2 CD takes 27 raw
+ *   sectors per READ CD (63,504 bytes, under the 64 KiB the PS5 drive's pass device takes) instead of 16, falling back to 16 by itself when the
+ *   drive refuses 27. The PS5 drive's pass node is closed after each look (it was opened once and kept). /dev/cd0 is looked at every 3 s, not
+ *   every second, while PS5SX2 copies the disc, and the tile thread (disctile.c) leaves a drive alone while this watcher reads it itself
+ *   (disc_auto_drive_busy). disc-auto-alive.txt is stamped every 2 s during a copy too (it was every 5% of it: up to ~50 s apart on a USB DVD,
+ *   long enough for the PS5SX3 helper to think this one was gone). Flag /data/PCSX2/flags/disc_oldreads: the old read sizes, to compare.
+ *   The copy's last log line gives its reads (how many, the largest, how much of the time the drive was reading).
  * Needs proper testing on a console with a disc drive.
  *
  * Copyright (C) 2026 swordpdf
@@ -88,6 +97,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/cdio.h>
 #include <sys/disk.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
@@ -107,6 +117,7 @@
 #include <ps5/kernel.h>
 #include <ps5/klog.h>
 
+#include "disc_fastread.h"
 #include "disc_hash.h"
 #include "disc_switch.h"
 #ifdef DISC_AUTO_EMBEDDED
@@ -342,6 +353,30 @@ static void stamp_self(void) {
     FILE *f = fopen(SELF_ALIVE, "w");
     if (f) { fprintf(f, "%lld\n", (long long)time(NULL)); fclose(f); }
 }
+/* 171h: during a copy made here, every 2 s (the PS5SX3 helper takes a stamp older than 15 s for a helper that is gone) */
+static void stamp_self_every_2s(void) {
+    static time_t last;
+    const time_t now = time(NULL);
+    if (now - last >= 2 || now < last) { last = now; stamp_self(); }
+}
+
+/* 171h: flag disc_oldreads: the copies made here read as before 171h (64 KiB through the pass device, 16 sectors per READ CD), to compare */
+#define FLAG_OLDREADS "/data/PCSX2/flags/disc_oldreads"
+static int old_reads(void) { struct stat st; return stat(FLAG_OLDREADS, &st) == 0; }
+
+/* 171h: what the tile thread (disctile.c, same process) must leave alone: the /dev/cdN this watcher reads itself (-1: none), and whether PS5SX2
+ * copies the disc in the PS5 drive (it holds /dev/cd0 then; the tile thread looks at the drives every 3 s instead of four times a second). */
+static int g_busy_cd = -1, g_emu_copies;
+static void busy_cd(int n) { __atomic_store_n(&g_busy_cd, n, __ATOMIC_RELAXED); }
+static void emu_copies(int on) { __atomic_store_n(&g_emu_copies, on, __ATOMIC_RELAXED); }
+#ifdef DISC_AUTO_EMBEDDED
+/* 2: /dev/cd<drive> is read by this watcher right now (not to be opened); 1: a copy runs (look at it rarely); 0: as before. */
+int disc_auto_drive_busy(int drive);
+int disc_auto_drive_busy(int drive) {
+    if (drive == __atomic_load_n(&g_busy_cd, __ATOMIC_RELAXED)) return 2;
+    return __atomic_load_n(&g_emu_copies, __ATOMIC_RELAXED) ? 1 : 0;
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Start PS5SX2 when it isn't running                                    */
@@ -553,7 +588,8 @@ void disc_auto_request_reset(void) { g_reset_req = 1; }
  * pieces, SET CD SPEED to the drive's maximum first (standard; a PC drive takes it, and no Sony vendor command
  * ever goes to it). The copy goes to games/<SERIAL>.iso(.part); then the usual launch takes over.
  * Needs proper testing on a console with a USB DVD drive. */
-#define USB_CHUNK_SECTORS 32u
+#define USB_CHUNK_SECTORS 32u   /* 64 KiB: a READ through the pass device */
+#define USB_RAW_SECTORS   512u  /* 171h: 1 MiB: a pread of the drive's own /dev/cdN */
 #define USB_MAX_BAD       20000u
 
 static uint32_t g_raw_status, g_raw_resid; /* live-4: what the last command really returned */
@@ -722,8 +758,94 @@ static double mono_s(void) {
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
+/* 171h: the USB drive's own /dev/cdN, when it has one (on 13.60 a TSSTcorp drive came up as cd1 + pass1; on the 4.03 phat a Pioneer had
+ * the pass node only): the node whose size is the drive's capacity and whose sector 16 is the one the pass device reads. Its PREVENT
+ * MEDIUM REMOVAL (sent by the cd driver at open) is taken off again, so the drive's eject button works during the copy as it did when the
+ * copy went through the pass device only. -1 when there is none (or the flag disc_oldreads is there). */
+static int usb_raw_open(int pass, uint32_t sectors, int *node) {
+    static uint8_t s16p[2048], s16n[2048];
+    *node = -1;
+    if (old_reads()) { say("usb: flag disc_oldreads: the copy reads through the pass device, 64 KiB at a time (as before 171h)"); return -1; }
+    if (!usb_read(pass, 16, 1, s16p, NULL, 0)) return -1;
+    for (int i = 0; i < 10; i++) {
+        char dev[16];
+        snprintf(dev, sizeof(dev), "/dev/cd%d", i);
+        struct stat sst;
+        if (stat(dev, &sst) != 0) continue;
+        const int fd = open(dev, O_RDONLY);
+        if (fd < 0) continue;
+        off_t bytes = 0;
+        if (ioctl(fd, DIOCGMEDIASIZE, &bytes) == 0 && (uint64_t)bytes == (uint64_t)sectors * 2048u &&
+            pread(fd, s16n, sizeof(s16n), 16 * 2048) == (ssize_t)sizeof(s16n) && dfr_same_disc((int64_t)bytes, sectors, s16n, s16p)) {
+            const int r = ioctl(fd, CDIOCALLOW);
+            say("usb: %s is this drive's disc (%lld bytes, the same sector 16): read directly, 1 MiB at a time (tray lock %s)", dev,
+                (long long)bytes, r == 0 ? "taken off: the eject button works" : "left as the driver set it");
+            *node = i;
+            return fd;
+        }
+        close(fd);
+    }
+    say("usb: no /dev/cdN for this drive: the copy reads through the pass device, 64 KiB at a time");
+    return -1;
+}
+
+typedef struct {
+    int pass, raw, raw_node, out;
+    const char *serial, *part;
+    uint32_t sectors, next_pct, raw_fail_logs;
+    uint64_t done_last;
+    double t0, tlast;
+    char why[64];
+    uint32_t fail_lba, fail_n;
+} usb_job;
+
+static int usb_rd_raw(void *ctx, uint32_t lba, uint32_t n, uint8_t *buf) {
+    usb_job *u = ctx;
+    const ssize_t got = pread(u->raw, buf, (size_t)n * 2048u, (off_t)lba * 2048);
+    if (got == (ssize_t)n * 2048) return 1;
+    if (u->raw_fail_logs++ < 20)
+        say("usb: /dev/cd%d: a read of %u sectors at %u failed (%s %d): read again in 64 KiB pieces through the pass device", u->raw_node, n, lba,
+            got < 0 ? "errno" : "got", got < 0 ? errno : (int)got);
+    return 0;
+}
+static int usb_rd_pass(void *ctx, uint32_t lba, uint32_t n, uint8_t *buf) {
+    usb_job *u = ctx;
+    if (usb_read(u->pass, lba, n, buf, u->why, sizeof(u->why))) return 1;
+    u->fail_lba = lba;
+    u->fail_n = n;
+    return 0;
+}
+static int usb_gone(void *ctx) {
+    usb_job *u = ctx;
+    if (!usb_ready(u->pass)) { say("usb: drive not ready at sector %u (%s): disc out? stopping", u->fail_lba, u->why); return 1; }
+    say("usb: sectors %u..%u: %s; read one by one", u->fail_lba, u->fail_lba + u->fail_n - 1, u->why);
+    return 0;
+}
+static int usb_write(void *ctx, uint64_t index, const uint8_t *buf, uint32_t n) {
+    usb_job *u = ctx;
+    if (pwrite(u->out, buf, (size_t)n * 2048u, (off_t)(index * 2048u)) == (ssize_t)n * 2048) return 1;
+    say("usb: write errno %d at sector %llu", errno, (unsigned long long)index);
+    return 0;
+}
+static void usb_tick(void *ctx, uint64_t done) {
+    usb_job *u = ctx;
+    stamp_self_every_2s();
+    const uint32_t pct = (uint32_t)(done * 100 / u->sectors);
+    if (pct < u->next_pct && done != u->sectors) return;
+    const double t = mono_s();
+    const double now_mb = (double)(done - u->done_last) * 2048 / (t - u->tlast > 0.001 ? t - u->tlast : 0.001) / 1e6;
+    const double avg_mb = (double)done * 2048 / (t - u->t0 > 0.001 ? t - u->t0 : 0.001) / 1e6;
+    say("usb: %u%% (%llu MB, %.1f MB/s = %.1fx DVD now, %.1fx average)", pct, (unsigned long long)(done * 2048 / 1000000), now_mb, now_mb / 1.385,
+        avg_mb / 1.385);
+    notify("USB disc %s: %u%% | %.1f MB/s (%.1fx)", u->serial, pct, now_mb, now_mb / 1.385);
+    u->tlast = t;
+    u->done_last = done;
+    while (u->next_pct <= pct) u->next_pct += 5;
+}
+
 /* Copies the disc in the USB drive to games/<serial>.iso. 1 when the .iso is there in full (bad sectors, if any,
- * written as zeros and marked with <iso>.incomplete), 0 when it stopped. */
+ * written as zeros and marked with <iso>.incomplete), 0 when it stopped. 171h: in sector order through disc_fastread.h, 1 MiB preads of the
+ * drive's /dev/cdN when it has one (64 KiB READs through the pass device for what does not read that way, and when it has none). */
 static int usb_dump(int pass, const char *serial, uint32_t sectors) {
     char iso[512], part[520];
     snprintf(iso, sizeof(iso), GAMES_DIR "/%s.iso", serial);
@@ -741,45 +863,45 @@ static int usb_dump(int pass, const char *serial, uint32_t sectors) {
 
     const int out = open(part, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (out < 0) { say("usb: open %s: errno %d", part, errno); notify("USB disc: can't write to " GAMES_DIR); return 0; }
-    static uint8_t buf[USB_CHUNK_SECTORS * 2048u];
-    const double t0 = mono_s();
-    double tlast = t0;
-    uint32_t lba_last = 0, bad = 0, next_pct = 5;
+    static uint8_t buf[USB_RAW_SECTORS * 2048u];
+    usb_job u;
+    memset(&u, 0, sizeof(u));
+    u.pass = pass;
+    u.out = out;
+    u.serial = serial;
+    u.part = part;
+    u.sectors = sectors;
+    u.next_pct = 5;
+    u.raw = usb_raw_open(pass, sectors, &u.raw_node);
     const uint64_t total = (uint64_t)sectors * 2048u;
     notify("USB disc: copying %s (%.1f GB)", serial, total / 1e9);
     say("usb: copying %s: %u sectors (%llu bytes) to %s", serial, sectors, (unsigned long long)total, part);
+    if (u.raw >= 0) busy_cd(u.raw_node);
 
-    for (uint32_t lba = 0; lba < sectors;) {
-        const uint32_t n = sectors - lba < USB_CHUNK_SECTORS ? sectors - lba : USB_CHUNK_SECTORS;
-        int ok = 0;
-        for (int tries = 0; tries < 3 && !ok; tries++) ok = usb_read(pass, lba, n, buf, why, sizeof(why));
-        if (!ok) {
-            if (!usb_ready(pass)) { say("usb: drive not ready at sector %u (%s): disc out? stopping", lba, why); close(out); unlink(part); return 0; }
-            /* sector by sector; what stays unreadable becomes zeros */
-            for (uint32_t i = 0; i < n; i++) {
-                int one = 0;
-                for (int tries = 0; tries < 2 && !one; tries++) one = usb_read(pass, lba + i, 1, buf + i * 2048u, NULL, 0);
-                if (!one) { memset(buf + i * 2048u, 0, 2048); bad++; }
-            }
-            say("usb: sectors %u..%u: %s; read one by one, %u unreadable so far", lba, lba + n - 1, why, bad);
-            if (bad > USB_MAX_BAD) { say("usb: too many unreadable sectors: stopping"); notify("USB disc: too many read errors, stopped"); close(out); unlink(part); return 0; }
-        }
-        const ssize_t w = pwrite(out, buf, (size_t)n * 2048u, (off_t)lba * 2048);
-        if (w != (ssize_t)n * 2048) { say("usb: write errno %d at sector %u", errno, lba); notify("USB disc: write failed (disk full?)"); close(out); unlink(part); return 0; }
-        lba += n;
-        const uint32_t pct = (uint32_t)((uint64_t)lba * 100 / sectors);
-        if (pct >= next_pct || lba == sectors) {
-            const double t = mono_s();
-            const double now_mb = (double)(lba - lba_last) * 2048 / (t - tlast > 0.001 ? t - tlast : 0.001) / 1e6;
-            const double avg_mb = (double)lba * 2048 / (t - t0 > 0.001 ? t - t0 : 0.001) / 1e6;
-            say("usb: %u%% (%llu MB, %.1f MB/s = %.1fx DVD now, %.1fx average; %u unreadable)", pct,
-                (unsigned long long)((uint64_t)lba * 2048 / 1000000), now_mb, now_mb / 1.385, avg_mb / 1.385, bad);
-            notify("USB disc %s: %u%% | %.1f MB/s (%.1fx)", serial, pct, now_mb, now_mb / 1.385);
-            tlast = t; lba_last = lba;
-            while (next_pct <= pct) next_pct += 5;
-            stamp_self();
-        }
+    dfr_cfg c;
+    memset(&c, 0, sizeof(c));
+    c.sector_size = 2048;
+    if (u.raw >= 0) { c.big = usb_rd_raw; c.big_sectors = USB_RAW_SECTORS; c.big_tries = 1; }
+    c.piece = usb_rd_pass; c.piece_sectors = USB_CHUNK_SECTORS; c.piece_tries = 3;
+    c.one_tries = 2;
+    c.max_bad = USB_MAX_BAD;
+    c.write = usb_write; c.gone = usb_gone; c.tick = usb_tick; c.clock = mono_s;
+    c.ctx = &u;
+    c.buf = buf; c.buf_bytes = sizeof(buf);
+    dfr_stats st;
+    memset(&st, 0, sizeof(st));
+    u.t0 = u.tlast = mono_s();
+    const int rc = dfr_copy(&c, &st, 0, sectors);
+    if (u.raw >= 0) { close(u.raw); busy_cd(-1); }
+    if (rc != DFR_OK) {
+        say("usb: the copy stopped at sector %llu: %s", (unsigned long long)st.done, dfr_result_name(rc));
+        if (rc == DFR_TOO_BAD) { say("usb: too many unreadable sectors: stopping"); notify("USB disc: too many read errors, stopped"); }
+        if (rc == DFR_WRITE) notify("USB disc: write failed (disk full?)");
+        close(out);
+        unlink(part);
+        return 0;
     }
+    const uint32_t bad = st.bad;
     fsync(out);
     close(out);
     if (rename(part, iso) != 0) { say("usb: rename errno %d", errno); return 0; }
@@ -787,9 +909,12 @@ static int usb_dump(int pass, const char *serial, uint32_t sectors) {
     snprintf(inc, sizeof(inc), "%s.incomplete", iso);
     if (bad) { FILE *f = fopen(inc, "w"); if (f) { fprintf(f, "%u unreadable sectors\n", bad); fclose(f); } }
     else unlink(inc);
-    const double secs = mono_s() - t0;
+    const double secs = mono_s() - u.t0;
     say("usb: %s copied in %.0f s (%.1f MB/s = %.1fx DVD average), %u unreadable sectors", iso, secs, total / secs / 1e6,
         total / secs / 1e6 / 1.385, bad);
+    say("usb: reads: %llu of 1 MiB from /dev/cd%d%s, %llu of 64 KiB and %llu of one sector through the pass device; largest %u KiB; the drive read %.0f%% of the time",
+        (unsigned long long)st.big_reads, u.raw_node, u.raw >= 0 ? (st.big_off ? " (given up: refused)" : "") : " (none: no node)",
+        (unsigned long long)st.piece_reads, (unsigned long long)st.one_reads, st.largest / 1024, secs > 0 ? 100.0 * st.read_s / secs : 0.0);
     return 1;
 }
 
@@ -804,7 +929,9 @@ enum {
     PROFILE_UNKNOWN = -2,  /* not ready, or the command failed */
 };
 #define CD_RAW        2352u
-#define CD_CHUNK      16u      /* sectors a READ CD asks for (37,632 bytes) */
+#define CD_CHUNK      16u      /* sectors a READ CD asks for (37,632 bytes): before 171h, and what a refused or failed big read is read again in */
+#define CD_BIG        27u      /* 171h: sectors a READ CD asks for first (63,504 bytes) */
+_Static_assert(CD_BIG * CD_RAW <= 65536u, "a READ CD through the PS5 drive's pass device stays within 64 KiB");
 #define CD_MAX_BAD    2000u
 #define CD_MAX_TRACKS 99
 
@@ -835,10 +962,29 @@ static const char *profile_name(int p) {
 }
 
 /* The internal drive's pass device: the pass node whose INQUIRY says PS-SYSTEM (SONY PS-SYSTEM 503R on swordpdf's
- * phat). Opened once and kept. */
+ * phat). 171h: no longer kept open for good: drive_rest() closes it after each look of the loop (as the PS5SX3 helper does since its version
+ * 14); its path is kept, and opened again (with an INQUIRY to be sure it is still the PS5 drive) at the next look. */
 static int g_drive = -1;
+static char g_drive_path[64];
+static int is_ps5_drive(int fd, uint8_t *inq36) {
+    const uint8_t c[6] = {0x12, 0, 0, 0, 36, 0};
+    char id[25] = {0}; /* vendor + product, as text (no memmem in the payload's libc) */
+    return scsi(fd, c, 6, CAM_DIR_IN, inq36, 36, 5000, NULL, 0) == 0 && (inq36[0] & 0x1f) == 5 &&
+           (memcpy(id, inq36 + 8, 24), strstr(id, "PS-SYSTEM") != NULL);
+}
+static void drive_rest(void) {
+    if (g_drive >= 0) { close(g_drive); g_drive = -1; }
+}
 static int drive_pass(void) {
     if (g_drive >= 0) return g_drive;
+    if (g_drive_path[0]) {
+        const int fd = open(g_drive_path, O_RDWR);
+        uint8_t inq[36] = {0};
+        if (fd >= 0 && is_ps5_drive(fd, inq)) { g_drive = fd; return g_drive; }
+        if (fd >= 0) close(fd);
+        say("drive: %s is not the PS5's drive any more: looking again", g_drive_path);
+        g_drive_path[0] = '\0';
+    }
     DIR *d = opendir("/dev");
     if (!d) return -1;
     struct dirent *e;
@@ -849,11 +995,9 @@ static int drive_pass(void) {
         const int fd = open(p, O_RDWR);
         if (fd < 0) continue;
         uint8_t inq[36] = {0};
-        const uint8_t c[6] = {0x12, 0, 0, 0, sizeof(inq), 0};
-        char id[25] = {0}; /* vendor + product, as text (no memmem in the payload's libc) */
-        if (scsi(fd, c, 6, CAM_DIR_IN, inq, sizeof(inq), 5000, NULL, 0) == 0 && (inq[0] & 0x1f) == 5 &&
-            (memcpy(id, inq + 8, 24), strstr(id, "PS-SYSTEM") != NULL)) {
+        if (is_ps5_drive(fd, inq)) {
             g_drive = fd;
+            snprintf(g_drive_path, sizeof(g_drive_path), "%s", p);
             say("drive: %s is the PS5's own drive (%.8s %.16s %.4s)", p, inq + 8, inq + 16, inq + 32);
         } else {
             close(fd);
@@ -965,6 +1109,50 @@ static int gameindex_title(const char *serial, char *out, size_t max) {
     return out[0] != '\0';
 }
 
+/* 171h: a CD copy's readers, writer and progress for disc_fastread.h */
+typedef struct {
+    int pass, how, out;
+    const char *serial;
+    disc_hash_ctx *hc;
+    uint32_t sectors, next_pct, fail_lba, fail_n;
+    uint64_t done_last;
+    double t0, tlast;
+    char why[96];
+} cd_job;
+static int cd_rd(void *ctx, uint32_t lba, uint32_t n, uint8_t *buf) {
+    cd_job *j = ctx;
+    if (cd_read(j->pass, lba, n, j->how, buf, j->why, sizeof(j->why))) return 1;
+    j->fail_lba = lba;
+    j->fail_n = n;
+    return 0;
+}
+static int cd_gone(void *ctx) {
+    cd_job *j = ctx;
+    if (!is_cd_profile(drive_profile())) { say("cd: the disc went at sector %u (%s): stopping", j->fail_lba, j->why); return 1; }
+    say("cd: sectors %u..%u: %s; read one by one", j->fail_lba, j->fail_lba + j->fail_n - 1, j->why);
+    return 0;
+}
+static int cd_write(void *ctx, uint64_t index, const uint8_t *buf, uint32_t n) {
+    cd_job *j = ctx;
+    const size_t bytes = (size_t)n * CD_RAW;
+    if (pwrite(j->out, buf, bytes, (off_t)(index * CD_RAW)) != (ssize_t)bytes) { say("cd: write errno %d at sector %llu of the image", errno, (unsigned long long)index); return 0; }
+    disc_hash_update(j->hc, buf, bytes);
+    return 1;
+}
+static void cd_tick(void *ctx, uint64_t done) {
+    cd_job *j = ctx;
+    stamp_self_every_2s();
+    const uint32_t pct = (uint32_t)(done * 100 / j->sectors);
+    if (pct < j->next_pct && done != j->sectors) return;
+    const double t = mono_s();
+    const double now_kb = (double)(done - j->done_last) * CD_RAW / (t - j->tlast > 0.001 ? t - j->tlast : 0.001) / 1000.0;
+    say("cd: %u%% (%llu MB, %.0f kB/s = %.1fx CD)", pct, (unsigned long long)(done * CD_RAW / 1000000), now_kb, now_kb / 176.4);
+    notify("PS2 CD %s: %u%% | %.1fx", j->serial, pct, now_kb / 176.4);
+    j->tlast = t;
+    j->done_last = done;
+    while (j->next_pct <= pct) j->next_pct += 5;
+}
+
 /* Copies the PS2 CD in the drive to games/<stem>.bin (+ .cue, + .hashes.txt). 1 when the .bin is there in full
  * (unreadable sectors, if any, written as zeros and marked with <bin>.incomplete), 0 when it stopped. */
 static int cd_dump(int pass, const char *serial) {
@@ -997,51 +1185,52 @@ static int cd_dump(int pass, const char *serial) {
 
     const int out = open(part, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (out < 0) { say("cd: open %s: errno %d", part, errno); notify("PS2 CD: can't write to " GAMES_DIR); return 0; }
-    static uint8_t buf[CD_CHUNK * CD_RAW];
+    static uint8_t buf[CD_BIG * CD_RAW];
     disc_hash_ctx hc;
     disc_hash_init(&hc);
-    const double t0 = mono_s();
-    double tlast = t0;
-    uint32_t done = 0, done_last = 0, bad = 0, next_pct = 5;
+    cd_job job;
+    memset(&job, 0, sizeof(job));
+    job.pass = pass;
+    job.out = out;
+    job.serial = serial;
+    job.hc = &hc;
+    job.sectors = sectors;
+    job.next_pct = 5;
+    const int oldr = old_reads();
     notify("PS2 CD: copying %s (%u MB)", serial, (unsigned)(total / 1000000));
-    say("cd: copying %s: %u sectors from %u (%llu bytes) to %s", serial, sectors, first, (unsigned long long)total, part);
+    say("cd: copying %s: %u sectors from %u (%llu bytes) to %s; %s", serial, sectors, first, (unsigned long long)total, part,
+        oldr ? "16 sectors per READ CD (flag disc_oldreads)" : "27 sectors per READ CD (16 when the drive refuses 27)");
 
-    for (unsigned ti = 0; ti < toc.count; ti++) {
+    dfr_cfg c;
+    memset(&c, 0, sizeof(c));
+    c.sector_size = CD_RAW;
+    if (!oldr) { c.big = cd_rd; c.big_sectors = CD_BIG; c.big_tries = 1; }
+    c.piece = cd_rd; c.piece_sectors = CD_CHUNK; c.piece_tries = 3;
+    c.one_tries = 2;
+    c.max_bad = CD_MAX_BAD;
+    c.write = cd_write; c.gone = cd_gone; c.tick = cd_tick; c.clock = mono_s;
+    c.ctx = &job;
+    c.buf = buf; c.buf_bytes = sizeof(buf);
+    dfr_stats st;
+    memset(&st, 0, sizeof(st));
+    const double t0 = mono_s();
+    job.t0 = job.tlast = t0;
+    busy_cd(0); /* the tile thread does not open /dev/cd0 while the drive reads for this copy */
+    int rc = DFR_OK;
+    for (unsigned ti = 0; ti < toc.count && rc == DFR_OK; ti++) {
         const uint32_t end = ti + 1 < toc.count ? toc.t[ti + 1].lba : toc.leadout;
-        const int how = toc.t[ti].data ? CD_RAW_DATA : CD_RAW_AUDIO;
-        for (uint32_t lba = toc.t[ti].lba; lba < end;) {
-            const uint32_t n = end - lba < CD_CHUNK ? end - lba : CD_CHUNK;
-            int ok = 0;
-            for (int tries = 0; tries < 3 && !ok; tries++) ok = cd_read(pass, lba, n, how, buf, why, sizeof(why));
-            if (!ok) {
-                if (!is_cd_profile(drive_profile())) { say("cd: the disc went at sector %u (%s): stopping", lba, why); close(out); unlink(part); return 0; }
-                for (uint32_t i = 0; i < n; i++) {
-                    int one = 0;
-                    for (int tries = 0; tries < 2 && !one; tries++) one = cd_read(pass, lba + i, 1, how, buf + i * CD_RAW, NULL, 0);
-                    if (!one) { memset(buf + i * CD_RAW, 0, CD_RAW); bad++; }
-                }
-                say("cd: sectors %u..%u: %s; read one by one, %u unreadable so far", lba, lba + n - 1, why, bad);
-                if (bad > CD_MAX_BAD) { say("cd: too many unreadable sectors: stopping"); notify("PS2 CD: too many read errors, stopped"); close(out); unlink(part); return 0; }
-            }
-            const size_t bytes = (size_t)n * CD_RAW;
-            if (pwrite(out, buf, bytes, (off_t)done * CD_RAW) != (ssize_t)bytes) {
-                say("cd: write errno %d at sector %u", errno, lba); notify("PS2 CD: write failed (disk full?)"); close(out); unlink(part); return 0;
-            }
-            disc_hash_update(&hc, buf, bytes);
-            lba += n;
-            done += n;
-            const uint32_t pct = (uint32_t)((uint64_t)done * 100 / sectors);
-            if (pct >= next_pct || done == sectors) {
-                const double t = mono_s();
-                const double now_kb = (double)(done - done_last) * CD_RAW / (t - tlast > 0.001 ? t - tlast : 0.001) / 1000.0;
-                say("cd: %u%% (%llu MB, %.0f kB/s = %.1fx CD; %u unreadable)", pct, (unsigned long long)((uint64_t)done * CD_RAW / 1000000),
-                    now_kb, now_kb / 176.4, bad);
-                notify("PS2 CD %s: %u%% | %.1fx", serial, pct, now_kb / 176.4);
-                tlast = t; done_last = done;
-                while (next_pct <= pct) next_pct += 5;
-                stamp_self();
-            }
-        }
+        job.how = toc.t[ti].data ? CD_RAW_DATA : CD_RAW_AUDIO;
+        rc = dfr_copy(&c, &st, toc.t[ti].lba, end - toc.t[ti].lba);
+    }
+    busy_cd(-1);
+    const uint32_t bad = st.bad;
+    if (rc != DFR_OK) {
+        say("cd: the copy stopped at sector %llu of the image: %s", (unsigned long long)st.done, dfr_result_name(rc));
+        if (rc == DFR_TOO_BAD) { say("cd: too many unreadable sectors: stopping"); notify("PS2 CD: too many read errors, stopped"); }
+        if (rc == DFR_WRITE) notify("PS2 CD: write failed (disk full?)");
+        close(out);
+        unlink(part);
+        return 0;
     }
     fsync(out);
     close(out);
@@ -1077,6 +1266,9 @@ static int cd_dump(int pass, const char *serial) {
     const double secs = mono_s() - t0;
     say("cd: %s copied in %.0f s (%.0f kB/s = %.1fx CD), %u unreadable; crc32 %s md5 %s sha1 %s", bin, secs, total / secs / 1000.0,
         total / secs / 1000.0 / 176.4, bad, crc, md5, sha1);
+    say("cd: reads: %llu READ CD of 27 sectors%s, %llu of 16, %llu of one; largest %u bytes; the drive read %.0f%% of the time", (unsigned long long)st.big_reads,
+        oldr ? " (flag disc_oldreads)" : st.big_off ? " (given up: the drive refuses 27)" : "", (unsigned long long)st.piece_reads,
+        (unsigned long long)st.one_reads, st.largest, secs > 0 ? 100.0 * st.read_s / secs : 0.0);
     return 1;
 }
 
@@ -1087,7 +1279,7 @@ enum state { S_NONE, S_SETTLE, S_DUMPING, S_DONE };
  * the process's credentials and signals to the host, and skips the single-instance pid file (logs/disc-auto.pid):
  * a standalone DiscLaunch.elf kills the pids listed there, which would be the host. Don't run both at once. */
 static int disc_auto_loop(void) {
-    say("disc-auto daemon (live-14%s) pid %d",
+    say("disc-auto daemon (live-14, 171h disc speed%s) pid %d",
 #ifdef DISC_AUTO_EMBEDDED
         ", embedded",
 #else
@@ -1129,6 +1321,11 @@ static int disc_auto_loop(void) {
     int usb_fd = -1, usb_done = 0, usb_tries = 0;
     time_t usb_scan = 0, usb_seen = 0, usb_poll = 0;
 
+    /* 171h: /dev/cd0 is looked at every 3 s, not every second, while PS5SX2 copies the disc (it reads it then; the copy's end is a file and is
+     * still met within a second) */
+    time_t cd0_look = 0;
+    int emu_copy_was = 0;
+
     for (;;) {
 #ifndef DISC_AUTO_EMBEDDED
         if (superseded()) {
@@ -1137,7 +1334,7 @@ static int disc_auto_loop(void) {
         }
 #else
         /* 171e: while the console shuts down or rests the watcher asks the drive nothing (no /dev/pass0 command, no file), as ShadowMount+ stops its own work */
-        if (kp_quiet()) { sleep(1); continue; }
+        if (kp_quiet()) { drive_rest(); sleep(1); continue; }
 #endif
         stamp_self();
 
@@ -1190,16 +1387,35 @@ static int disc_auto_loop(void) {
         /* 171f game quiet: PS5SX2 plays a game from a drive (its stamp, kp.c): the drive is looked at once per 3 s here, not every second, and the USB scan below
          * waits. (Only a game that plays counts, not a copy: the copy's end is met by this loop within a second, as before.) */
         const int gq = kp_game_quiet();
-        if (gq && !kp_game_quiet_due(4)) { sleep(kPollSec); continue; }
+        if (gq && !kp_game_quiet_due(4)) { drive_rest(); sleep(kPollSec); continue; }
+
+        int emu_copy_now = 0;
+        if (st == S_DUMPING && !is_cd && serial[0]) {
+            char ans[16];
+            emu_copy_now = (!g_ask_mode || (ask_answer(serial, ans, sizeof(ans)) && strcmp(ans, "copy") == 0)) && emu_alive();
+        }
+        if (emu_copy_now != emu_copy_was) {
+            emu_copy_was = emu_copy_now;
+            emu_copies(emu_copy_now);
+            say("%s", emu_copy_now ? "PS5SX2 copies the disc: the drive is looked at every 3 s (by the tiles too) until the copy ends"
+                                   : "the drives are looked at as before");
+        }
+        int look_cd0 = 1;
+        if (emu_copy_now) {
+            if (time(NULL) - cd0_look < 3 && time(NULL) >= cd0_look) look_cd0 = 0;
+            else cd0_look = time(NULL);
+        }
 
         /* Is a disc in, and is it the same one? DIOCGMEDIASIZE doesn't touch the disc, so a
          * dump in progress isn't slowed by us re-reading its directory every loop. */
         off_t size = 0;
-        const int fd = open("/dev/cd0", O_RDONLY);
+        const int fd = look_cd0 ? open("/dev/cd0", O_RDONLY) : -2;
         if (fd >= 0 && ioctl(fd, DIOCGMEDIASIZE, &size) != 0)
             size = 0;
 
-        if (fd < 0 || size <= 0) {
+        if (fd == -2) {
+            /* 171h: not looked at this second (PS5SX2 copies the disc): everything stays as it was */
+        } else if (fd < 0 || size <= 0) {
             if (fd >= 0) close(fd);
             if (cd_only) {
                 /* live-12: a PS2 CD /dev/cd0 doesn't show: out when the drive's profile says so */
@@ -1461,6 +1677,7 @@ static int disc_auto_loop(void) {
             break;
         }
 
+        drive_rest(); /* 171h: nothing of ours stays open on the PS5 drive between two looks */
         sleep(kPollSec);
     }
     return 0;

@@ -21,11 +21,15 @@ pthread_create(&t, &a, disc_auto_thread, NULL);
   `/dev/cd0` and `/dev/pass*` and send notifications (the standalone build does
   `kernel_set_ucred_authid(getpid(), 0x4800000000010003)` and `kernel_set_ucred_caps(getpid(), all 0xff)`).
 - **Signals:** the standalone build sets `SIGCHLD` to `SIG_IGN`; embedded leaves signals to the host.
-- **Files to compile:** `disc_launch.c` and `disc_hash.c` (with `disc_hash.h`), `-std=gnu11`, the PS5 payload SDK
+- **Files to compile:** `disc_launch.c` and `disc_hash.c` (with `disc_hash.h`, `disc_switch.h` and `disc_fastread.h`), `-std=gnu11`, the PS5 payload SDK
   (`<cam/...>`, `<ps5/kernel.h>`, `<ps5/klog.h>`). No extra libraries: libSceSystemService and libSceLncUtil are opened
   with `dlopen` at run time.
 - **Only one copy:** don't send `DiscLaunch.elf` while the host runs it. Embedded doesn't write the pid file, so the two
   wouldn't kill each other, and both would act on every disc.
+
+- **Drive sharing (171h):** embedded, the file also exports `int disc_auto_drive_busy(int drive)`: 2 while the watcher reads
+  `/dev/cd<drive>` itself (a PS2 CD or USB disc copy: the host must not open that node then), 1 while PS5SX2 copies the disc in the
+  PS5 drive (look at the drives every few seconds at most), 0 otherwise. The merged helper's tile thread (disctile.c) uses it.
 
 ## What it does (same in both builds)
 - **PS2 DVD in:** not dumped yet → PS5SX2 is started (if needed) and dumps it to `/data/PCSX2/games/<Title> (<SERIAL>).iso`

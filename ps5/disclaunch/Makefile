@@ -6,7 +6,7 @@
 PS5_PAYLOAD_SDK ?= /home/claude/ps5deps/sdk285
 CC  := $(PS5_PAYLOAD_SDK)/bin/prospero-clang
 LIB := $(PS5_PAYLOAD_SDK)/target/lib
-DiscLaunch.elf: disc_launch.c disc_hash.c disc_hash.h
+DiscLaunch.elf: disc_launch.c disc_hash.c disc_hash.h disc_fastread.h disc_switch.h
 	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror -o $@ disc_launch.c disc_hash.c \
 	    -L$(LIB)
 clean:
