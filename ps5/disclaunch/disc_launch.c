@@ -108,6 +108,15 @@
 #include <ps5/klog.h>
 
 #include "disc_hash.h"
+#include "disc_switch.h"
+#ifdef DISC_AUTO_EMBEDDED
+#include "kp.h" /* 171e: the host payload's shutdown watch and log switch (kp.c) */
+#else
+static int kp_quiet(void) { return 0; }
+static int kp_log_files(void) { return 1; }
+static int kp_game_quiet(void) { return 0; } /* 171f: the stand-alone build knows nothing of a game that plays from a drive */
+static int kp_game_quiet_due(int key) { (void)key; return 1; }
+#endif
 
 #define LOGS_DIR    "/data/PCSX2/logs"
 #define GAMES_DIR   "/data/PCSX2/games"
@@ -140,11 +149,21 @@ static void say(const char *fmt, ...) {
     klog_printf("[disc-auto] %s\n", buf);
     printf("[disc-auto] %s\n", buf);
     fflush(stdout);
+    if (!kp_log_files() || kp_quiet()) return; /* 171e: a KP test build writes no log file, and none while the console shuts down */
+    /* The same line in a file, so a tester can send it without running a klog server (rolled over at 4 MB). */
+    static const char *const kLogFile = LOGS_DIR "/disc-auto.log";
+    static int made_dir;
+    if (!made_dir) { mkdir(LOGS_DIR, 0777); made_dir = 1; } /* a console that never had PS5SX2 make it has no logs folder */
+    struct stat st;
+    if (stat(kLogFile, &st) == 0 && st.st_size > (4 << 20)) rename(kLogFile, LOGS_DIR "/disc-auto.1.log");
+    FILE *lf = fopen(kLogFile, "a");
+    if (lf) { fprintf(lf, "%lld %s\n", (long long)time(NULL), buf); fclose(lf); }
 }
 
 static void notify(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void notify(const char *fmt, ...) {
     static notify_req_t req;
+    if (kp_quiet()) return; /* 171e: no request to the shell while the console shuts down */
     memset(&req, 0, sizeof(req));
     va_list ap;
     va_start(ap, fmt);
@@ -152,6 +171,19 @@ static void notify(const char *fmt, ...) {
     va_end(ap);
     const int rc = sceKernelSendNotificationRequest(0, &req, sizeof(req), 0);
     say("notify rc=%d: %s", rc, req.message);
+}
+
+/* A notification about the DISC TILES ("press its tile ..."): shown only when /data/PCSX2/switch.txt says 1 (disc_switch.h); the line is in the log either
+ * way. Every other notification (errors, a copy's progress, "starting", the start-up line) stays on notify() whatever the file says. */
+static void notify_tile(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void notify_tile(const char *fmt, ...) {
+    char msg[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    if (switch_tile_notices_on()) notify("%s", msg);
+    else say("notify (about the tiles, not shown: switch.txt is 0): %s", msg);
 }
 
 /* ------------------------------------------------------------------ */
@@ -499,6 +531,14 @@ static void cleanup(const char *serial) {
     unlink(LAUNCH_TXT);
     unlink(EXEC_TXT);
 }
+
+/* 2.05: the reload tile of PS5SX2-Disc.elf asks the watcher to forget what it knows about the disc in the drive and look at it afresh (the
+ * next pass of the loop reads the serial again, as if the disc had just been put in). Set from another thread, taken in the loop. */
+static volatile int g_reset_req;
+#ifdef DISC_AUTO_EMBEDDED
+void disc_auto_request_reset(void);
+void disc_auto_request_reset(void) { g_reset_req = 1; }
+#endif
 
 /* ------------------------------------------------------------------ */
 /* main                                                                  */
@@ -1067,6 +1107,7 @@ static int disc_auto_loop(void) {
     take_over();
 #endif
     load_lnc();
+    switch_ensure_file(); /* /data/PCSX2/switch.txt, 0 or 1: the notifications about the disc tiles (see disc_switch.h); written with 0 when it is not there */
 
     notify("PS5SX2 disc-auto running: put a PS2 DVD in");
     say("PS5SX2 %s", emu_alive() ? "is running" : "is not running");
@@ -1094,8 +1135,31 @@ static int disc_auto_loop(void) {
             say("another daemon took over (" PID_FILE "): exiting");
             return 0;
         }
+#else
+        /* 171e: while the console shuts down or rests the watcher asks the drive nothing (no /dev/pass0 command, no file), as ShadowMount+ stops its own work */
+        if (kp_quiet()) { sleep(1); continue; }
 #endif
         stamp_self();
+
+        /* 2.05: the reload tile: everything known about the discs in the drives is dropped, so that the loop below meets them as new ones */
+        if (g_reset_req) {
+            g_reset_req = 0;
+            say("reset asked for (the reload tile): the disc in the drive is looked at afresh");
+            if (serial[0]) cleanup(serial);
+            if (usb_serial[0]) cleanup(usb_serial);
+            serial[0] = '\0';
+            usb_serial[0] = '\0';
+            media = 0;
+            st = S_NONE;
+            is_cd = cd_only = 0;
+            cd_serial_tries = 0;
+            last_prof = PROFILE_UNKNOWN;
+            prof_poll = 0;
+            usb_done = 0;
+            usb_tries = 0;
+            g_ask_mode = 0;
+            startup = 1; /* the disc has been in for a while: no settle wait */
+        }
 
         /* vk-285-160g: PS5SX2 consumes disc-launch-exec.txt right before it re-execs (keeping its app id).
          * From then, hand the running PS5SX2 focus at +3/+8 s. */
@@ -1122,6 +1186,11 @@ static int disc_auto_loop(void) {
                 if (focus_done >= 1) { g_focus_armed = 0; g_focus_seen = 0; }
             }
         }
+
+        /* 171f game quiet: PS5SX2 plays a game from a drive (its stamp, kp.c): the drive is looked at once per 3 s here, not every second, and the USB scan below
+         * waits. (Only a game that plays counts, not a copy: the copy's end is met by this loop within a second, as before.) */
+        const int gq = kp_game_quiet();
+        if (gq && !kp_game_quiet_due(4)) { sleep(kPollSec); continue; }
 
         /* Is a disc in, and is it the same one? DIOCGMEDIASIZE doesn't touch the disc, so a
          * dump in progress isn't slowed by us re-reading its directory every loop. */
@@ -1227,8 +1296,8 @@ static int disc_auto_loop(void) {
         startup = 0;
 
 
-        /* live-2: a USB DVD drive (pass device only, see usb_dump). Checked every 3 s with TEST UNIT READY. */
-        if (time(NULL) - usb_poll >= 3) {
+        /* live-2: a USB DVD drive (pass device only, see usb_dump). Checked every 3 s with TEST UNIT READY. (Not while a game plays from a drive: 171f.) */
+        if (!gq && time(NULL) - usb_poll >= 3) {
             usb_poll = time(NULL);
             if (usb_fd < 0 && time(NULL) - usb_scan >= 10) {
                 usb_scan = time(NULL);
@@ -1297,7 +1366,7 @@ static int disc_auto_loop(void) {
                     if (xmb_waits()) {
                         /* 2.04: the PS5 home screen: a USB disc is not copied and not started by itself either */
                         say("usb: %s in %s, PS5SX2 is not open: nothing is copied or started", usb_serial, usb_path);
-                        notify("PS2 disc in: %s. Open PS5SX2 and choose on the shelf", usb_serial);
+                        notify_tile("PS2 disc in: %s. Open PS5SX2 and choose on the shelf", usb_serial);
                         uiso[0] = 0;
                     } else if (!find_iso(usb_serial, uiso, sizeof(uiso), 1)) {
                         const uint32_t sectors = usb_capacity(usb_fd);
@@ -1329,7 +1398,7 @@ static int disc_auto_loop(void) {
                 } else if (xmb_waits()) {
                     /* 2.04: from the home screen the game starts when the person presses the disc's tile; the copy is used then. */
                     say("%s: a copy exists (%s), PS5SX2 is not open: waiting for the person", serial, iso);
-                    notify("PS2 disc in: %s. Press its tile on the home screen to play it", serial);
+                    notify_tile("PS2 disc in: %s. Press its tile on the home screen to play it", serial);
                 } else {
                     launch(serial, iso);
                 }
@@ -1337,7 +1406,7 @@ static int disc_auto_loop(void) {
             } else if (xmb_waits()) {
                 /* 2.04: the PS5 home screen (PS5SX2 is not open), no image of this disc: nothing is copied and nothing starts by itself. */
                 say("%s: no ISO in " GAMES_DIR " yet, PS5SX2 is not open: waiting for the person (the disc tile, or PS5SX2's shelf)", serial);
-                notify("PS2 disc in: %s. Press its tile on the home screen to play it", serial);
+                notify_tile("PS2 disc in: %s. Press its tile on the home screen to play it", serial);
                 st = S_DONE;
             } else if (is_cd) {
                 /* live-12: a PS2 CD is dumped here (PS5SX2's dumper reads /dev/cd0, which doesn't give it) */
@@ -1403,6 +1472,11 @@ void *disc_auto_thread(void *arg) {
     disc_auto_loop();
     return NULL;
 }
+
+/* For a host that wants the single-instance rule (the merged DiscTile + DiscLaunch payload): call it once before starting the thread. An earlier
+ * standalone DiscLaunch.elf, or an earlier merged copy, named in logs/disc-auto.pid is killed, and the host's pid is written there (a standalone
+ * copy still running then sees it is superseded and exits by itself). */
+void disc_auto_take_over(void) { take_over(); }
 #else
 int main(void) { return disc_auto_loop(); }
 #endif
