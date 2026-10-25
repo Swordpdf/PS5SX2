@@ -22,6 +22,7 @@
 #include "common/Error.h"
 
 #include "OrbisDiscDrive.h"
+#include "OrbisDiscEject.h"
 #include "OrbisDiscReadAhead.h"
 #include "OrbisDiscReady.h"
 
@@ -50,6 +51,34 @@ namespace
 bool Flag(const char* name)
 {
   return OrbisFlag && OrbisFlag(name);
+}
+
+// 2.16 (OrbisDiscEject.h): the tray lock cd(4) sets at open is taken off, so the drive's eject button works while a game plays from it; again every
+// kAllowEveryMs from DiscReady (the driver can set it again when it looks at the media afresh). Switch file disc_lockeject: left locked (as before 2.16).
+std::atomic<long long> s_allow_ms{0};
+void KeepEjectFree(int fd, const std::string& name, long long now_ms, bool log)
+{
+  if (fd < 0 || Flag("disc_lockeject"))
+  {
+    if (log && fd >= 0)
+    {
+      std::printf("[disc] %s: the tray stays locked while the game plays (switch file disc_lockeject)\n", name.c_str());
+      std::fflush(stdout);
+    }
+    return;
+  }
+  s_allow_ms.store(now_ms);
+  const int e = orbis_disc::AllowEject(fd);
+  static std::atomic<int> s_fail_said{0};
+  if (log || (e && s_fail_said.fetch_add(1) < 3))
+  {
+    if (e)
+      std::printf("[disc] %s: the tray lock could not be taken off (CDIOCALLOW errno %d %s): the eject button may not work while the game plays\n",
+        name.c_str(), e, std::strerror(e));
+    else
+      std::printf("[disc] %s: tray lock taken off (CDIOCALLOW): the drive's eject button works while the game plays\n", name.c_str());
+    std::fflush(stdout);
+  }
 }
 
 // Sony's own read speed command (OrbisDiscScsi.h: SieSetReadSpeed), rotation 0: 0x20 is the drive's 2.0x, 0x32 its 3.2x (4.4 MB/s on a DVD).
@@ -228,6 +257,7 @@ bool IOCtlSrc::Reopen(Error* error)
       std::fflush(stdout);
     }
     m_said_unreadable = true;
+    KeepEjectFree(m_device, m_filename, NowMs(), false); // 2.16: a disc that can't be read must still come out with the eject button
     Error::SetString(error, "The disc in the drive can't be read");
     return false;
   }
@@ -269,6 +299,7 @@ bool IOCtlSrc::Reopen(Error* error)
   // The drive just answered the disc's layers or table of contents: it is ready (DiscReady, which may not ask for a while after the speed
   // command, hands this on until it does).
   m_ready = true;
+  KeepEjectFree(m_device, m_filename, NowMs(), true); // 2.16: after the layers / table of contents were read (the driver locks when it takes the media)
   return true;
 }
 
@@ -454,6 +485,9 @@ bool IOCtlSrc::DiscReady()
   {
     std::lock_guard<std::mutex> lock(m_lock);
     const s64 now = NowMs();
+    // 2.16: the tray lock off again every few seconds (no command when it is off already)
+    if (m_device != -1 && now - s_allow_ms.load() >= orbis_disc::kAllowEveryMs)
+      KeepEjectFree(m_device, m_filename, now, false);
     // 2.11 (OrbisDiscReady.h): the drive is asked at most every 500 ms; not at all for 3 s after the speed command, nor within 2 s of a read that
     // really reached the drive (that read proves a known disc is there and spinning); and a doubtful answer must come twice in a row.
     const s64 proof = m_sectors != 0 && m_ready ? s_last_read.Get() : -1;

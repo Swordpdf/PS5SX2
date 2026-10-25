@@ -71,6 +71,7 @@
 #include "ProsperoDiscDump.h"
 #include "ProsperoDiscSpeed.h"
 #include "OrbisDiscCopy.h"
+#include "OrbisDiscEject.h"
 #include "OrbisDiscPlaying.h"
 #include "OrbisDiscExec.h" // 2.11 (dumpxmb): when the disc helper's exec signal is honoured
 #include "OrbisDiscResume.h"
@@ -652,6 +653,26 @@ namespace
 		rm.cd = in;
 		OrbisDiscSpeedUp(node.path.c_str(), node.bytes, &rm);
 		Log("reading with %s", rm.name.c_str());
+		// 2.16 (OrbisDiscEject.h): the tray lock cd(4) set when `in` was opened is taken off, so the drive's eject button works during the copy (it did not:
+		// tester 2026-10-26); again every few seconds from the reader. An eject then ends the copy as "the disc was taken out", and what was copied is kept
+		// for the next time the same disc goes in (the copy carries on from there, OrbisDiscResume.h). Switch file disc_lockeject: locked as before.
+		const bool lock_eject = OrbisFlag("disc_lockeject");
+		std::atomic<long long> allow_ms{NowMs()};
+		if (lock_eject)
+			Log("the tray stays locked during the copy (switch file disc_lockeject)");
+		else if (const int e = orbis_disc::AllowEject(in))
+			Log("the tray lock could not be taken off (CDIOCALLOW errno %d): the eject button may not work during the copy", e);
+		else
+			Log("tray lock taken off (CDIOCALLOW): the drive's eject button works during the copy (the copy then stops and is carried on next time)");
+		// After a read that failed: is this disc still in? A fresh look (open, size, sector 16), as the watcher looks; anything else than the same size
+		// and a readable ISO volume counts as out.
+		auto disc_gone = [&]() {
+			Node now;
+			const bool there = ProbeNode(node.path, now, false) && now.bytes == node.bytes;
+			if (!there)
+				Log("a read failed and %s holds no readable disc of this size now: the disc was taken out", node.path.c_str());
+			return !there;
+		};
 		const size_t chunk = static_cast<size_t>(OrbisFlag("disc_1m") ? 1 : 4) << 20;
 		const int depth = 4;
 		int last_pct = -1, last_note = 0, last_file_pct = -1; // live-22: last percent published to the shelf
@@ -670,9 +691,14 @@ namespace
 		std::vector<uint64_t> bad_list;
 		uint64_t mark_read_us = 0, mark_read_n = 0;
 		Log("reading %zu MiB at a time, %d ahead", chunk >> 20, depth);
-		const orbis_disc::CopyResult res = orbis_disc::CopyFrom(
+		const orbis_disc::CopyResult res = orbis_disc::CopyFromStop(
 		resume_at, resume_bad, node.bytes, chunk, depth, 3, 4096,
 			[&](uint64_t off, void* buf, size_t len) {
+				if (!lock_eject && NowMs() - allow_ms.load() >= orbis_disc::kAllowEveryMs) // 2.16: the tray lock off again (no command when it is off)
+				{
+					allow_ms.store(NowMs());
+					orbis_disc::AllowEject(in);
+				}
 				const auto a = std::chrono::steady_clock::now();
 				const ssize_t r = OrbisDiscRead(rm, off, buf, len);
 				read_us.fetch_add(static_cast<uint64_t>(
@@ -748,7 +774,8 @@ namespace
 				static int s_said = 0;
 				if (++s_said <= 20)
 					Log("sector %llu unreadable (errno %d): zeros", static_cast<unsigned long long>(sector), errno);
-			});
+			},
+			disc_gone);
 		const uint64_t done = res.done, bad_sectors = res.bad_sectors;
 		const bool failed = res.failed;
 		if (failed)
@@ -760,6 +787,19 @@ namespace
 			Log("%s: could not set the copy's length (errno %d)", serial.c_str(), errno);
 		fsync(out);
 		close(out);
+		if (failed && res.disc_gone)
+		{
+			// 2.16: taken out with the eject button: the .part and its state stay, so the same disc carries on from about here when it goes in again.
+			ClearDumpProgress();
+			const int pct = static_cast<int>(done * 100 / node.bytes);
+			Log("%s: the copy stops at %d%% (%llu of %llu MB): the disc was taken out; put it in again to carry on from there", serial.c_str(), pct,
+				static_cast<unsigned long long>(done >> 20), static_cast<unsigned long long>(node.bytes >> 20));
+			char msg[200];
+			snprintf(msg, sizeof(msg), "PS2 disc %s taken out at %d%%: put it back in to carry on the copy", title.c_str(), pct);
+			OrbisNotifyPlain(msg);
+			sleep(2);
+			return {};
+		}
 		if (failed)
 		{
 			ClearDumpProgress(); // live-22: drop the shelf's spinning-disc entry
@@ -774,9 +814,11 @@ namespace
 		s_copy_end_ms.store(NowMs()); // 2.11 (dumpxmb): t = 0 of the "endcopy" lines and of the exec decision's "the copy ended N ms ago"
 		unlink(state_file.c_str());
 		const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-		Log("done: %s, %llu MB in %.0f s (%.1f MB/s, %.1fx average), %llu unreadable sectors", iso.c_str(),
-			static_cast<unsigned long long>(done >> 20), secs, secs > 0 ? done / secs / 1e6 : 0.0,
-			secs > 0 ? done / secs / orbis_disc::kDvd1x : 0.0, static_cast<unsigned long long>(bad_sectors));
+		// 2.16: the speed of what this run read (a copy carried on from `resume_at` read only the rest; the line said 10.2 MB/s for a 4.4 MB/s copy)
+		const uint64_t read_now = done > resume_at ? done - resume_at : 0;
+		Log("done: %s, %llu MB in %.0f s (%llu MB read in this run: %.1f MB/s, %.1fx average), %llu unreadable sectors", iso.c_str(),
+			static_cast<unsigned long long>(done >> 20), secs, static_cast<unsigned long long>(read_now >> 20), secs > 0 ? read_now / secs / 1e6 : 0.0,
+			secs > 0 ? read_now / secs / orbis_disc::kDvd1x : 0.0, static_cast<unsigned long long>(bad_sectors));
 		char msg[220];
 		snprintf(msg, sizeof(msg), bad_sectors ? "Copied %s, but %llu sectors couldn't be read: the game may not work" :
 		                                         "Copied %s", title.c_str(), static_cast<unsigned long long>(bad_sectors));

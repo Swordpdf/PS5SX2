@@ -126,6 +126,34 @@ int main()
 	[](const void*, size_t) { return true; }, [](uint64_t, uint64_t) {}, [](uint64_t) {});
 	Check(!odd.failed && odd.done == d.bytes, "an offset that is not a whole sector is taken down to one");
 	}
+	// 2.16: the disc taken out with the eject button in the middle of the copy (every read fails from then on): the copy stops at once as
+	// "the disc was taken out", without reading the rest sector by sector, and what was written stays a whole number of chunks of real data.
+	{
+	Drive d; d.bytes = 64u << 20;
+	std::atomic<bool> out_now{false};
+	std::atomic<int> after{0};
+	std::vector<uint8_t> out;
+	int asked = 0;
+	const auto r = CopyFromStop(0, 0, d.bytes, 4 << 20, 4, 3, 4096,
+	[&](uint64_t o, void* b, size_t l) -> ssize_t {
+		if (o >= (20u << 20)) out_now = true; // the tray opens when the copy reaches 20 MiB
+		if (out_now) { after++; errno = ENXIO; return -1; }
+		return d.Read(o, b, l);
+	},
+	[&](const void* b, size_t l) { out.insert(out.end(), (const uint8_t*)b, (const uint8_t*)b + l); return true; },
+	[](uint64_t, uint64_t) {}, [](uint64_t) {}, [&] { asked++; return out_now.load(); });
+	bool same = true;
+	for (uint64_t i = 0; same && i < out.size(); i++) same = out[i] == Byte(i);
+	Check(r.failed && r.disc_gone && r.why == "the disc was taken out", "an eject mid-copy stops it as \"the disc was taken out\"");
+	Check(r.done == (20u << 20) && out.size() == r.done && same && r.bad_sectors == 0, "what was written before is whole and nothing was zero-filled");
+	Check(asked == 1 && after <= 3, "asked once, after the chunk's tries, not sector by sector (" + std::to_string(after.load()) + " failed reads)");
+	// a bad sector with the disc still in: gone() says no and the old sector-by-sector path runs
+	Drive d2; d2.bytes = 8u << 20; d2.bad = {7};
+	int asked2 = 0;
+	const auto r2 = CopyFromStop(0, 0, d2.bytes, 4 << 20, 4, 1, 4096, [&](uint64_t o, void* b, size_t l) { return d2.Read(o, b, l); },
+	[](const void*, size_t) { return true; }, [](uint64_t, uint64_t) {}, [](uint64_t) {}, [&] { asked2++; return false; });
+	Check(!r2.failed && !r2.disc_gone && r2.bad_sectors == 1 && asked2 == 1, "a bad sector with the disc in: asked, still in, zeros as before");
+	}
 	{
 	ResumeState st; st.serial = "SLUS-20312"; st.total = 4000ull << 20; st.done = 1500ull << 20; st.bad = 2;
 	ResumeState back;

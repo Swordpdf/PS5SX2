@@ -306,12 +306,16 @@ void OrbisDiscSpeedUp(const char* cd_path, uint64_t bytes, OrbisDiscReadMethod* 
 	}
 
 	static bool s_described = false; // the drive's answers don't change: once per app run
+	static std::string s_drive;      // 2.16: its INQUIRY text, for the PS5 drive's direct 3.2x below
 	if (!s_described)
 	{
 		s_described = true;
 		uint8_t inq[36] = {};
 		if (!Command(pass, orbis_mmc::Inquiry(), CAM_DIR_IN, inq, sizeof(inq), "INQUIRY").code)
-			Log("  drive: %s", orbis_mmc::InquiryText(inq, sizeof(inq)).c_str());
+		{
+			s_drive = orbis_mmc::InquiryText(inq, sizeof(inq));
+			Log("  drive: %s", s_drive.c_str());
+		}
 		uint8_t page[128] = {};
 		if (!Command(pass, orbis_mmc::ModeSenseCaps(sizeof(page)), CAM_DIR_IN, page, sizeof(page), "MODE SENSE 2A").code)
 		{
@@ -332,6 +336,25 @@ void OrbisDiscSpeedUp(const char* cd_path, uint64_t bytes, OrbisDiscReadMethod* 
 	{
 		close(pass);
 		return;
+	}
+
+	// 2.16: the PS5's own drive (SONY PS-SYSTEM) is known: on every console and disc logged (drive tests 2026-10-16 on 502R/503R, 3 consoles; every
+	// copy since vk-285-154) it takes Sony's DB 00 00 32 (3.2x, 4.43-4.46 MB/s, flat from the inner to the outer edge) and refuses everything faster
+	// (rotation 1-3, rotation 0 with 0x40..0x180, SET CD SPEED, SET STREAMING). So it is set to 3.2x at once for the whole copy, without timing
+	// 3 x 20 MiB first (that took ~15 s of every copy and read nothing the copy kept). Switch file disc_speedprobe: the timed probe as before.
+	if (s_drive.find("PS-SYSTEM") != std::string::npos && !OrbisFlag("disc_speedprobe") && !OrbisFlag("disc_passbench"))
+	{
+		const char* what = "Sony speed command for the copy: rotation 0, speed 3.2x (DB 00 00 32; the PS5 drive's fastest for a DVD)";
+		if (!Command(pass, orbis_mmc::SieSetReadSpeed(0, 0x32), CAM_DIR_NONE | CAM_PASS_ERR_RECOVER, nullptr, 0, what).code)
+		{
+			out->set_rotation = 0;
+			out->set_speed = 0x32;
+			out->name = "pread on /dev/cd0 at " + orbis_mmc::SieSpeedText(0x32) + " (rotation 0)";
+			Log("the copy reads at 3.2x (about 4.4 MB/s: the PS5 drive's ceiling for a DVD; switch file disc_speedprobe times the settings instead)");
+			close(pass);
+			return;
+		}
+		Log("the PS5 drive refused 3.2x this time: the settings are timed instead");
 	}
 
 	// vk-285-152: Sony's speed settings, timed with pread on cd0 (16 MiB each after a 4 MiB warm-up, fresh parts of the disc)
