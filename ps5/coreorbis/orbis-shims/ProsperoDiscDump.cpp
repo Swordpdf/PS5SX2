@@ -439,15 +439,17 @@ namespace
 	// (fe_app.cpp PollDiscDump). This publishes the copy's serial, title and percent (0-100) to logs/disc-dump-progress.txt,
 	// which the shelf polls once or twice a second. The write is atomic (a .tmp renamed over) and cheap (every ~1%, not every
 	// sector); the file is removed when the copy ends (success or fail). Its mtime is refreshed on every write, so the shelf
-	// can treat a file that's gone stale (a crash mid-copy) as finished. Format: "<serial> <pct>\n<title>\n".
+	// can treat a file that's gone stale (a crash mid-copy) as finished. Format: "<serial> <pct>\n<title>\n" and, from 179, a
+	// 3rd line "rate=<MB/s> eta=<seconds> speed=<tag>" so the shelf can show the live speed, the time left and which drive
+	// speed was taken (8x / 3.2x). The first two lines are byte-for-byte as before (an older reader ignores the 3rd).
 	std::string DumpProgressPath() { return OrbisLogPath("disc-dump-progress.txt"); }
-	void PublishDumpProgress(const std::string& serial, const std::string& title, int pct)
+	void PublishDumpProgress(const std::string& serial, const std::string& title, int pct, double mbps, int eta_sec, const std::string& speed)
 	{
 		const std::string path = DumpProgressPath();
 		const std::string tmp = path + ".tmp";
 		if (FILE* f = fopen(tmp.c_str(), "w"))
 		{
-			fprintf(f, "%s %d\n%s\n", serial.c_str(), pct, title.c_str());
+			fprintf(f, "%s %d\n%s\nrate=%.1f eta=%d speed=%s\n", serial.c_str(), pct, title.c_str(), mbps, eta_sec, speed.empty() ? "-" : speed.c_str());
 			fclose(f);
 			if (rename(tmp.c_str(), path.c_str()) != 0)
 				unlink(tmp.c_str());
@@ -645,7 +647,7 @@ namespace
 		if (resume_at)
 			Log("%s: carrying on at %llu of %llu MB (a copy the app's restart cut short)", serial.c_str(), static_cast<unsigned long long>(resume_at >> 20),
 				static_cast<unsigned long long>(node.bytes >> 20));
-		PublishDumpProgress(serial, title, static_cast<int>(resume_at * 100 / node.bytes)); // live-22: the shelf's spinning-disc entry starts here
+		PublishDumpProgress(serial, title, static_cast<int>(resume_at * 100 / node.bytes), 0.0, 0, std::string()); // live-22: the shelf's spinning-disc entry starts here
 		// vk-285-150: the drive asked for its fastest read through its pass device (SET STREAMING; ProsperoDiscSpeed.cpp).
 		// vk-285-147/148's CDRIOCREADSPEED came back EINVAL on the console: it sends SET CD SPEED, a CD command.
 		// vk-285-151: and the fastest way to read it (pread on cd0, or READ commands through pass0; ProsperoDiscSpeed.cpp)
@@ -653,6 +655,8 @@ namespace
 		rm.cd = in;
 		OrbisDiscSpeedUp(node.path.c_str(), node.bytes, &rm);
 		Log("reading with %s", rm.name.c_str());
+		// 179: the drive speed taken, short, for the shelf's copy line (8x / 3.2x; empty when the drive was left as it was)
+		const std::string speedtag = rm.set_speed == 0x80 ? "8x" : (rm.set_speed == 0x32 ? "3.2x" : std::string());
 		// 2.16 (OrbisDiscEject.h): the tray lock cd(4) set when `in` was opened is taken off, so the drive's eject button works during the copy (it did not:
 		// tester 2026-10-26); again every few seconds from the reader. An eject then ends the copy as "the disc was taken out", and what was copied is kept
 		// for the next time the same disc goes in (the copy carries on from there, OrbisDiscResume.h). Switch file disc_lockeject: locked as before.
@@ -684,6 +688,11 @@ namespace
 		// the speed over the last 5% (a CAV drive speeds up toward the disc's edge)
 		uint64_t mark_done = resume_at;
 		auto mark_time = t0;
+		// 179: a smoothed current rate (EWMA over ~1 s samples, so ~a few seconds of smoothing) and the time left, for the shelf
+		uint64_t sm_done = resume_at;
+		auto sm_time = t0;
+		double sm_bps = 0.0;
+		int sm_eta = 0;
 		// vk-285-148: how long the drive takes per read, and how much of the time a read was running ("drive busy"):
 		// busy near 100% at a steady speed is the drive's own limit; well under it, the copy loop is waiting on something.
 		std::atomic<uint64_t> read_us{0}, read_n{0};
@@ -714,7 +723,19 @@ namespace
 				if (pct != last_file_pct)
 				{
 					last_file_pct = pct;
-					PublishDumpProgress(serial, title, pct);
+					{
+						const auto now2 = std::chrono::steady_clock::now();
+						const double dt = std::chrono::duration<double>(now2 - sm_time).count();
+						if (dt >= 1.0)
+						{
+							const double inst = dt > 0 ? (done - sm_done) / dt : 0.0;
+							sm_bps = sm_bps > 0 ? sm_bps * 0.5 + inst * 0.5 : inst;
+							sm_done = done;
+							sm_time = now2;
+							sm_eta = (sm_bps > 1e5 && node.bytes > done) ? static_cast<int>((node.bytes - done) / sm_bps) : 0;
+						}
+					}
+					PublishDumpProgress(serial, title, pct, sm_bps / 1e6, sm_eta, speedtag);
 					// 2.11: how far the writing has come, for a restart to carry on from (OrbisDiscResume.h)
 					{
 						orbis_disc::ResumeState st;

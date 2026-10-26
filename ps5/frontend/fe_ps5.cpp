@@ -1647,9 +1647,9 @@ bool orbis_web_start(const OrbisFrontendPaths& paths, const char* build_tag)
 	cfg.logs_dir = paths.logs_dir;
 	cfg.top_dir = paths.top_dir;
 	cfg.memcards_dir = paths.memcards_dir; // vk-285-113
-	// 2.12: a game's tile on the PS5 home screen (the page's row; the PS5SX2 Disc Helper makes it): OFF unless the flag file flags/gametiles is there (the helper
-	// has the same switch), and flags/nogametiles wins.
-	cfg.tiles_dir = OrbisFlag("gametiles") && !OrbisFlag("nogametiles") ? paths.top_dir + "/tiles" : std::string();
+	// 2.12 / 179: a game's tile on the PS5 home screen (the page's row; the PS5SX2 Disc Helper makes it): ON by default (no flag file needed), the
+	// helper has the same default; the flag file flags/gametile_off switches it off in both and wins.
+	cfg.tiles_dir = !OrbisFlag("gametile_off") ? paths.top_dir + "/tiles" : std::string();
 	cfg.own_tile_game = orbis_own_tile_game();
 	cfg.report_header = paths.report_header;
 	cfg.test_build = paths.test_build;
@@ -2164,8 +2164,8 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		acfg.options.cheats_dir = paths.cheats_dir;
 	}
 	acfg.system_menu = true; // 2026-10-08: the sheet for all games offers the PS2 system menu (main-boot.cpp boots it)
-	// 2.12: the Home screen tile row (see orbis_web_start): only with the flag file flags/gametiles. The cover goes to the helper for the tile's art.
-	acfg.tiles_dir = OrbisFlag("gametiles") && !OrbisFlag("nogametiles") ? paths.top_dir + "/tiles" : std::string();
+	// 2.12 / 179: the Home screen tile row (see orbis_web_start): ON by default; the flag file flags/gametile_off switches it off. The cover goes to the helper for the tile's art.
+	acfg.tiles_dir = !OrbisFlag("gametile_off") ? paths.top_dir + "/tiles" : std::string();
 	acfg.own_tile_game = orbis_own_tile_game();
 	if (!acfg.tiles_dir.empty())
 	{
@@ -2175,7 +2175,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 			const std::string best = finder.Best(g).path;
 			return gametile::CoverFileOk(best) ? best : std::string();
 		};
-		std::printf("[tiles] game tiles: on (flags/gametiles); the helper and the shelf talk through %s\n", acfg.tiles_dir.c_str());
+		std::printf("[tiles] game tiles: on by default (flag gametile_off removes them); the helper and the shelf talk through %s\n", acfg.tiles_dir.c_str());
 		std::fflush(stdout);
 	}
 	// 2.11: the shelf's search and the settings page's search box

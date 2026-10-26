@@ -770,6 +770,7 @@ void App::RemoveDumpEntry()
 {
 	const int pos = DumpPos();
 	m_dump_on = false; // (the disc art is let go by PollDriveDisc once no entry wants it)
+	m_dump_mbps = 0.0; m_dump_eta = 0; m_dump_speed.clear(); // 179
 	if (pos < 0)
 	return;
 	Slot& s = m_slots[static_cast<size_t>(pos)];
@@ -802,6 +803,9 @@ void App::PollDiscDump()
 	std::string serial, title;
 	int pct = -1;
 	bool active = false;
+	double mbps = 0.0; // 179
+	int eta = 0;       // 179 (seconds)
+	char speed[32] = {0}; // 179 ("8x"/"3.2x"/"-")
 	struct stat st;
 	// A file last written in the last 20 s: a live copy (every ~1% write refreshes its mtime). An older one is a copy that
 	// crashed; it is treated as finished so the entry doesn't linger.
@@ -820,6 +824,9 @@ void App::PollDiscDump()
 						line[--len] = 0;
 					title = line;
 				}
+				char l3[160] = {0};
+				if (std::fgets(l3, sizeof(l3), f)) // 179: optional "rate=<MB/s> eta=<s> speed=<tag>"
+					std::sscanf(l3, "rate=%lf eta=%d speed=%31s", &mbps, &eta, speed);
 				active = true;
 			}
 			std::fclose(f);
@@ -836,6 +843,10 @@ void App::PollDiscDump()
 		}
 		else
 		m_dump_pct = pct;
+		// 179: the live speed/time-left/drive-speed shown on the dump entry (Build)
+		m_dump_mbps = mbps;
+		m_dump_eta = eta;
+		m_dump_speed = (speed[0] && std::strcmp(speed, "-") != 0) ? speed : std::string();
 	}
 	else if (m_dump_on)
 		RemoveDumpEntry();
@@ -1511,8 +1522,29 @@ void App::Build(FrameDesc& f, const std::string& clock)
 		};
 		add(g.serial);
 		add(Region(g.region)); // vk-285-110: the region names in the PS5's language
-		if (m_index[static_cast<size_t>(m_selected)] == kDumpIndex) // live-22: the disc being copied, not a sized image
-			add("Copying " + std::to_string(m_dump_pct) + "%");
+		if (m_index[static_cast<size_t>(m_selected)] == kDumpIndex) // live-22 / 179: the disc being copied, with the live speed and the time left
+		{
+			char cp[48];
+			std::snprintf(cp, sizeof(cp), Tr(Str::CopyDumpPct), m_dump_pct);
+			add(cp);
+			if (m_dump_mbps > 0.05)
+			{
+				char r[32];
+				std::snprintf(r, sizeof(r), "%.1f MB/s", m_dump_mbps);
+				add(r);
+			}
+			if (m_dump_eta > 0)
+			{
+				char e[48];
+				if (m_dump_eta < 60)
+					std::snprintf(e, sizeof(e), "%s", Tr(Str::CopyEtaLessMin));
+				else
+					std::snprintf(e, sizeof(e), Tr(Str::CopyEtaMin), (m_dump_eta + 59) / 60);
+				add(e);
+			}
+			if (!m_dump_speed.empty())
+				add(m_dump_speed); // 179: the drive speed taken (8x / 3.2x)
+		}
 			else if (m_index[static_cast<size_t>(m_selected)] == kDriveIndex) // 2.11 (review): no size
 			add("In the drive");
 			else
@@ -2297,7 +2329,7 @@ std::string App::OnlinePatchValue() const
 // swordpdf: "add an option to add a game from the shelf to the xmb (square - and then option on) it should utilize the existing mounting scheme we have, we
 // should also be able to delete it, again, from the shelf". The row asks the PS5SX2 Disc Helper (one small file per press, in tiles_dir) to make a copy of this
 // app under a title ID of its own that starts this game from the home screen, and shows what the helper says about it. English like the rest of the sheet.
-// Nothing is read or written unless AppConfig::tiles_dir is set (the flag file flags/gametiles), and then only with the row shown or an ask pending.
+// Nothing is read or written unless AppConfig::tiles_dir is set (on by default; the flag file flags/gametile_off clears it), and then only with the row shown or an ask pending.
 
 int App::TileFocused() const
 {

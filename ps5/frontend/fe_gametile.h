@@ -8,7 +8,7 @@
 // In short: the helper makes a COPY of PS5SX2's own app under a title ID of PPSA99251..PPSA99260, registers it through ShadowMount+ and tells the shelf what
 // it is doing through two small files in /data/PCSX2/tiles/ (alive.txt, state.txt). The shelf asks with ONE FILE PER PRESS (request-<ms>-<n>.txt, made as
 // .tmp and renamed in) and never opens one that is there. A pressed tile starts PS5SX2 from the copy, which reads /app0/game-tile.txt (ParseMarker) and
-// starts exactly that game with no shelf. Everything is OFF unless the flag file flags/gametiles exists (fe_ps5.cpp sets AppConfig::tiles_dir then).
+// starts exactly that game with no shelf. Game tiles are ON by default; the flag file flags/gametile_off switches them off (fe_ps5.cpp clears AppConfig::tiles_dir then).
 //
 // Every function is inline and every constant inline constexpr: five translation units include this file. No exceptions, no RTTI, no big stack arrays.
 //
@@ -1037,7 +1037,7 @@ inline std::string ReasonText(const std::string& reason)
 	if (reason == "build")
 		return "Building the tile failed (the helper's log has the details).";
 	if (reason == "disabled")
-		return "Game tiles are switched off in the helper (flag gametile_off, or gametiles missing).";
+		return "Game tiles are switched off in the helper (flag gametile_off).";
 	if (reason == "busy")
 		return "The helper's request queue is full: try again in a minute.";
 	if (reason == "damaged")
@@ -1081,7 +1081,7 @@ inline std::string HelpText(const View& v, const std::string& title, bool own_ti
 				return "The tile is still on the home screen. If the game runs from it, close it first, then try again.";
 			return "The helper took the request but the tile did not show up in time. Press Cross to try again; disctile.log (flag kp_log) says why.";
 		case Phase::NoHelper:
-			return "The helper that makes game tiles is not running. Create the file gametiles in /data/PCSX2/flags, then load the newest PS5SX2 Disc Helper (171g).";
+			return "The helper that makes game tiles is not running yet. The app loads it at start; if it did not, load the PS5SX2 Disc Helper (171j) by hand.";
 	}
 	return {};
 }

@@ -41,6 +41,7 @@
 
 #include "ProsperoDiscSpeed.h"
 #include "OrbisDiscScsi.h"
+#include "OrbisDiscPread64.h"
 #include "ProsperoNotify.h"
 #include "OrbisPaths.h"
 
@@ -52,6 +53,7 @@
 #include <cam/scsi/scsi_message.h>
 #include <cam/scsi/scsi_pass.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -226,15 +228,23 @@ namespace
 		bool ok = false;
 		std::string why;
 	};
+
+	// DiscSpeed8: a pread on /dev/cd0 larger than 64 KiB is cut into 64 KiB preads (OrbisDiscPread64.h); the copy's ring of 4 MiB chunks (its
+	// queue depth) is untouched - each chunk is just filled with several 64 KiB reads. The switch file disc_nopread64 restores the single big pread.
+	ssize_t Pread64(int fd, void* buf, size_t len, uint64_t off)
+	{
+		static const bool one = OrbisFlag("disc_nopread64");
+		return orbis_disc::Pread64(buf, len, off, one, [fd](void* b, size_t n, uint64_t o) { return pread(fd, b, n, static_cast<off_t>(o)); });
+	}
 } // namespace
 
 ssize_t OrbisDiscRead(const OrbisDiscReadMethod& m, uint64_t off, void* buf, size_t len)
 {
 	if (m.cmd_bytes == 0 || m.pass[0] < 0 || (off % 2048) || (len % 2048))
-		return pread(m.cd, buf, len, static_cast<off_t>(off));
+		return Pread64(m.cd, buf, len, off); // DiscSpeed8: 64 KiB preads (or one big pread with disc_nopread64)
 	if (PassRead(m, off, buf, len) == 0)
 		return static_cast<ssize_t>(len);
-	return pread(m.cd, buf, len, static_cast<off_t>(off)); // what the pass read couldn't do, the plain way
+	return Pread64(m.cd, buf, len, off); // what the pass read couldn't do, the plain way
 }
 
 void OrbisDiscSpeedRestore(const char* cd_path, OrbisDiscReadMethod& m)
@@ -344,17 +354,57 @@ void OrbisDiscSpeedUp(const char* cd_path, uint64_t bytes, OrbisDiscReadMethod* 
 	// 3 x 20 MiB first (that took ~15 s of every copy and read nothing the copy kept). Switch file disc_speedprobe: the timed probe as before.
 	if (s_drive.find("PS-SYSTEM") != std::string::npos && !OrbisFlag("disc_speedprobe") && !OrbisFlag("disc_passbench"))
 	{
-		const char* what = "Sony speed command for the copy: rotation 0, speed 3.2x (DB 00 00 32; the PS5 drive's fastest for a DVD)";
-		if (!Command(pass, orbis_mmc::SieSetReadSpeed(0, 0x32), CAM_DIR_NONE | CAM_PASS_ERR_RECOVER, nullptr, 0, what).code)
+		// DiscSpeed8 (the owner's method): try Sony's 8.0 level (rotation 1, DB 01 00 80) first - the PS5 drive can take it through the pass device
+		// on some firmware, about twice the 3.2x it was limited to - and fall back to 3.2x (DB 00 00 32) if it refuses. The switch file disc_no8x
+		// skips the 8x try (3.2x straight away, the 2.15 behaviour). A short measured read is logged so a copy log shows 8x vs 3.2x in MB/s.
+		struct Try { uint8_t rot; uint16_t sp; };
+		const Try tryset[2] = {{1, 0x0080}, {0, 0x0032}};
+		const int first = OrbisFlag("disc_no8x") ? 1 : 0;
+		bool set = false;
+		for (int i = first; i < 2 && !set; i++)
 		{
-			out->set_rotation = 0;
-			out->set_speed = 0x32;
-			out->name = "pread on /dev/cd0 at " + orbis_mmc::SieSpeedText(0x32) + " (rotation 0)";
-			Log("the copy reads at 3.2x (about 4.4 MB/s: the PS5 drive's ceiling for a DVD; switch file disc_speedprobe times the settings instead)");
+			char what[128];
+			snprintf(what, sizeof(what), "Sony speed command for the copy: rotation %u, speed %s (DB %02x %02x %02x)", tryset[i].rot,
+				orbis_mmc::SieSpeedText(tryset[i].sp).c_str(), 0xdb, tryset[i].sp >> 8, tryset[i].sp & 0xFF);
+			if (Command(pass, orbis_mmc::SieSetReadSpeed(tryset[i].rot, tryset[i].sp), CAM_DIR_NONE | CAM_PASS_ERR_RECOVER, nullptr, 0, what).code)
+			{
+				Log("the PS5 drive refused %s this time%s", orbis_mmc::SieSpeedText(tryset[i].sp).c_str(),
+					i + 1 < 2 ? " - trying 3.2x next" : " - the settings are timed instead");
+				continue;
+			}
+			out->set_rotation = tryset[i].rot;
+			out->set_speed = tryset[i].sp;
+			out->name = "pread on /dev/cd0 at " + orbis_mmc::SieSpeedText(tryset[i].sp) + " (rotation " + std::to_string(tryset[i].rot) + ")";
+			// a short measured read for the log: 8 MiB after a 4 MiB warm-up, 64 KiB preads, 64 MiB in from the inner edge
+			double mbs = 0.0;
+			const int cd = out->cd;
+			const uint64_t from = 64ull << 20;
+			if (cd >= 0 && from + (12ull << 20) <= bytes)
+			{
+				std::vector<uint8_t> sbuf(64u << 10);
+				for (uint64_t o = from; o < from + (4ull << 20); o += sbuf.size())
+					pread(cd, sbuf.data(), sbuf.size(), static_cast<off_t>(o));
+				const auto t0 = std::chrono::steady_clock::now();
+				uint64_t gotb = 0;
+				for (uint64_t o = from + (4ull << 20); o < from + (12ull << 20); o += sbuf.size())
+				{
+					if (pread(cd, sbuf.data(), sbuf.size(), static_cast<off_t>(o)) != static_cast<ssize_t>(sbuf.size()))
+						break;
+					gotb += sbuf.size();
+				}
+				const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+				mbs = sec > 0 ? gotb / sec / 1e6 : 0;
+			}
+			Log("the copy reads at %s: %.2f MB/s = %.2fx DVD (DiscSpeed8 8x-first; switch file disc_speedprobe times every setting, disc_no8x skips 8x)",
+				orbis_mmc::SieSpeedText(tryset[i].sp).c_str(), mbs, mbs * 1e6 / 1385000.0);
+			set = true;
+		}
+		if (set)
+		{
 			close(pass);
 			return;
 		}
-		Log("the PS5 drive refused 3.2x this time: the settings are timed instead");
+		// Both refused: fall through to the timed probe below (it tries the same settings and times each one).
 	}
 
 	// vk-285-152: Sony's speed settings, timed with pread on cd0 (16 MiB each after a 4 MiB warm-up, fresh parts of the disc)

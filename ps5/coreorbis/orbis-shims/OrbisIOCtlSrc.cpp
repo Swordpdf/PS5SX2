@@ -24,6 +24,7 @@
 #include "OrbisDiscDrive.h"
 #include "OrbisDiscEject.h"
 #include "OrbisDiscReadAhead.h"
+#include "OrbisDiscPread64.h"
 #include "OrbisDiscReady.h"
 
 #include <arpa/inet.h>
@@ -81,11 +82,43 @@ void KeepEjectFree(int fd, const std::string& name, long long now_ms, bool log)
   }
 }
 
-// Sony's own read speed command (OrbisDiscScsi.h: SieSetReadSpeed), rotation 0: 0x20 is the drive's 2.0x, 0x32 its 3.2x (4.4 MB/s on a DVD).
-bool SetSonySpeed(int pass, uint16_t speed)
+s64 NowMs(); // forward decl: defined lower, used by MeasureCd0 below
+// Sony's own read speed command (OrbisDiscScsi.h: SieSetReadSpeed): rotation 0 0x20 is the drive's 2.0x, 0x32 its 3.2x (4.4 MB/s on a
+// DVD); rotation 1 0x80 is its 8.0 level - DiscSpeed8 (the owner's method) found the PS5 drive can take it through the pass device on some
+// firmware, about twice the 3.2x it was limited to. Returns whether the drive took the command.
+bool SetSonySpeed(int pass, uint16_t speed, uint8_t rotation = 0)
 {
   orbis_mmc::Sense sense;
-  return OrbisDiscDrive::Command(pass, orbis_mmc::SieSetReadSpeed(0, speed), nullptr, 0, 10000, &sense);
+  return OrbisDiscDrive::Command(pass, orbis_mmc::SieSetReadSpeed(rotation, speed), nullptr, 0, 10000, &sense);
+}
+
+// A short timed read straight off /dev/cd0 in 64 KiB preads (DiscSpeed8's fast path), for the measured-speed line in the log after a speed
+// command. Returns MB/s, or 0 when the disc is too small to time or a read failed. Reads 8 MiB after a 1 MiB warm-up, 4 MiB in from the
+// inner edge so the drive is at its set class.
+double MeasureCd0(int fd, u32 total_sectors)
+{
+  if (fd < 0)
+    return 0.0;
+  static u8 buf[64 * 1024];
+  const u32 step = 32;                       // 32 sectors = 64 KiB per pread
+  const u32 start = (4u << 20) / 2048;       // 4 MiB in
+  const u32 warm = (1u << 20) / 2048;        // 1 MiB warm-up
+  const u32 span = (8u << 20) / 2048;        // time 8 MiB
+  if (total_sectors == 0 || start + warm + span > total_sectors)
+    return 0.0;
+  for (u32 s = start; s < start + warm; s += step)
+    if (pread(fd, buf, sizeof(buf), static_cast<off_t>(s) * 2048) != static_cast<ssize_t>(sizeof(buf)))
+      return 0.0;
+  const s64 t0 = NowMs();
+  u64 got = 0;
+  for (u32 s = start + warm; s < start + warm + span; s += step)
+  {
+    if (pread(fd, buf, sizeof(buf), static_cast<off_t>(s) * 2048) != static_cast<ssize_t>(sizeof(buf)))
+      return 0.0;
+    got += sizeof(buf);
+  }
+  const double sec = (NowMs() - t0) / 1000.0;
+  return sec > 0 ? static_cast<double>(got) / sec / 1e6 : 0.0;
 }
 
 // The read-ahead's counters as one line of boot.log when the drive is closed. (While a game plays, the CDVD thread's line every 10 s has them:
@@ -152,7 +185,12 @@ bool AllData(const std::vector<toc_entry>& toc, u32 sectors, u32 first, u32 last
 bool Pread2048(int fd, u32 sector, u32 count, u8* buffer)
 {
   const ssize_t want = 2048 * static_cast<ssize_t>(count);
-  const ssize_t got = pread(fd, buffer, static_cast<size_t>(want), sector * 2048ULL);
+  // DiscSpeed8: the PS5's cd(4) driver serves several small preads far faster than one big one (64 KiB measured 15-24 MB/s against ~5 for
+  // 1 MiB on the same disc), so a read over 64 KiB is cut into 64 KiB preads (OrbisDiscPread64.h). The switch file disc_nopread64 restores
+  // the single big pread.
+  static const bool s_one_pread = Flag("disc_nopread64");
+  const ssize_t got = orbis_disc::Pread64(buffer, static_cast<size_t>(want), static_cast<uint64_t>(sector) * 2048ULL, s_one_pread,
+    [fd](void* b, size_t n, uint64_t o) { return pread(fd, b, n, static_cast<off_t>(o)); });
   if (got == want)
   {
     s_last_read.Note(NowMs());
@@ -270,9 +308,21 @@ bool IOCtlSrc::Reopen(Error* error)
   {
     // The drive keeps the speed it was given for as long as its disc stays in, and the app that gave it 3.2x may have been closed by the PS button
     // (nothing runs then to put it back): the switch file nodisc32 sends the 2.0x command, else a run "without 3.2x" would read at 3.2x all the same.
+    // DiscSpeed8 (the owner's method): try Sony's 8.0 level (rotation 1, DB 01 00 80) first - the PS5 drive can take it through the pass device
+    // on some firmware, about twice the 3.2x - and fall back to 3.2x (DB 00 00 32) if it refuses. The switch file disc_no8x skips the 8x try (3.2x
+    // straight away, the 2.15 behaviour).
     const bool want_fast = !Flag("nodisc32");
-    const bool taken = SetSonySpeed(m_pass, want_fast ? 0x32 : 0x20);
-    m_fast = taken && want_fast; // (only 3.2x is put back by the destructor)
+    const char* speed_txt = "2.0x (switch file nodisc32)";
+    bool taken = false;
+    if (want_fast)
+    {
+      if (!Flag("disc_no8x") && SetSonySpeed(m_pass, 0x80, 1)) { taken = true; speed_txt = "8.0x (DB 01 00 80)"; }
+      else if (SetSonySpeed(m_pass, 0x32, 0)) { taken = true; speed_txt = "3.2x (DB 00 00 32)"; }
+      else speed_txt = "fast (refused)";
+    }
+    else
+      taken = SetSonySpeed(m_pass, 0x20, 0);
+    m_fast = taken && want_fast; // (a faster-than-default speed is put back to 2.0x by the destructor)
     // The speed change can be reported as UNIT ATTENTION by the next command: taken here, like the one at the start of this function, so
     // that DiscReady's next UNIT ATTENTION means a real disc change. The drive needs ~0.7 s to change speed (the first read after the
     // command took 497-710 ms): nothing is asked of it for 3 s after it (ReadyPolicy::kSettleMs).
@@ -285,9 +335,14 @@ bool IOCtlSrc::Reopen(Error* error)
         unit_attentions++;
       m_ready_policy->StartSettle(NowMs());
     }
-    std::printf("[disc] %s: drive speed %s %s%s%s%s\n", m_filename.c_str(), want_fast ? "3.2x" : "2.0x (switch file nodisc32)", taken ? "taken" : "refused",
+    // Measure and log the real MB/s at the set speed (DiscSpeed8 wants 8x vs 3.2x shown); the switch file disc_nomeasure skips it.
+    const double mbs = (m_fast && !Flag("disc_nomeasure")) ? MeasureCd0(m_device, m_sectors) : 0.0;
+    char mbs_txt[48] = {0};
+    if (mbs > 0)
+      std::snprintf(mbs_txt, sizeof(mbs_txt), "; measured %.2f MB/s (%.2fx DVD)", mbs, mbs * 1e6 / 1385000.0);
+    std::printf("[disc] %s: drive speed %s %s%s%s%s%s\n", m_filename.c_str(), speed_txt, taken ? "taken" : "refused",
       unit_attentions ? " (a UNIT ATTENTION followed it, taken)" : "", taken && !after_ready ? "; TEST UNIT READY right after it: " : "",
-      taken && !after_ready ? orbis_mmc::SenseText(after).c_str() : "");
+      taken && !after_ready ? orbis_mmc::SenseText(after).c_str() : "", mbs_txt);
     std::fflush(stdout);
   }
   std::printf("[disc] %s: %s, %s, %u sectors, layer break %u, %zu track(s); pass-through %s%s\n", m_filename.c_str(),

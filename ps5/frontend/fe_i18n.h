@@ -122,6 +122,9 @@ enum class Str : int
 	ShelfNoBios,        // vk-285-134: "No PS2 BIOS found: games can't start. Copy your BIOS file ... to %s" (the shelf's line)
 	NotifyTileGameMissing, // 2.12: "PS5SX2: the game of this home screen tile was not found (%s). Is its drive connected? The shelf opens instead." (%s: the file's name)
 	NotifyTileGameInvalid, // 2.12: "PS5SX2: this home screen tile doesn't name a game PS5SX2 can start. The shelf opens instead."
+	CopyDumpPct,        // 179: "Copying %d%%" (the disc-copy entry on the shelf)
+	CopyEtaMin,         // 179: "%d min left" (time left for the disc copy)
+	CopyEtaLessMin,     // 179: "under a minute left"
 	Count
 };
 

@@ -3524,6 +3524,9 @@ int main()
   orbis_log_flag_access("after the jailbreak");
 #endif
   orbis_boot_log_release("after the jailbreak"); // vk-285-113: boot.log's first lines, when /data wasn't there yet
+  // 179: load the PS5SX2 Disc Helper ourselves (PS5SX3-style, 127.0.0.1:9021) so the user need not load it by hand
+  // (OrbisHelperAutoload.cpp; the flag file helper_noautoload skips it, and it never replaces a newer or a busy helper).
+  { extern void OrbisHelperAutoStart(); OrbisHelperAutoStart(); }
 #ifdef ORBIS_VULKAN
   orbis_ensure_data_layout(); // vk-285-115: the release's switch files on a console set up by hand
 #endif

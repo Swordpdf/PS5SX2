@@ -226,6 +226,10 @@ private:
 	bool m_dump_on = false;
 	std::string m_dump_serial, m_dump_title;
 	int m_dump_pct = 0;
+	// 179: the live copy speed shown on the dump entry: smoothed MB/s, seconds left (0 = unknown), and the drive speed taken ("8x"/"3.2x"/"").
+	double m_dump_mbps = 0.0;
+	int m_dump_eta = 0;
+	std::string m_dump_speed;
 	float m_dump_spin = 0;      // the disc's rotation, advanced each frame
 	double m_dump_poll = -10;   // when the status file was last read
 	// 2.11 (swordpdf: "we can also use the circular disc cover for when a game is dumping"): the disc being copied shows its own disc art (LaunchBox, or

@@ -115,6 +115,7 @@ const char* const kKeys[kCount] = {
 	"shelf.no_bios",
 	"notify.tile_game_missing",
 	"notify.tile_game_invalid",
+	"CopyDumpPct", "CopyEtaMin", "CopyEtaLessMin", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
 };
 
 const char* const kEnglish[kCount] = {
@@ -215,6 +216,7 @@ const char* const kEnglish[kCount] = {
 	"No PS2 BIOS found: games can't start. Copy your BIOS file (4 MB, e.g. SCPH-70012.bin) to %s",
 	"PS5SX2: the game of this home screen tile was not found (%s). Is its drive connected? The shelf opens instead.",
 	"PS5SX2: this home screen tile doesn't name a game PS5SX2 can start. The shelf opens instead.",
+	"Copying %d%%", "%d min left", "under a minute left", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
 };
 
 const char* const kSpanish[kCount] = {
@@ -315,6 +317,7 @@ const char* const kSpanish[kCount] = {
 	"No se encontró BIOS de PS2: los juegos no pueden iniciarse. Copia tu archivo de BIOS (4 MB, p. ej. SCPH-70012.bin) en %s",
 	"PS5SX2: no se ha encontrado el juego de este icono de la pantalla de inicio (%s). ¿Está conectada su unidad? Se abre el menú.",
 	"PS5SX2: este icono de la pantalla de inicio no indica un juego que PS5SX2 pueda iniciar. Se abre el menú.",
+	"Copiando %d%%", "%d min restantes", "menos de un minuto", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
 };
 
 const char* const kSpanishLatAm[kCount] = {
@@ -415,6 +418,7 @@ const char* const kSpanishLatAm[kCount] = {
 	"No se encontró un BIOS de PS2: los juegos no pueden iniciar. Copia tu archivo de BIOS (4 MB, p. ej. SCPH-70012.bin) a %s",
 	"PS5SX2: no se encontró el juego de este mosaico de la pantalla de inicio (%s). ¿Está conectada su unidad? Se abre el menú.",
 	"PS5SX2: este mosaico de la pantalla de inicio no indica un juego que PS5SX2 pueda iniciar. Se abre el menú.",
+	"Copiando %d%%", "%d min restantes", "menos de un minuto", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
 };
 
 const char* const kFrench[kCount] = {
@@ -515,6 +519,7 @@ const char* const kFrench[kCount] = {
 	"Aucun BIOS PS2 trouvé : les jeux ne peuvent pas démarrer. Copiez votre fichier BIOS (4 Mo, p. ex. SCPH-70012.bin) dans %s",
 	"PS5SX2 : le jeu de cette vignette de l'écran d'accueil est introuvable (%s). Son lecteur est-il branché ? Le menu s'ouvre à la place.",
 	"PS5SX2 : cette vignette de l'écran d'accueil n'indique pas de jeu que PS5SX2 peut lancer. Le menu s'ouvre à la place.",
+	"Copie %d%%", "%d min restantes", "moins d'une minute", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
 };
 
 const char* const kGerman[kCount] = {
@@ -615,6 +620,7 @@ const char* const kGerman[kCount] = {
 	"Kein PS2-BIOS gefunden: Spiele können nicht starten. Kopiere deine BIOS-Datei (4 MB, z. B. SCPH-70012.bin) nach %s",
 	"PS5SX2: Das Spiel dieser Kachel auf dem Startbildschirm wurde nicht gefunden (%s). Ist das Laufwerk angeschlossen? Stattdessen öffnet sich das Menü.",
 	"PS5SX2: Diese Kachel auf dem Startbildschirm nennt kein Spiel, das PS5SX2 starten kann. Stattdessen öffnet sich das Menü.",
+	"Kopiere %d%%", "noch %d Min", "weniger als eine Minute", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
 };
 
 const char* const kItalian[kCount] = {
@@ -715,6 +721,7 @@ const char* const kItalian[kCount] = {
 	"Nessun BIOS PS2 trovato: i giochi non possono avviarsi. Copia il tuo file BIOS (4 MB, es. SCPH-70012.bin) in %s",
 	"PS5SX2: il gioco di questo riquadro della schermata Home non è stato trovato (%s). L'unità è collegata? Si apre il menu.",
 	"PS5SX2: questo riquadro della schermata Home non indica un gioco che PS5SX2 possa avviare. Si apre il menu.",
+	"Copia %d%%", "%d min rimanenti", "meno di un minuto", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
 };
 
 const char* const kDutch[kCount] = {
@@ -815,6 +822,7 @@ const char* const kDutch[kCount] = {
 	"Geen PS2-BIOS gevonden: games kunnen niet starten. Kopieer je BIOS-bestand (4 MB, bijv. SCPH-70012.bin) naar %s",
 	"PS5SX2: de game van deze tegel op het startscherm is niet gevonden (%s). Is het station aangesloten? In plaats daarvan gaat het menu open.",
 	"PS5SX2: deze tegel op het startscherm wijst geen game aan die PS5SX2 kan starten. In plaats daarvan gaat het menu open.",
+	"Kopiëren %d%%", "%d min resterend", "minder dan een minuut", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
 };
 
 const char* const kPortuguese[kCount] = {
@@ -915,6 +923,7 @@ const char* const kPortuguese[kCount] = {
 	"Nenhuma BIOS da PS2 encontrada: os jogos não podem arrancar. Copie o seu ficheiro de BIOS (4 MB, p. ex. SCPH-70012.bin) para %s",
 	"PS5SX2: o jogo deste mosaico do ecrã principal não foi encontrado (%s). A unidade está ligada? O menu abre-se em vez disso.",
 	"PS5SX2: este mosaico do ecrã principal não indica um jogo que o PS5SX2 consiga iniciar. O menu abre-se em vez disso.",
+	"A copiar %d%%", "%d min restantes", "menos de um minuto", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
 };
 
 const char* const kPortugueseBrazil[kCount] = {
@@ -1015,6 +1024,7 @@ const char* const kPortugueseBrazil[kCount] = {
 	"Nenhuma BIOS do PS2 encontrada: os jogos não podem iniciar. Copie seu arquivo de BIOS (4 MB, ex.: SCPH-70012.bin) para %s",
 	"PS5SX2: o jogo deste ícone da tela inicial não foi encontrado (%s). A unidade está conectada? O menu abre no lugar.",
 	"PS5SX2: este ícone da tela inicial não indica um jogo que o PS5SX2 possa iniciar. O menu abre no lugar.",
+	"Copiando %d%%", "%d min restantes", "menos de um minuto", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
 };
 
 // The region names fe_games.cpp takes from a file name's first group (kRegions there), in its order.

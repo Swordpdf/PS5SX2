@@ -1644,7 +1644,7 @@ void WebServer::ApiTile(const Request& req, Response& res)
 		if (req.method == "POST")
 		{
 			res.status = 409;
-			res.body = Error(m_cfg.tiles_dir.empty() ? "game tiles are off (create the file gametiles in /data/PCSX2/flags)" : "this game can't have a tile");
+			res.body = Error(m_cfg.tiles_dir.empty() ? "game tiles are off (the flag file gametile_off removes them)" : "this game can't have a tile");
 			return;
 		}
 		res.body = "{\"available\":false,\"id\":" + Json(id) + ",\"why\":" + Json(why) + "}";

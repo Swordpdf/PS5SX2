@@ -233,7 +233,7 @@ int main(int argc, char** argv)
 	Check(r.rfind("200", 0) == 0 && Field(r, "available") == "true" && Field(r, "phase") == "nohelper" && Field(r, "value") == "No helper" && Field(r, "can") == "none" &&
 			  Field(r, "busy") == "false",
 		"no alive.txt: the row says No helper and offers nothing", r);
-	Check(Has(r, "flags") && Has(r, "171g"), "...and its help names the flag and the helper", r);
+	Check(Has(r, "171j") && Has(r, "by hand"), "...and its help names the helper revision and the manual-load fallback", r);
 	r = Http(port, "POST", "/api/tile", "add\n" + id);
 	Check(r.rfind("409", 0) == 0 && Requests(tiles).empty(), "POST add with no helper: 409 and no file written", r);
 
