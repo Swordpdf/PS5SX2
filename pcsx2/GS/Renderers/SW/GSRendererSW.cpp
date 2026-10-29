@@ -285,7 +285,32 @@ GSTexture* GSRendererSW::GetFeedbackOutput(float& scale)
 	for (int i = 0; i < 2; i++)
 	{
 		if (m_regs->EXTBUF.EXBP == m_regs->DISP[i].DISPFB.Block())
+		{
+#ifdef ORBIS_VULKAN
+			// PS5 port (2026-10-29, AI-assisted): on Vulkan GetOutput's texture is a plain texture (the driver uploads
+			// into a render target's tiles texel by texel), and DoMerge's feedback write renders into it:
+			// GSTextureVK::GetLinkedFramebuffer's pxAssertRel ("Texture is a render target") then aborted the app.
+			// Tales of Destiny 2 (SLPS-25172, English patch) with the Software renderer: all 9 of its 2.15 crash
+			// reports (2 consoles), from GSRendererSW::VSync -> GSRenderer::Merge -> GSDeviceVK::DoMerge; its Hardware
+			// renderer sessions ended normally. The feedback write is skipped instead (the merge runs without it), as
+			// for a game whose EXTBUF matches no display. Needs proper testing with a game that uses the loopback
+			// (Xenosaga's cutscenes) in Software mode.
+			GSTexture* const out = GetOutput(i, scale, dummy);
+			if (out && g_gs_device->GetRenderAPI() == RenderAPI::Vulkan && !out->IsRenderTarget())
+			{
+				static bool s_orbis_logged = false;
+				if (!s_orbis_logged)
+				{
+					s_orbis_logged = true;
+					printf("[gs] SW: feedback write (EXTBUF) skipped: the output is not a render target on Vulkan\n");
+				}
+				return nullptr;
+			}
+			return out;
+#else
 			return GetOutput(i, scale, dummy);
+#endif
+		}
 	}
 
 	return nullptr;
