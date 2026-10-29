@@ -349,7 +349,8 @@ SHIM_SRCS := ./orbis-shims/ProsperoInput.cpp ./orbis-shims/ProsperoCDVD.cpp \
   ./orbis-shims/ProsperoAchievementBrowser.cpp \
   ./orbis-shims/orbis_gs_shaders.cpp \
   ./orbis-shims/ps5_framegen.cpp ./orbis-shims/OrbisVideoOutMode.cpp \
-  ./orbis-shims/OrbisNfs.cpp ./orbis-shims/OrbisDiscDrive.cpp ./orbis-shims/OrbisIOCtlSrc.cpp ./orbis-shims/OrbisHelperAutoload.cpp
+  ./orbis-shims/OrbisNfs.cpp ./orbis-shims/OrbisDiscDrive.cpp ./orbis-shims/OrbisIOCtlSrc.cpp ./orbis-shims/OrbisHelperAutoload.cpp \
+  ./orbis-shims/OrbisInstallerStart.cpp
 
 SHIM_ASM := ./orbis-shims/ProsperoTLS.S
 
@@ -360,7 +361,7 @@ FE_SRCS := $(FE_DIR)/fe_app.cpp $(FE_DIR)/fe_covers.cpp $(FE_DIR)/fe_games.cpp \
   $(FE_DIR)/fe_renderer.cpp $(FE_DIR)/fe_sound.cpp $(FE_DIR)/fe_text.cpp $(FE_DIR)/fe_vk.cpp $(FE_DIR)/fe_ps5.cpp \
   $(FE_DIR)/fe_web.cpp $(FE_DIR)/fe_i18n.cpp $(FE_DIR)/fe_settings.cpp $(FE_DIR)/fe_options.cpp \
   $(FE_DIR)/fe_texpacks.cpp $(FE_DIR)/fe_https.cpp $(FE_DIR)/fe_https_ps5.cpp \
-  $(FE_DIR)/fe_patchdl.cpp $(FE_DIR)/fe_bios.cpp
+  $(FE_DIR)/fe_patchdl.cpp $(FE_DIR)/fe_bios.cpp $(FE_DIR)/fe_update.cpp
 # vk-285-50: Project Nayuki's QR Code generator (MIT, C) for the shelf's QR tile, and the files
 # fe_ps5.cpp embeds from frontend/assets (the settings page, its icons, Font Awesome's brands font).
 FE_CSRCS := $(FE_DIR)/third_party/qrcodegen/qrcodegen.c $(FE_DIR)/fe_sevenzip.c

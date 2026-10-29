@@ -20,6 +20,9 @@
 #include "fe_https.h"
 #include "fe_texpacks.h"
 #include "fe_patchdl.h" // 2026-10-08
+#include "fe_update.h"  // 180: System update and Session logs
+#include "ps5/coreorbis/orbis-shims/OrbisInstallerLaunch.h" // 180: OrbisStartUpdateInstaller
+#include "OrbisExit.h" // 180: OrbisExitApp, once the installer runs
 #include "fe_vk.h"
 #include "fe_web.h"
 #include "ps5/coreorbis/orbis-shims/ProsperoNotify.h" // 2026-10-05: the texture packs' popup
@@ -536,6 +539,7 @@ struct TexHttp
 TexHttp g_texhttp;
 TexHttp g_patchhttp("pcsx2-patches", "patches"); // 2026-10-08: the online patches' own client (fe_patchdl.h)
 TexHttp g_coverhttp("pcsx2-covers", "covers");   // 2026-10-10: the shelf's cover downloads (CoverGet)
+TexHttp g_updhttp("pcsx2-update", "update");     // 180: the System update row's look at GitHub (fe_update.h)
 
 // 2026-10-10 (AI-assisted): the shelf's cover downloads, after the jailbreak, over our own HTTPS. libSceHttp2 fails there
 // (0x8095F00C; texnet6 fetched raw.githubusercontent.com with this client on the console), so the shelf's first download
@@ -2178,6 +2182,68 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		std::printf("[tiles] game tiles: on by default (flag gametile_off removes them); the helper and the shelf talk through %s\n", acfg.tiles_dir.c_str());
 		std::fflush(stdout);
 	}
+	// 180 (AI-assisted; the owner: an in-app updater like PS5SX3's, and nothing to load by hand but ShadowMount and kstuff): the sheet for all games'
+	// PS5SX2 group (fe_update.h). System update looks at the latest GitHub release over its own HTTPS client and, asked twice, sends the installer the
+	// app ships (OrbisInstallerStart.cpp) and closes; Session logs writes the installer's no-log-upload switch. Not in a game tile's copy: the
+	// installer updates the main app. One look when the shelf opens (flags/noupdatecheck: none); a newer release is told in a notification.
+	Updater* updater = nullptr;
+	if (acfg.own_tile_game.empty())
+	{
+		static const char* const kWork = "/data/PS5SX2-Installer";
+		const std::string tag = build_tag ? build_tag : "";
+		UpdatePlatform up;
+		up.get_text = [](const std::string& url, std::string& body, std::string& error) {
+			body.clear();
+			const int st = g_updhttp.Get(url, false, 0, 0, [&body](const void* d, size_t n) {
+				if (body.size() + n > (4u << 20))
+					return false;
+				body.append(static_cast<const char*>(d), n);
+				return true;
+			});
+			if (st < 0)
+				error = st == HttpsClient::kConnect ? "no connection: is the console online?" : st == HttpsClient::kAborted ? "stopped" :
+					"the transfer broke";
+			return st;
+		};
+		up.start_installer = [tag](const std::string& expect, std::string& detail) {
+			return static_cast<int>(OrbisStartUpdateInstaller(tag, expect, detail));
+		};
+		up.exists = [](const std::string& path) {
+			struct stat st;
+			return stat(path.c_str(), &st) == 0;
+		};
+		up.set_file = [](const std::string& path, bool on) {
+			if (!on)
+				return unlink(path.c_str()) == 0 || errno == ENOENT;
+			mkdir(kWork, 0777); // the installer makes it at its first run; a console that never ran one has none
+			const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_NOFOLLOW, 0666);
+			if (fd < 0)
+				return false;
+			close(fd);
+			return true;
+		};
+		up.notify = [](const std::string& release) {
+			char text[512];
+			std::snprintf(text, sizeof(text), Tr(Str::NotifyUpdateAvailable), release.c_str());
+			OrbisNotifyPlain(text);
+		};
+		up.log = [](const std::string& line) {
+			std::printf("[update] %s\n", line.c_str());
+			std::fflush(stdout);
+		};
+		up.quit = [] { OrbisExitApp(0); };
+		up.thread_start = [] { TexturePackThreadStart("update check"); };
+		updater = new Updater(up, tag, kWork);
+		acfg.updates = updater->Service();
+		if (!OrbisFlag("noupdatecheck"))
+			updater->Check(true);
+		else
+			std::printf("[update] no look at start (flag noupdatecheck)\n");
+		// The session logs are sent by default now that the app starts the logger itself (OrbisLoggerAutoStart): say so once, with the way out.
+		const std::string notice = std::string(kWork) + "/log-notice-shown";
+		if (updater->LogUpload() && !OrbisFlag("logger_noautoload") && !up.exists(notice) && up.set_file(notice, true))
+			OrbisNotifyPlain(Tr(Str::NotifyLogsNotice));
+	}
 	// 2.11: the shelf's search and the settings page's search box
 	acfg.search_remote = [](std::string& text) { return g_web && g_web->TakeSearchFromPage(text); };
 	acfg.search_report = [](const std::string& text) {
@@ -2402,6 +2468,25 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		}
 		else
 			std::printf("[frontend] an online patch request is still stopping; leaving it to end on its own\n");
+	}
+	// 180: the update look stops with the shelf. The installer started from the row waits for this process: a game picked in the
+	// moment before the close does not start (the installer would give up after 90 s and the update would not happen).
+	if (updater)
+	{
+		if (updater->Status().state == UpdateStatus::State::Started)
+		{
+			std::printf("[frontend] system update: the installer runs, PS5SX2 closes now (not starting the pick)\n");
+			std::fflush(stdout);
+			OrbisExitApp(0);
+		}
+		g_updhttp.Abort();
+		if (updater->Stop(1500))
+		{
+			delete updater;
+			g_updhttp.Term();
+		}
+		else
+			std::printf("[frontend] the update look is still stopping; leaving it to end on its own\n");
 	}
 	const bool stopped = covers->Stop(1500);
 	renderer.Shutdown();

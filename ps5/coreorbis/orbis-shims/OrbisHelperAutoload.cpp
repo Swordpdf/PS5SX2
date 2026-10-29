@@ -127,7 +127,15 @@ bool SendToLoader(const std::string& path, std::string& detail)
 		detail = "short read of the ELF";
 		return false;
 	}
+	return OrbisLoaderSend(data, detail, nullptr);
+}
+} // namespace
 
+// 180: the socket part of SendToLoader, shared with the PS5SX2 Installer's start (OrbisInstallerStart.cpp).
+bool OrbisLoaderSend(const std::vector<unsigned char>& data, std::string& detail, bool* no_loader)
+{
+	if (no_loader)
+		*no_loader = false;
 	const int fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0)
 	{
@@ -140,8 +148,11 @@ bool SendToLoader(const std::string& path, std::string& detail)
 	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
 	{
-		detail = errno == ECONNREFUSED ? "nothing answered on 9021 (no ELF loader - is the jailbreak's loader up?)"
-										: ("connect errno " + std::to_string(errno));
+		const int e = errno;
+		if (no_loader)
+			*no_loader = e == ECONNREFUSED;
+		detail = e == ECONNREFUSED ? "nothing answered on 9021 (no ELF loader - is the jailbreak's loader up?)"
+								   : ("connect errno " + std::to_string(e));
 		close(fd);
 		return false;
 	}
@@ -163,7 +174,27 @@ bool SendToLoader(const std::string& path, std::string& detail)
 	detail = "sent " + std::to_string(sent) + " bytes to 127.0.0.1:9021";
 	return true;
 }
-} // namespace
+
+// 180: called before the jailbreak when nobody answered its request (main-boot.cpp): the helper (which answers it) is not running, so
+// send the shipped one at once. /data may not be visible yet, so no heartbeat is read: a helper that runs would have answered.
+bool OrbisHelperStartBeforeJailbreak()
+{
+	if (OrbisFlag && OrbisFlag("helper_noautoload"))
+	{
+		Log("before the jailbreak: flag helper_noautoload: nothing sent");
+		return false;
+	}
+	const std::string elf = FindElf();
+	if (elf.empty())
+	{
+		Log("before the jailbreak: no helper ELF shipped with the app: nothing sent");
+		return false;
+	}
+	std::string detail;
+	const bool ok = SendToLoader(elf, detail);
+	Log("before the jailbreak (no answer to the request): %s the helper %s: %s", ok ? "sent" : "could not send", elf.c_str(), detail.c_str());
+	return ok;
+}
 
 // Called once at start, after the jailbreak (main-boot.cpp): decide and, if needed, send the helper.
 void OrbisHelperAutoStart()

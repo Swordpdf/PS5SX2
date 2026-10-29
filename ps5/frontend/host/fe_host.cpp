@@ -45,7 +45,9 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <cerrno>
 #include <chrono>
+#include <memory>
 #include <ctime>
 #include <mutex>
 #include <thread>
@@ -695,6 +697,10 @@ int main(int argc, char** argv)
 	std::string places; // 2026-10-08: --places "Label=/path|Label=/path": the folder picker's places (else the data folder's)
 	bool tiles = false; // 2.12: --tiles: the sheet's Home screen tile row, with the stand-in helper (FakeHelper) in <data>/tiles; --own-tile <path>: this run is a game tile's
 	std::string own_tile;
+	// 180: --updates <tag>: the sheet for all games' PS5SX2 group, with a stand-in for GitHub naming release <tag> ("fail" or "error"
+	// as <tag>: no answer / HTTP 500) and a stand-in installer (--updates-start <rc>: what starting it answers, 0 started).
+	std::string updates;
+	int updates_start = 0;
 	int record_fps = 30;
 	for (int i = 1; i < argc; i++)
 	{
@@ -746,6 +752,10 @@ int main(int argc, char** argv)
 			tiles = true;
 		else if (a == "--own-tile")
 			own_tile = next();
+		else if (a == "--updates")
+			updates = next();
+		else if (a == "--updates-start")
+			updates_start = std::atoi(next().c_str());
 		else if (a == "--record-audio")
 			record_audio = next();
 		else if (a == "--record-fps")
@@ -1045,6 +1055,49 @@ int main(int argc, char** argv)
 			return gametile::CoverFileOk(c) ? c : std::string();
 		};
 	}
+	// 180: --updates: the PS5SX2 group, over a stand-in GitHub and installer (fe_update.h). The build tag must look like a release's
+	// ("vk-285-180") for the comparison; files go to <data>/installer (its no-log-upload switch).
+	std::unique_ptr<Updater> updater;
+	int upd_started = 0, upd_quit = 0;
+	if (!updates.empty())
+	{
+		MakeDir(data + "/installer");
+		UpdatePlatform up;
+		const std::string tag = updates;
+		up.get_text = [tag](const std::string&, std::string& body, std::string& error) {
+			if (tag == "fail")
+			{
+				error = "no connection: is the console online?";
+				return -1;
+			}
+			if (tag == "error")
+				return 500;
+			const std::string name = "PS5SX2-" + tag + ".zip";
+			body = "{\"tag_name\":\"" + tag + "\",\"name\":\"PS5SX2 9.99\",\"draft\":false,\"assets\":[{\"name\":\"" + name +
+				"\",\"state\":\"uploaded\",\"size\":41000000,\"digest\":\"sha256:" + std::string(64, 'a') +
+				"\",\"browser_download_url\":\"" + kUpdateDownloadPrefix + tag + "/" + name + "\"}]}";
+			return 200;
+		};
+		up.start_installer = [&upd_started, updates_start](const std::string& expect, std::string& detail) {
+			detail = "host stand-in for " + expect;
+			if (updates_start == 0)
+				upd_started++;
+			return updates_start;
+		};
+		up.exists = [](const std::string& p) { return access(p.c_str(), F_OK) == 0; };
+		up.set_file = [](const std::string& p, bool on) {
+			if (!on)
+				return std::remove(p.c_str()) == 0 || errno == ENOENT;
+			FILE* f = std::fopen(p.c_str(), "w");
+			if (f)
+				std::fclose(f);
+			return f != nullptr;
+		};
+		up.log = [](const std::string& line) { std::printf("[update] %s\n", line.c_str()); };
+		up.quit = [&upd_quit] { upd_quit++; };
+		updater = std::make_unique<Updater>(up, build_tag, data + "/installer");
+		acfg.updates = updater->Service();
+	}
 	// 2.11: the settings page's search box (the "remote" step)
 	std::mutex remote_mutex;
 	std::string remote_text;
@@ -1162,6 +1215,10 @@ int main(int argc, char** argv)
 				                				                key == "driveentry" ? app.DriveEntry() : // 2.11: the disc in the drive is listed
 				                				                key == "discart"  ? app.DiscArt() : // 2.11: the disc art arrived
 				                				                key == "reasks"   ? reasks : // 2.11: how often the drive entry was picked
+				                key == "updstate" ? (updater ? static_cast<int>(updater->Status().state) : -1) : // 180: fe_update.h UpdateStatus::State
+				                key == "updstarted" ? upd_started : // 180: installers started
+				                key == "updquit" ? upd_quit :       // 180: the app asked to close
+				                key == "logupload" ? (updater ? (updater->LogUpload() ? 1 : 0) : -1) : // 180: session logs on
 				                key == "tilephase" ? app.TilePhase() : // 2.12: the Home screen tile row's phase (fe_gametile.h; -1: no row on the sheet)
 				                key == "tilerow"   ? app.TileRowShown() : // 2.12: the sheet has the row
 				                key == "tilefocus" ? app.TileFocused() : // 2.12: the focused row is it

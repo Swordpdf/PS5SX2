@@ -958,6 +958,7 @@ RemoveDriveEntry();
 void App::Update(double dt, const Input& in)
 {
 	m_time += dt;
+	UpdateQuitTick(); // 180: PS5SX2 closes a moment after the installer started
 	m_account.Poll(m_cfg.achievements);
 	PollGameAchievements();
 	const float fdt = static_cast<float>(std::min(dt, 0.1));
@@ -1925,6 +1926,7 @@ void App::OpenSheet(bool global)
 	m_sheet.SetTexturePackRow(static_cast<bool>(m_cfg.texture_packs)); // 2026-10-05
 	m_sheet.SetOnlinePatchRow(static_cast<bool>(m_cfg.online_patches)); // 2026-10-08
 	m_sheet.SetSystemMenuRow(m_cfg.system_menu);                        // 2026-10-08
+	m_sheet.SetUpdateRows(static_cast<bool>(m_cfg.updates) && m_cfg.own_tile_game.empty()); // 180: not in a game tile's copy (it updates the main app)
 	m_sheet.SetFolderRows(!m_cfg.folder_places.empty());                // vk-285-135
 	m_tile_row = HomeTileEligible(g);                                   // 2.12: the Home screen tile row (a game with a plain image file; the flag turns it on)
 	m_sheet.SetHomeTileRow(m_tile_row);
@@ -2264,6 +2266,15 @@ void App::UpdateSheet(double dt, const Input& in)
 		return;
 	}
 
+	// 180: the PS5SX2 group: System update (Cross looks; Cross twice installs a newer release) and Session logs (Cross, Left or Right switch it).
+	if (row.kind == OptionsSheet::Kind::SystemUpdate || row.kind == OptionsSheet::Kind::LogUpload)
+	{
+		const bool horizontal = (in.left && !m_prev.left) || (in.right && !m_prev.right);
+		if (pressed(in.cross, m_prev.cross) || (horizontal && row.kind == OptionsSheet::Kind::LogUpload))
+			UpdateRowPress(row, now);
+		return;
+	}
+
 	// 2.12: "Home screen tile": Cross, Left and Right put the game on the PS5 home screen (the helper makes the tile), Cross or Triangle take it off again.
 	if (row.kind == OptionsSheet::Kind::HomeTile)
 	{
@@ -2323,6 +2334,150 @@ std::string App::OnlinePatchValue() const
 			return "Failed: " + s.message;
 	}
 	return {};
+}
+
+// ---- 180: the sheet's PS5SX2 group: System update and Session logs (AI-assisted; see fe_update.h) -------------------
+// The rows' words come from fe_i18n (English until a table has them).
+
+namespace
+{
+std::string Say(Str id, const std::string& arg)
+{
+	char buf[1024];
+	std::snprintf(buf, sizeof(buf), Tr(id), arg.c_str());
+	return buf;
+}
+
+std::string ReleaseName(const ReleaseInfo& r)
+{
+	return r.title.empty() || r.title == r.tag ? r.tag : r.title + " (" + r.tag + ")";
+}
+} // namespace
+
+void App::UpdateRowPress(const OptionsSheet::Row& row, double now)
+{
+	if (!m_cfg.updates)
+		return;
+	auto status = [&](const std::string& text) {
+		m_sheet_status = text;
+		m_sheet_status_time = now;
+	};
+	if (row.kind == OptionsSheet::Kind::LogUpload)
+	{
+		const bool on = !m_cfg.updates.log_upload();
+		const bool ok = m_cfg.updates.set_log_upload(on);
+		status(ok ? std::string(Tr(on ? Str::LogsOn : Str::LogsOff)) : std::string("Couldn't change /data/PS5SX2-Installer/no-log-upload"));
+		std::printf("[options] session logs: %s%s\n", on ? "on" : "off", ok ? "" : " (failed)");
+		std::fflush(stdout);
+		Sound(ok ? Sfx::Move : Sfx::Edge, 0.3f);
+		return;
+	}
+	using S = UpdateStatus::State;
+	const UpdateStatus s = m_cfg.updates.status();
+	switch (s.state)
+	{
+		case S::Available:
+		case S::Interrupted:
+		case S::StartFailed: // the installer didn't start: Cross twice tries again
+			if (m_time > m_update_armed_until)
+			{
+				m_update_armed_until = m_time + 4.0;
+				status(Tr(Str::UpdatePressAgain));
+				Sound(Sfx::Move, 0.3f);
+				return;
+			}
+			m_update_armed_until = -1;
+			std::printf("[options] system update: install asked (%s, latest %s)\n", UpdateStateName(s.state), s.latest.tag.c_str());
+			std::fflush(stdout);
+			if (m_cfg.updates.install())
+			{
+				status(Tr(Str::UpdateStarted));
+				Sound(Sfx::Launch, 0.0f);
+			}
+			else
+			{
+				status(Say(Str::UpdateStartFailed, m_cfg.updates.status().error));
+				Sound(Sfx::Edge, 0.3f);
+			}
+			return;
+		case S::Checking:
+		case S::Starting:
+		case S::Started:
+			Sound(Sfx::Edge, 0.3f);
+			return;
+		default:
+			break;
+	}
+	m_update_armed_until = -1;
+	const bool started = m_cfg.updates.check(false);
+	std::printf("[options] system update: look %s\n", started ? "asked" : "already running");
+	std::fflush(stdout);
+	Sound(started ? Sfx::Move : Sfx::Edge, 0.3f); // the row's value says "Checking..." and then the answer
+}
+
+std::string App::UpdateRowValue(const OptionsSheet::Row& row) const
+{
+	if (!m_cfg.updates)
+		return {};
+	if (row.kind == OptionsSheet::Kind::LogUpload)
+		return Tr(m_cfg.updates.log_upload() ? Str::LogsOn : Str::LogsOff);
+	using S = UpdateStatus::State;
+	const UpdateStatus s = m_cfg.updates.status();
+	const bool armed = m_time <= m_update_armed_until;
+	switch (s.state)
+	{
+		case S::Idle: return Tr(Str::UpdateCheck);
+		case S::Checking: return Tr(Str::UpdateChecking);
+		case S::Current: return Say(Str::UpdateCurrent, s.latest.title.empty() ? s.latest.tag : s.latest.title);
+		case S::Newer: return Say(Str::UpdateNewer, s.latest.title.empty() ? s.latest.tag : s.latest.title);
+		case S::Available: return armed ? std::string(Tr(Str::UpdatePressAgain)) : Say(Str::UpdateAvailable, ReleaseName(s.latest));
+		case S::Failed: return Say(Str::UpdateFailed, s.error);
+		case S::Interrupted: return armed ? std::string(Tr(Str::UpdatePressAgain)) : std::string(Tr(Str::UpdateInterrupted));
+		case S::Starting: return Tr(Str::UpdateStarting);
+		case S::Started: return Tr(Str::UpdateStarted);
+		case S::StartFailed: return armed ? std::string(Tr(Str::UpdatePressAgain)) : Say(Str::UpdateStartFailed, s.error);
+	}
+	return {};
+}
+
+std::string App::UpdateRowHelp(const OptionsSheet::Row& row) const
+{
+	if (!m_cfg.updates)
+		return {};
+	if (row.kind == OptionsSheet::Kind::LogUpload)
+		return Tr(Str::LogsHelp);
+	using S = UpdateStatus::State;
+	const UpdateStatus s = m_cfg.updates.status();
+	switch (s.state)
+	{
+		case S::Available:
+		case S::StartFailed:
+			return s.latest.tag.empty() ? std::string(Tr(Str::UpdateHelpInterrupted)) : Say(Str::UpdateHelpAvailable, ReleaseName(s.latest));
+		case S::Interrupted: return Tr(Str::UpdateHelpInterrupted);
+		case S::Starting:
+		case S::Started: return Tr(Str::UpdateHelpStarted);
+		default: return Tr(Str::UpdateHelp);
+	}
+}
+
+void App::UpdateQuitTick()
+{
+	if (!m_cfg.updates || m_update_quit_done)
+		return;
+	if (m_update_quit_at < 0)
+	{
+		if (m_cfg.updates.status().state == UpdateStatus::State::Started)
+			m_update_quit_at = m_time + 3.0; // the notification is read; the installer waits for this process anyway
+		return;
+	}
+	if (m_time >= m_update_quit_at)
+	{
+		m_update_quit_done = true;
+		std::printf("[frontend] system update: the installer runs, PS5SX2 closes now\n");
+		std::fflush(stdout);
+		if (m_cfg.updates.quit)
+			m_cfg.updates.quit();
+	}
 }
 
 // ---- 2.12: the sheet's "Home screen tile" row (AI-assisted; see fe_gametile.h) ---------------------------------------
@@ -3035,6 +3190,9 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		const bool tile_row = r.kind == OptionsSheet::Kind::HomeTile; // 2.12: the helper's word for the game's tile (Off, Adding..., On, ...)
 		if (tile_row)
 			value = HomeTileValue();
+		const bool update_row = r.kind == OptionsSheet::Kind::SystemUpdate; // 180: no arrows (Cross looks and installs)
+		if (update_row || r.kind == OptionsSheet::Kind::LogUpload)
+			value = UpdateRowValue(r);
 		// 2026-10-05: the HD texture pack row shows the pack, the download's progress or the installed pack.
 		const bool pack_row = r.kind == OptionsSheet::Kind::TexturePack && m_cfg.texture_packs && !m_games.empty();
 		TexturePackStatus pack;
@@ -3056,7 +3214,7 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		                        r.kind == OptionsSheet::Kind::TexturesFolder || r.kind == OptionsSheet::Kind::NfsShares;
 		if (folder_row && focused)
 			value += "  \xE2\x80\xBA";
-		const bool arrows = focused && !action && pick_arrows && !folder_row && !tile_row;
+		const bool arrows = focused && !action && pick_arrows && !folder_row && !tile_row && !update_row;
 
 		const float value_room = bw * (pack_row ? 0.68f : 0.46f); // 2026-10-05: the pack row's label is short, its value long
 		// vk-285-116: a label or a value that starts with a button's symbol ("<glyph>  Cross", the Controls tab): the symbol
@@ -3140,6 +3298,8 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		}
 		if (focus_row.kind == OptionsSheet::Kind::HomeTile) // 2.12
 			help = HomeTileHelp();
+		if (focus_row.kind == OptionsSheet::Kind::SystemUpdate || focus_row.kind == OptionsSheet::Kind::LogUpload) // 180
+			help = UpdateRowHelp(focus_row);
 		float hy = list_bottom + 110 * k;
 		for (const std::string& line : Wrap(*m_fonts, help, 32 * k, inner, 4))
 		{
