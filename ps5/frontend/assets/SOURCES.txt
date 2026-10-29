@@ -2,3 +2,6 @@ Font Awesome Free 7.3.1 (FortAwesome/Font-Awesome @ 14c65a3, 2026-07-15)
   fa-brands-400.otf = otfs/"Font Awesome 7 Brands-Regular-400.otf" (renamed file, unmodified font): SIL OFL 1.1
   web/discord.svg, web/x-twitter.svg = svgs/brands/*.svg: CC BY 4.0
 QR Code generator (C), Project Nayuki, MIT (nayuki/QR-Code-generator @ 3c6d0b3, 2026-08-31): third_party/qrcodegen/
+OpenPS2BIOS 0.5, Tamariba Devs, MIT (github.com/TamaribaEmu/OpenPS2BIOS, release v0.5's OpenPS2BIOS-0.5.bin, unmodified): openps2bios/
+  OpenPS2BIOS-0.5.bin sha256 e6d3b308ba10a8603bad929f59e50f8c023acc2c297aaa82ec0bd155e99b98fc (4,194,304 bytes); LICENSE = its MIT licence
+  An experimental open-source PS2 BIOS for emulators (no Sony code). Embedded by fe_ps5.cpp; offered when a player has no BIOS of their own.

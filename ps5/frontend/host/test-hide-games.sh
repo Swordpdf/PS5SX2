@@ -39,10 +39,10 @@ gow="$data/settings/God of War (USA).ini"
 steps() { tr ';' '\n' <<<"$1" | sed '/^$/d'; }
 script="$work/script.txt"
 # A game's sheet: Recommended settings, then Shelf > Hide from the shelf. The sheet for all games: Recommended for all games,
-# the six Folders rows (game folders, BIOS folder, NFS shares, textures folder, Scan USB drives, Scan subfolders: 2026-10-16 the last
-# three are new), then Shelf > Show hidden games.
+# the seven Folders rows (game folders, BIOS folder, NFS shares, textures folder, Scan USB drives, Scan subfolders: 2026-10-16 the last
+# three are new; OpenPS2BIOS (experimental): bioscheck 2026-10-29), then Shelf > Show hidden games.
 hide_row="press square;wait 0.4;press up 80;wait 0.1;press down 1;wait 0.2"
-show_row="press square;wait 0.4;press r1;wait 0.3;press up 80;wait 0.1;press down 7;wait 0.2"
+show_row="press square;wait 0.4;press r1;wait 0.3;press up 80;wait 0.1;press down 8;wait 0.2"
 
 # 1. God of War (game 0) hidden from its sheet: off the shelf when the sheet closes, the next game selected, a note.
 steps "game 0;wait 1;expect shelf=5;expect selected=0;$hide_row;shot hide-row;press cross;wait 0.3;press circle;wait 0.5;expect sheet=0;expect shelf=4;expect selected=1;shot hidden-note" > "$script"

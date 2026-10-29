@@ -1085,6 +1085,11 @@ void VMManager::UpdateDiscDetails(bool booting)
 			s_disc_crc = 0;
 			s_cur_region = (BiosZone == "Europe") ? "PAL" : "NTSC";
 			title = fmt::format(TRANSLATE_FS("VMManager", "PS2 BIOS ({})"), BiosZone);
+#ifdef __PROSPERO__
+			// PS5 port (bioscheck, AI-assisted): the open-source BIOS PS5SX2 ships is named as itself ("OpenPS2BIOS (experimental)").
+			if (BiosDescription.rfind("OpenPS2BIOS", 0) == 0)
+				title = BiosDescription;
+#endif
 		}
 
 		// If we're booting an ELF, use its CRC, not the disc (if any).

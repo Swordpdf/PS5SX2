@@ -139,6 +139,21 @@ const char* const kKeys[kCount] = {
 	"logs.on",
 	"logs.off",
 	"logs.help",
+	"bios.choice_title",
+	"bios.choice_intro",
+	"bios.use_open",
+	"bios.use_open_1",
+	"bios.use_open_2",
+	"bios.add_own",
+	"bios.add_own_1",
+	"bios.add_own_2",
+	"bios.hint_choose",
+	"bios.hint_confirm",
+	"bios.in_use",
+	"shelf.no_bios_choice",
+	"bios.open_failed",
+	"notify.no_bios_choice",
+	"notify.open_bios_cant_start",
 };
 
 const char* const kEnglish[kCount] = {
@@ -267,6 +282,21 @@ const char* const kEnglish[kCount] = {
 	"Off",
 	"On: when PS5SX2 closes after a game or a problem, that session's logs go to the PS5SX2 developers, to find and fix problems "
 	"(network addresses removed, no game list). Off: nothing is sent.",
+	"No PS2 BIOS found",
+	"Games need a PS2 BIOS to start. Sony's BIOS can't come with PS5SX2: yours comes from your own PS2.",
+	"Use the open-source BIOS",
+	"OpenPS2BIOS, experimental:",
+	"some games don't work yet.",
+	"Add your own BIOS",
+	"Put it in %s",
+	"then pick the game again.",
+	"choose",
+	"confirm",
+	"BIOS: %s",
+	"Pick a game to choose: the open-source BIOS, or your own.",
+	"The open-source BIOS couldn't be set up (see boot.log).",
+	"PS5SX2: no PS2 BIOS found, so the game didn't start. The menu offers the open-source BIOS, or put your own in %s.",
+	"PS5SX2: OpenPS2BIOS (experimental) can't start PS1 discs, audio CDs or DVD videos. Put your own PS2 BIOS in %s to play this one.",
 };
 
 const char* const kSpanish[kCount] = {

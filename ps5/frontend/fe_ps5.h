@@ -60,7 +60,19 @@ struct OrbisFrontendPaths
 	std::function<bool()> bios_check;
 	std::function<std::string()> bios_problem;
 	std::string bios_dir;
+	// bioscheck (2026-10-29, AI-assisted): bios_check is main-boot.cpp's orbis_bios_usable (the player's own BIOS, else the open-source one
+	// when the player chose it). open_bios_bundled: this build carries OpenPS2BIOS (orbis_frontend_open_bios_image), so the shelf's BIOS
+	// question offers it; bios_open_in_use: games start with it now; bios_pending_launch: a start without the shelf (a tile, a disc)
+	// refused for want of a BIOS, which the shelf asks about at once (and returns when the open BIOS is picked).
+	bool open_bios_bundled = false;
+	std::function<bool()> bios_open_in_use;
+	std::string bios_pending_launch;
 };
+
+// bioscheck (2026-10-29, AI-assisted): OpenPS2BIOS 0.5 (Tamariba Devs, MIT), embedded from frontend/assets/openps2bios with its licence.
+// main-boot.cpp writes it to the cache folder's openps2bios/ when the player chose it (never into the player's bios/). False when the
+// build carries none.
+bool orbis_frontend_open_bios_image(const unsigned char** data, size_t* size, const unsigned char** licence, size_t* licence_size);
 
 // 2026-10-08 (AI-assisted): what orbis_frontend_run returns for the sheet's "PS2 system menu": main-boot.cpp then boots the
 // BIOS with no disc (the PS2's own menu: memory card browser, clock, language).

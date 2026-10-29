@@ -55,10 +55,10 @@ Expect rough edges. Bug reports with logs are very welcome, and so is patience.
 - **A jailbroken PS5, on any firmware.** PS5SX2 works on all of them and has been tested on every firmware up to 13.60, on the PS5 Pro and on the other models, a Slim included. [Tested consoles](#tested-consoles) has the details.
 - **The PS5SX2 Helper payload**, from the releases, loaded together with kstuff. It's based on OnionHEN. It jailbreaks PS5SX2 when it starts, which the emulator's recompilers need, and gives the app access to `/data`.
 - **[ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus)**, loaded at every boot like kstuff. It mounts PS5SX2 from `/data/homebrew/PPSA99203/` and puts it on the home screen.
-- **Your own PS2 BIOS**, dumped from your own console.
+- **Your own PS2 BIOS**, dumped from your own console. Without one, PS5SX2 offers OpenPS2BIOS, an experimental open-source BIOS it ships (PS2 discs only, and some games don't work yet); a BIOS of your own always comes first.
 - **Your own games**, as `.iso`, `.chd`, `.cso` or `.zso` files.
 
-No BIOS, games or keys come with PS5SX2.
+No Sony BIOS, games or keys come with PS5SX2.
 
 ## Getting started
 
@@ -613,6 +613,7 @@ The PS5 layer lives in [`ps5/`](ps5/). [`ps5/README.md`](ps5/README.md) covers t
 - **[PS Rewired](https://psrewired.com),** for keeping PS2 online games alive.
 - **OnionHEN,** which the PS5SX2 Helper is based on.
 - **drakmor,** for [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus), and **VoidWhisper,** for ShadowMount, which it's based on.
+- **Tamariba Devs,** for [OpenPS2BIOS](https://github.com/TamaribaEmu/OpenPS2BIOS) (MIT), the open-source BIOS PS5SX2 ships for players without their own.
 - **Project Nayuki's QR Code generator and Font Awesome Free:** see [`ps5/README.md`](ps5/README.md) for their licences; **Mbed TLS, libarchive** and the other libraries in [`ps5/third_party/`](ps5/third_party/README.md): see its README.
 
 ## Licence

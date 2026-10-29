@@ -69,7 +69,8 @@ PS5SX2 is GPL-3.0-or-later, like PCSX2; the licence text is `COPYING.GPLv3` at t
 Third-party parts keep their licences:
 - the stb headers: public domain or MIT;
 - Project Nayuki's QR Code generator: MIT;
-- the Font Awesome Free brands font and icons: SIL OFL 1.1 for the font, CC BY 4.0 for the icons (`frontend/assets/SOURCES.txt`, `frontend/assets/fonts/FontAwesome-LICENSE.txt`).
+- the Font Awesome Free brands font and icons: SIL OFL 1.1 for the font, CC BY 4.0 for the icons (`frontend/assets/SOURCES.txt`, `frontend/assets/fonts/FontAwesome-LICENSE.txt`);
+- OpenPS2BIOS 0.5 by Tamariba Devs, the open-source BIOS PS5SX2 ships for players without their own (embedded in the app, written to `cache/openps2bios/` with its licence when a player chooses it): MIT (`frontend/assets/openps2bios/LICENSE`, `frontend/assets/SOURCES.txt`).
 
 The Discord and X logos are their owners' trademarks, used only to link to the author's accounts.
 

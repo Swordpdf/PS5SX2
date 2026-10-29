@@ -365,7 +365,8 @@ FE_SRCS := $(FE_DIR)/fe_app.cpp $(FE_DIR)/fe_covers.cpp $(FE_DIR)/fe_games.cpp \
 # vk-285-50: Project Nayuki's QR Code generator (MIT, C) for the shelf's QR tile, and the files
 # fe_ps5.cpp embeds from frontend/assets (the settings page, its icons, Font Awesome's brands font).
 FE_CSRCS := $(FE_DIR)/third_party/qrcodegen/qrcodegen.c $(FE_DIR)/fe_sevenzip.c
-FE_ASSETS := $(wildcard $(FE_DIR)/assets/web/*) $(wildcard $(FE_DIR)/assets/fonts/*.otf) $(FE_DIR)/assets/presets.ini $(FE_DIR)/assets/hd-pack-sources.json $(FE_DIR)/assets/launchbox-covers.txt
+FE_ASSETS := $(wildcard $(FE_DIR)/assets/web/*) $(wildcard $(FE_DIR)/assets/fonts/*.otf) $(FE_DIR)/assets/presets.ini $(FE_DIR)/assets/hd-pack-sources.json $(FE_DIR)/assets/launchbox-covers.txt \
+  $(FE_DIR)/assets/openps2bios/OpenPS2BIOS-0.5.bin $(FE_DIR)/assets/openps2bios/LICENSE
 FE_HDRS := $(wildcard $(FE_DIR)/*.h) $(FE_DIR)/fe_shaders.inc $(FE_DIR)/third_party/qrcodegen/qrcodegen.h $(FE_ASSETS)
 
 SRCS := $(SRCS) $(PCSX2)/pcsx2/USB/usb-mic/usb-mic.cpp \

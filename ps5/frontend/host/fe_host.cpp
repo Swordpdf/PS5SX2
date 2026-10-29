@@ -4,6 +4,9 @@
 //
 //   build-host.sh && ./fe_host --data <folder> --out <folder> [--size 1920x1080] [--lang <ps5 language id>] [--ime]
 //   [--no-bios "<what was found instead>"] (vk-285-134) [--ime-text "<what the keyboard types>"] (vk-285-135: with --ime)
+//   [--open-bios] (bioscheck: with --no-bios, the build ships the open BIOS: the BIOS question offers it, and once gs.ini says
+//   PS5SX2/OpenBios=true the stand-in finds a BIOS) [--bios-pending <path>] (a tile's or a disc's start refused before the shelf came up)
+//   Steps: "outside <path>" (a start asked of the shelf from outside it: Play from disc, a finished copy; expect outsideok, approved).
 //   [--games <file>] [--build-tag <text>] [--record <out.mp4> [--record-fps 30|60]] (2026-10-08: the showcase video)
 //                               [--script <file>] [step ...]
 // --games: one game a line, "title|region|serial|size in MB" (the shelf's order); its cover is <data>/covers/<serial>.jpg.
@@ -295,6 +298,12 @@ bool ParseStep(const std::string& line, std::vector<Step>& out)
 		s >> st.arg;
 	else if (st.op == "stick") // 2.11: "stick <x> <y>": the right stick, held there until the next "stick"
 		s >> st.arg >> st.seconds;
+	else if (st.op == "outside") // bioscheck: "outside <path>": a start asked of the shelf from outside it (the rest of the line, spaces kept)
+	{
+		std::getline(s, st.arg);
+		while (!st.arg.empty() && st.arg.front() == ' ')
+			st.arg.erase(0, 1);
+	}
 	else if (st.op == "remote") // 2.11: "remote <text>": the settings page's search box sets the shelf's search ("remote" alone clears it)
 	{
 		std::getline(s, st.arg);
@@ -693,6 +702,8 @@ int main(int argc, char** argv)
 	std::string web;
 	bool no_bios = false; // vk-285-134
 	std::string no_bios_problem;
+	bool open_bios = false;      // bioscheck
+	std::string bios_pending;    // bioscheck
 	std::string games_file, build_tag = "vk-285-114 (host)", record, record_audio; // 2026-10-08: the showcase video
 	std::string places; // 2026-10-08: --places "Label=/path|Label=/path": the folder picker's places (else the data folder's)
 	bool tiles = false; // 2.12: --tiles: the sheet's Home screen tile row, with the stand-in helper (FakeHelper) in <data>/tiles; --own-tile <path>: this run is a game tile's
@@ -740,6 +751,10 @@ int main(int argc, char** argv)
 			no_bios = true;
 			no_bios_problem = next();
 		}
+		else if (a == "--open-bios") // bioscheck
+			open_bios = true;
+		else if (a == "--bios-pending") // bioscheck
+			bios_pending = next();
 		else if (a == "--games")
 			games_file = next();
 		else if (a == "--build-tag")
@@ -1125,12 +1140,32 @@ int main(int argc, char** argv)
 			at = bar + 1;
 		}
 	}
+	// bioscheck: the stand-in for main-boot.cpp's orbis_bios_usable: no BIOS of the player's own; with --open-bios, the open one once
+	// gs.ini's [PS5SX2] says OpenBios = true (the BIOS question writes it, the sheet's switch turns it off).
+	int bios_looks = 0;
+	auto open_chosen = [gs = op.gs_ini]() {
+		std::string text;
+		if (!settings::ReadFile(gs, text))
+			return false;
+		for (const settings::IniLine& l : settings::ParseIni(text))
+			if (settings::CanonKey(l.key) == settings::CanonKey("PS5SX2/OpenBios"))
+				return settings::Lower(settings::Trim(l.value)) == "true";
+		return false;
+	};
 	if (no_bios)
 	{
-		acfg.bios_present = [] { return false; };
-		acfg.bios_problem = [no_bios_problem] { return no_bios_problem; };
+		acfg.bios_present = [&bios_looks, open_bios, open_chosen] {
+			bios_looks++;
+			return open_bios && open_chosen();
+		};
+		acfg.bios_problem = [no_bios_problem, open_bios, open_chosen] { return open_bios && open_chosen() ? std::string() : no_bios_problem; };
 		acfg.bios_dir = "/data/PCSX2/bios";
+		acfg.open_bios_bundled = open_bios;
+		acfg.bios_open_in_use = [open_bios, open_chosen] { return open_bios && open_chosen(); };
+		acfg.bios_pending_launch = bios_pending;
 	}
+	int outside_ok = -1;
+	std::string approved;
 	acfg.refresh_game = [op](GameInfo& g) {
 		g.badges.clear();
 		ReadBadges(g, op.settings_dir, op.gs_ini, op.patches_dir);
@@ -1233,7 +1268,15 @@ int main(int argc, char** argv)
 				                key == "flipangle100" ? static_cast<int>(std::lround(pose(app.FlipAngle()) * 100.0f)) : // 2.11: the same with its side (-100 .. 100)
 				                key == "flippeak100" ? static_cast<int>(std::lround(flip_top * 100.0f)) : // 2.11: the furthest over it got since flipreset, in percent
 				                key == "flipbottom100" ? static_cast<int>(std::lround(flip_low * 100.0f)) : // 2.11: the nearest to the front it got since flipreset
-				                key == "flipspeed100" ? static_cast<int>(std::lround(flip_peak * 100.0f)) : -99;
+				                key == "flipspeed100" ? static_cast<int>(std::lround(flip_peak * 100.0f)) :
+				key == "biosask"   ? (app.BiosChoiceOpen() ? 1 : 0) : // bioscheck: the BIOS question is up
+				key == "biosrow"   ? app.BiosChoiceRow() :            // bioscheck: its focused card (-1: not up)
+				key == "biosmissing" ? (app.BiosMissing() ? 1 : 0) :  // bioscheck
+				key == "bioslooks" ? bios_looks :                     // bioscheck: how often the stand-in was asked
+				key == "openchosen" ? (open_chosen() ? 1 : 0) :       // bioscheck: gs.ini PS5SX2/OpenBios=true
+				key == "outsideok" ? outside_ok :                     // bioscheck: the last "outside" step was taken (1), refused (0)
+				key == "approved"  ? (approved += app.TakeApprovedLaunch(), approved.empty() ? 0 : 1) :     // bioscheck: an outside start the BIOS question let go
+				-99;
 	};
 	// Splits "key>=N" into its parts; false when it does not parse.
 	auto split_expect = [&](const std::string& arg, std::string& key, char& cmp, int& want) {
@@ -1364,6 +1407,12 @@ int main(int argc, char** argv)
 		drive_title = s.text;
 		}
 		run(dt);
+		}
+		else if (s.op == "outside") // bioscheck: a start asked of the shelf from outside it, as fe_ps5.cpp's loop asks
+		{
+			outside_ok = app.OfferOutsideLaunch(s.arg) ? 1 : 0;
+			std::printf("[host] outside %s: %s\n", s.arg.c_str(), outside_ok ? "taken" : "not taken (no BIOS)");
+			run(dt);
 		}
 		else if (s.op == "sleep")
 		{

@@ -61,6 +61,14 @@ struct AppConfig
 	std::function<bool()> bios_present;
 	std::function<std::string()> bios_problem;
 	std::string bios_dir;
+	// bioscheck (2026-10-29, AI-assisted): a pick refused for want of a BIOS asks what to do (the BIOS question): the open-source BIOS this
+	// build ships (open_bios_bundled; picking it writes gs.ini PS5SX2/OpenBios=true, then bios_present looks again and the pick starts), or
+	// the player's own in bios_dir. bios_open_in_use: games start with the open BIOS now (the shelf names it). bios_pending_launch: a start
+	// from outside the shelf (a game or disc tile, the disc helper, bootdisc) refused for want of a BIOS before the shelf came up: the
+	// question is asked for it at once, and picking the open BIOS starts it (App::TakeApprovedLaunch).
+	bool open_bios_bundled = false;
+	std::function<bool()> bios_open_in_use;
+	std::string bios_pending_launch;
 	// 2026-10-16: the games folder the player set (the first of them) while only those are listed; "" = the usual places. The empty
 	// shelf names it where it says /data/PCSX2/games (a typo or an unplugged drive then explains itself).
 	std::string games_folder_note;
@@ -117,6 +125,14 @@ public:
 	int Chosen() const { return m_index.empty() ? m_selected : m_index[static_cast<size_t>(m_selected)]; }
 	// 2026-10-08: true when Done() came from the sheet's "PS2 system menu", not a game.
 	bool SystemMenuChosen() const { return m_system_menu; }
+	// bioscheck: a start asked of the shelf from outside it (Play from disc, a finished copy): true when it may go (there is a BIOS);
+	// false when there is none: the BIOS question comes up for it (once a path), and the request is not taken.
+	bool OfferOutsideLaunch(const std::string& path);
+	// bioscheck: a start from outside the shelf that waited on the BIOS question and may go now (the open BIOS was picked); "" for none.
+	std::string TakeApprovedLaunch();
+	bool BiosMissing() const { return m_bios_missing; }
+	bool BiosChoiceOpen() const { return m_bios_ask; }
+	int BiosChoiceRow() const { return m_bios_ask ? m_bios_sel : -1; } // 0 the open BIOS, 1 your own (0 is your own without the open BIOS)
 
 	const std::vector<GameInfo>& games() const { return m_games; }
 
@@ -459,8 +475,30 @@ private:
 	bool m_bios_missing = false;
 	std::string m_bios_problem;
 	double m_bios_refused = -10;
-	bool BiosReady(); // looks again; false (and the line lit) when there's still none
+	// bioscheck: what waits on the BIOS question: a pick of the shelf, the system menu, or a start from outside the shelf.
+	enum class BiosWait
+	{
+		None,
+		Pick,
+		SystemMenu,
+		Outside,
+	};
+	bool BiosReady(BiosWait wait = BiosWait::None, const std::string& path = std::string()); // looks again; false (the line lit, the question up) when there's still none
 	void BuildBiosLine(std::vector<UiVertex>& ui, float W, float k);
+	// bioscheck: the BIOS question (Left/Right choose, Cross confirms, Circle closes it).
+	bool m_bios_ask = false;
+	int m_bios_sel = 0;
+	float m_bios_anim = 0;
+	BiosWait m_bios_wait = BiosWait::None;
+	std::string m_bios_wait_path;      // BiosWait::Outside: the start that waits
+	std::string m_bios_outside_asked;  // the outside start the question last came up for (a request asked again doesn't reopen it)
+	std::string m_approved_launch;     // an outside start the open BIOS let go
+	bool m_bios_open_in_use = false;   // the shelf names the open BIOS
+	void OpenBiosChoice(BiosWait wait, const std::string& path);
+	void UpdateBiosChoice(const Input& in);
+	void BuildBiosChoice(std::vector<UiVertex>& ui, float W, float H, float k, uint32_t accent);
+	bool UseOpenBios(); // gs.ini PS5SX2/OpenBios=true, then looks again
+	void RefreshBios(); // looks again quietly (the sheet closed: the OpenBios switch may have changed)
 	// vk-285-134: a pick refused for its image (GameInfo::damaged): the line under the title says why, for a few seconds.
 	std::string m_refused_text;
 	double m_refused_time = -10;

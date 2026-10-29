@@ -149,6 +149,22 @@ enum class Str : int
 	LogsOn,                // "Sent"
 	LogsOff,               // "Off"
 	LogsHelp,              // what the row does
+	// bioscheck (2026-10-29, AI-assisted): the BIOS question before a start, and the open-source BIOS PS5SX2 ships (English only for now).
+	BiosChoiceTitle, // "No PS2 BIOS found": the BIOS question's headline
+	BiosChoiceIntro, // "Games need a PS2 BIOS to start. Sony's BIOS can't come with PS5SX2: yours comes from your own PS2.": the line under it
+	BiosUseOpen, // "Use the open-source BIOS": the first card
+	BiosUseOpenLine1, // "OpenPS2BIOS, experimental:": its first line
+	BiosUseOpenLine2, // "some games don't work yet.": its second line
+	BiosAddOwn, // "Add your own BIOS": the second card
+	BiosAddOwnLine1, // "Put it in %s": its first line (%s: the BIOS folder)
+	BiosAddOwnLine2, // "then pick the game again.": its second line
+	BiosHintChoose, // "choose": Left / Right: choose
+	BiosHintConfirm, // "confirm": Cross: confirm
+	BiosInUse, // "BIOS: %s": the shelf's note while the open BIOS is the one games use (%s: OpenPS2BIOS (experimental))
+	ShelfNoBiosChoice, // "Pick a game to choose: the open-source BIOS, or your own.": the shelf's BIOS line, when the open BIOS is offered
+	BiosOpenFailed, // "The open-source BIOS couldn't be set up (see boot.log).": the choice failed
+	NotifyNoBiosChoice, // "PS5SX2: no PS2 BIOS found, so the game didn't start. The menu offers the open-source BIOS, or put your own in %s.": a start without the shelf (a tile, a disc) refused (%s: the BIOS folder)
+	NotifyOpenBiosCantStart, // "PS5SX2: OpenPS2BIOS (experimental) can't start PS1 discs, audio CDs or DVD videos. Put your own PS2 BIOS in %s to play this one.": (%s: the BIOS folder)
 	Count
 };
 

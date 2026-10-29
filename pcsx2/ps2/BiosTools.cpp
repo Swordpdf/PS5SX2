@@ -12,6 +12,11 @@
 #include "Common.h"
 #include "BiosTools.h"
 #include "Config.h"
+#ifdef __PROSPERO__
+#include <algorithm>
+#include <vector>
+#include "ps5/coreorbis/orbis-shims/OrbisOpenBios.h" // bioscheck: OpenPS2BIOS, named as such; a BIOS of the player's own first
+#endif
 
 static constexpr u32 MIN_BIOS_SIZE = 4 * _1mb;
 static constexpr u32 MAX_BIOS_SIZE = 8 * _1mb;
@@ -98,7 +103,9 @@ static bool LoadBiosVersion(std::FILE* fp, u32& version, std::string& descriptio
 	// ensure it's a null-terminated and not zero-length string
 	while (rd.fileName[0] != '\0' && strnlen(rd.fileName, sizeof(rd.fileName)) != sizeof(rd.fileName))
 	{
-		if (std::strncmp(rd.fileName, "EXTINFO", sizeof(rd.fileName)) == 0)
+		// PS5 port (bioscheck, AI-assisted): an EXTINFO too small to hold the serial (OpenPS2BIOS's is empty) is skipped: its
+		// "serial" was read from the next file's code.
+		if (std::strncmp(rd.fileName, "EXTINFO", sizeof(rd.fileName)) == 0 && rd.fileSize >= 0x10 + 15)
 		{
 			s64 pos = FileSystem::FTell64(fp);
 			if (FileSystem::FSeek64(fp, fileOffset + 0x10, SEEK_SET) != 0 ||
@@ -181,6 +188,28 @@ static bool LoadBiosVersion(std::FILE* fp, u32& version, std::string& descriptio
 		version = static_cast<u32>(strtol(vermaj, (char**)NULL, 0) << 8);
 		version |= strtol(vermin, (char**)NULL, 0);
 
+#ifdef __PROSPERO__
+		// bioscheck (AI-assisted): OpenPS2BIOS, the open-source BIOS PS5SX2 ships, is named so wherever the BIOS is named
+		// (orbis-shims/OrbisOpenBios.h); PCSX2 takes it as it is (a USA "Devel" BIOS v00.05 by its ROMVER).
+		{
+			const s64 pos = FileSystem::FTell64(fp);
+			std::vector<unsigned char> image(static_cast<size_t>(std::min<s64>(std::max<s64>(fileSize, 0), MAX_BIOS_SIZE)));
+			if (!image.empty() && FileSystem::FSeek64(fp, 0, SEEK_SET) == 0)
+			{
+				const size_t got = std::fread(image.data(), 1, image.size(), fp);
+				const OrbisBios::OpenBiosInfo open = OrbisBios::IdentifyOpenBios(image.data(), got);
+				if (open.open)
+				{
+					description = OrbisBios::kOpenBiosName;
+					serial.clear();
+					Console.WriteLn("BIOS Found: %s (ROMVER %.14s)", OrbisBios::OpenBiosLogName(open).c_str(), romver);
+					FileSystem::FSeek64(fp, pos, SEEK_SET);
+					return true;
+				}
+			}
+			FileSystem::FSeek64(fp, pos, SEEK_SET);
+		}
+#endif
 		Console.WriteLn("BIOS Found: %s", description.c_str());
 	}
 	else
@@ -356,6 +385,9 @@ static std::string FindBiosImage()
 
 	u32 version, region;
 	std::string description, zone;
+#ifdef __PROSPERO__
+	std::string open_bios; // bioscheck: OpenPS2BIOS in the folder is taken only when no other BIOS is there
+#endif
 	for (const FILESYSTEM_FIND_DATA& fd : results)
 	{
 		if (fd.Size < MIN_BIOS_SIZE || fd.Size > MAX_BIOS_SIZE)
@@ -363,10 +395,25 @@ static std::string FindBiosImage()
 
 		if (IsBIOS(fd.FileName.c_str(), version, description, region, zone))
 		{
+#ifdef __PROSPERO__
+			if (description == OrbisBios::kOpenBiosName)
+			{
+				if (open_bios.empty())
+					open_bios = fd.FileName;
+				continue;
+			}
+#endif
 			Console.WriteLn("Using BIOS '%s' (%s %s)", fd.FileName.c_str(), description.c_str(), zone.c_str());
 			return std::move(fd.FileName);
 		}
 	}
+#ifdef __PROSPERO__
+	if (!open_bios.empty())
+	{
+		Console.WriteLn("Using BIOS '%s' (%s): no other BIOS in the folder", open_bios.c_str(), OrbisBios::kOpenBiosName);
+		return open_bios;
+	}
+#endif
 
 #ifdef __PROSPERO__
 	// vk-285-115: the other places, then what the BIOS folder holds (see OrbisFindBiosElsewhere).

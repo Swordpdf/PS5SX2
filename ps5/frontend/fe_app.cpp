@@ -6,6 +6,7 @@
 #include "fe_app.h"
 #include "fe_i18n.h"
 #include "fe_roots.h" // 2026-10-16: kScanSubfoldersKey (the picker's game count)
+#include "fe_settings.h" // bioscheck: EditSettingsFile (the BIOS question writes PS5SX2/OpenBios)
 
 #include <algorithm>
 #include <cctype>
@@ -236,12 +237,19 @@ bool App::Init(Renderer* renderer, const Fonts* fonts, std::vector<GameInfo> gam
 	// vk-285-134: main-boot.cpp looked for the BIOS just before the shelf; what it found is shown until a pick looks again.
 	m_bios_problem = m_cfg.bios_problem ? m_cfg.bios_problem() : std::string();
 	m_bios_missing = !m_bios_problem.empty();
+	m_bios_open_in_use = !m_bios_missing && m_cfg.bios_open_in_use && m_cfg.bios_open_in_use();
+	// bioscheck: a tile's or a disc's start was refused for want of a BIOS before the shelf came up: the question comes up for it at once.
+	if (!m_cfg.bios_pending_launch.empty())
+	{
+		m_bios_missing = true;
+		OpenBiosChoice(BiosWait::Outside, m_cfg.bios_pending_launch);
+	}
 	return true;
 }
 
 // vk-285-134 (AI-assisted): a game (or the PS2 system menu) starts only with a BIOS. Looked for again at each pick, as a BIOS
 // may have been copied over meanwhile (the settings page, FTP); without one the pick stays on the shelf and the line says why.
-bool App::BiosReady()
+bool App::BiosReady(BiosWait wait, const std::string& path)
 {
 	if (!m_cfg.bios_present)
 		return true;
@@ -249,15 +257,226 @@ bool App::BiosReady()
 	{
 		m_bios_missing = false;
 		m_bios_problem.clear();
+		m_bios_open_in_use = m_cfg.bios_open_in_use && m_cfg.bios_open_in_use();
 		return true;
 	}
 	m_bios_missing = true;
+	m_bios_open_in_use = false;
 	m_bios_problem = m_cfg.bios_problem ? m_cfg.bios_problem() : std::string();
 	m_bios_refused = m_time;
 	std::printf("[frontend] no PS2 BIOS: the game stays on the shelf (%s)\n", m_bios_problem.c_str());
 	std::fflush(stdout);
 	Sound(Sfx::Edge, 0.0f);
+	if (wait != BiosWait::None) // bioscheck: and asks what to do
+		OpenBiosChoice(wait, path);
 	return false;
+}
+
+// bioscheck (2026-10-29, AI-assisted): the BIOS question. A pick (or the system menu, or a start from outside the shelf) refused for want of a
+// BIOS asks: the open-source BIOS PS5SX2 ships (OpenPS2BIOS, experimental), which is remembered (gs.ini PS5SX2/OpenBios) and starts what
+// waited at once, or the player's own BIOS in the BIOS folder (a BIOS of their own always wins over the open one).
+void App::OpenBiosChoice(BiosWait wait, const std::string& path)
+{
+	m_bios_ask = true;
+	m_bios_sel = 0;
+	m_bios_wait = wait;
+	m_bios_wait_path = path;
+	m_held = 0;
+	std::printf("[frontend] BIOS question: %s%s%s (the open BIOS %s)\n",
+		wait == BiosWait::Pick ? "a pick" : wait == BiosWait::SystemMenu ? "the PS2 system menu" : "a start from outside the shelf",
+		path.empty() ? "" : ": ", path.c_str(), m_cfg.open_bios_bundled ? "offered" : "not in this build");
+	std::fflush(stdout);
+}
+
+bool App::OfferOutsideLaunch(const std::string& path)
+{
+	if (!m_bios_missing && (!m_cfg.bios_present || m_cfg.bios_present()))
+		return true;
+	if (m_bios_missing && m_cfg.bios_present && m_cfg.bios_present()) // a BIOS came meanwhile
+	{
+		m_bios_missing = false;
+		m_bios_problem.clear();
+		m_bios_open_in_use = m_cfg.bios_open_in_use && m_cfg.bios_open_in_use();
+		return true;
+	}
+	m_bios_missing = true;
+	if (path != m_bios_outside_asked && !m_bios_ask && !m_launching)
+	{
+		m_bios_outside_asked = path;
+		m_bios_refused = m_time;
+		Sound(Sfx::Edge, 0.0f);
+		OpenBiosChoice(BiosWait::Outside, path);
+	}
+	return false;
+}
+
+std::string App::TakeApprovedLaunch()
+{
+	std::string r;
+	r.swap(m_approved_launch);
+	return r;
+}
+
+bool App::UseOpenBios()
+{
+	std::string what, error;
+	if (m_cfg.options.gs_ini.empty() ||
+		!settings::EditSettingsFile(m_cfg.options.gs_ini, "", {{settings::Change::Set, "PS5SX2/OpenBios", "true"}}, what, error))
+	{
+		std::printf("[frontend] BIOS question: the open BIOS couldn't be chosen (%s)\n", error.c_str());
+		std::fflush(stdout);
+		return false;
+	}
+	if (m_cfg.options.log)
+		m_cfg.options.log("shelf: gs.ini: the BIOS question: the open-source BIOS: " + (what.empty() ? std::string("no change") : what));
+	if (!m_cfg.bios_present || !m_cfg.bios_present())
+		return false;
+	m_bios_missing = false;
+	m_bios_problem.clear();
+	m_bios_open_in_use = m_cfg.bios_open_in_use && m_cfg.bios_open_in_use();
+	return true;
+}
+
+void App::RefreshBios()
+{
+	if (!m_cfg.bios_present)
+		return;
+	const bool ok = m_cfg.bios_present();
+	m_bios_missing = !ok;
+	m_bios_problem = ok ? std::string() : (m_cfg.bios_problem ? m_cfg.bios_problem() : std::string());
+	m_bios_open_in_use = ok && m_cfg.bios_open_in_use && m_cfg.bios_open_in_use();
+}
+
+void App::UpdateBiosChoice(const Input& in)
+{
+	const int cards = m_cfg.open_bios_bundled ? 2 : 1;
+	if (cards == 2 && ((in.left && !m_prev.left) || (in.right && !m_prev.right)))
+	{
+		m_bios_sel = 1 - m_bios_sel;
+		Sound(Sfx::Move, in.left ? -0.2f : 0.2f);
+		return;
+	}
+	if (in.circle && !m_prev.circle)
+	{
+		std::printf("[frontend] BIOS question: closed\n");
+		std::fflush(stdout);
+		m_bios_ask = false;
+		m_bios_wait = BiosWait::None;
+		Sound(Sfx::Edge, 0.0f);
+		return;
+	}
+	if (!(in.cross && !m_prev.cross))
+		return;
+	const bool open = cards == 2 && m_bios_sel == 0;
+	if (!open)
+	{
+		std::printf("[frontend] BIOS question: your own BIOS (in %s)\n", m_cfg.bios_dir.c_str());
+		std::fflush(stdout);
+		char line[320];
+		std::snprintf(line, sizeof(line), Tr(Str::BiosAddOwnLine1), m_cfg.bios_dir.c_str());
+		m_refused_text = std::string(line) + ", " + Tr(Str::BiosAddOwnLine2);
+		m_refused_time = m_time;
+		m_bios_refused = m_time;
+		m_bios_ask = false;
+		m_bios_wait = BiosWait::None;
+		Sound(Sfx::Move, 0.0f);
+		return;
+	}
+	if (!UseOpenBios())
+	{
+		m_refused_text = Tr(Str::BiosOpenFailed);
+		m_refused_time = m_time;
+		m_bios_ask = false;
+		m_bios_wait = BiosWait::None;
+		Sound(Sfx::Edge, 0.0f);
+		return;
+	}
+	std::printf("[frontend] BIOS question: the open-source BIOS (OpenPS2BIOS, experimental): remembered; %s starts\n",
+		m_bios_wait == BiosWait::Outside ? m_bios_wait_path.c_str() : m_bios_wait == BiosWait::SystemMenu ? "the PS2 system menu" : "the pick");
+	std::fflush(stdout);
+	m_bios_ask = false;
+	const BiosWait wait = m_bios_wait;
+	m_bios_wait = BiosWait::None;
+	if (wait == BiosWait::Outside)
+	{
+		m_approved_launch = m_bios_wait_path;
+		m_done = true;
+		Sound(Sfx::Launch, 0.0f);
+		return;
+	}
+	if (wait == BiosWait::None)
+	{
+		Sound(Sfx::Move, 0.0f);
+		return;
+	}
+	if (m_cfg.game_achievements.cancel)
+		m_cfg.game_achievements.cancel();
+	m_system_menu = wait == BiosWait::SystemMenu;
+	m_launching = true;
+	m_launch_time = m_time;
+	Sound(Sfx::Launch, 0.0f);
+}
+
+void App::BuildBiosChoice(std::vector<UiVertex>& ui, float W, float H, float k, uint32_t accent)
+{
+	const float e = Smoothstep(0.0f, 1.0f, m_bios_anim);
+	const size_t begin = ui.size();
+	const uint32_t hi = Rgba(1, 1, 1), mid = Rgba(0.76f, 0.74f, 0.86f), lo = Rgba(0.56f, 0.54f, 0.68f);
+	const uint32_t ink = Rgba(0.07f, 0.06f, 0.16f), inkmid = Rgba(0.30f, 0.28f, 0.44f);
+	Fonts::AddRoundedRect(ui, 0, 0, W, H, 0.0f, Rgba(0.01f, 0.01f, 0.03f, 0.76f));
+
+	// The panel, as the disc question's (BuildDiscAsk): a shadow, a rim, the body, an amber line along its top (the BIOS line's colour).
+	const float pw = 1560 * k, ph = 700 * k, px = (W - pw) * 0.5f, py = (H - ph) * 0.5f - 20 * k;
+	const float pad = 84 * k, cx = px + pad, inner = pw - 2 * pad;
+	Fonts::AddRoundedRect(ui, px - 8 * k, py + 14 * k, pw + 16 * k, ph + 16 * k, 52 * k, Rgba(0, 0, 0, 0.38f));
+	Fonts::AddRoundedRect(ui, px - 2 * k, py - 2 * k, pw + 4 * k, ph + 4 * k, 46 * k, Rgba(1, 1, 1, 0.14f));
+	Fonts::AddRoundedRect(ui, px, py, pw, ph, 44 * k, Rgba(0.045f, 0.050f, 0.105f, 0.985f));
+	Fonts::AddRoundedRect(ui, px + 120 * k, py, pw - 240 * k, 6 * k, 3 * k, Rgba(0.95f, 0.62f, 0.22f));
+
+	m_fonts->AddText(ui, Fit(*m_fonts, Tr(Str::BiosChoiceTitle), 60 * k, inner).c_str(), cx, py + 120 * k, 60 * k, hi, 0.55f);
+	m_fonts->AddText(ui, Fit(*m_fonts, Tr(Str::BiosChoiceIntro), 30 * k, inner).c_str(), cx, py + 184 * k, 30 * k, mid, 0.2f);
+	Fonts::AddRoundedRect(ui, cx, py + 222 * k, inner, 2 * k, 0, Rgba(1, 1, 1, 0.10f));
+
+	const bool two = m_cfg.open_bios_bundled;
+	const float gap = 36 * k, cw = two ? (inner - gap) * 0.5f : inner, ch = 240 * k, cy = py + 270 * k;
+	auto card = [&](float x0, const std::string& title, const std::string& line1, const std::string& line2, bool focused) {
+		if (focused)
+		{
+			Fonts::AddRoundedRect(ui, x0 - 8 * k, cy - 8 * k, cw + 16 * k, ch + 16 * k, 46 * k, Rgba(1, 1, 1, 0.16f));
+			Fonts::AddRoundedRect(ui, x0 - 4 * k, cy - 4 * k, cw + 8 * k, ch + 8 * k, 42 * k, accent);
+			Fonts::AddRoundedRect(ui, x0, cy, cw, ch, 38 * k, Rgba(1, 1, 1, 0.96f));
+		}
+		else
+			Fonts::AddRoundedRect(ui, x0, cy, cw, ch, 38 * k, Rgba(1, 1, 1, 0.07f));
+		const uint32_t t = focused ? ink : hi, c = focused ? inkmid : mid;
+		const float tw = cw - 48 * k;
+		m_fonts->AddText(ui, Fit(*m_fonts, title, 44 * k, tw).c_str(), x0 + cw * 0.5f, cy + 88 * k, 44 * k, t, 0.55f, Fonts::Center);
+		m_fonts->AddText(ui, Fit(*m_fonts, line1, 29 * k, tw).c_str(), x0 + cw * 0.5f, cy + 148 * k, 29 * k, c, 0.15f, Fonts::Center);
+		m_fonts->AddText(ui, Fit(*m_fonts, line2, 29 * k, tw).c_str(), x0 + cw * 0.5f, cy + 190 * k, 29 * k, c, 0.15f, Fonts::Center);
+	};
+	char own[320];
+	std::snprintf(own, sizeof(own), Tr(Str::BiosAddOwnLine1), m_cfg.bios_dir.c_str());
+	if (two)
+	{
+		card(cx, Tr(Str::BiosUseOpen), Tr(Str::BiosUseOpenLine1), Tr(Str::BiosUseOpenLine2), m_bios_sel == 0);
+		card(cx + cw + gap, Tr(Str::BiosAddOwn), own, Tr(Str::BiosAddOwnLine2), m_bios_sel == 1);
+	}
+	else
+		card(cx, Tr(Str::BiosAddOwn), own, Tr(Str::BiosAddOwnLine2), true);
+
+	float hx = cx;
+	auto hint = [&](const char* key, const char* what) {
+		const float kpx = 24 * k, kw = m_fonts->Measure(key, kpx) + 36 * k, kh = 46 * k, hy = py + ph - 100 * k;
+		Fonts::AddRoundedRect(ui, hx, hy, kw, kh, kh * 0.5f, Rgba(1, 1, 1, 0.14f));
+		m_fonts->AddText(ui, key, hx + kw * 0.5f, hy + kh * 0.5f + 9 * k, kpx, hi, 0.45f, Fonts::Center);
+		hx += kw + 14 * k;
+		hx += m_fonts->AddText(ui, what, hx, hy + kh * 0.5f + 9 * k, kpx, lo, 0.20f) + 40 * k;
+	};
+	if (two)
+		hint("Left / Right", Tr(Str::BiosHintChoose));
+	hint("Cross", Tr(Str::BiosHintConfirm));
+	hint("Circle", Tr(Str::HintBack));
+	FadeRange(ui, begin, ui.size(), e);
 }
 
 
@@ -965,6 +1184,7 @@ void App::Update(double dt, const Input& in)
 	m_dump_spin += fdt; // live-22: the dump disc's rotation, advanced whether or not a dump is on
 	PollDiscAsk();
 	m_ask_anim += ((m_ask_on ? 1.0f : 0.0f) - m_ask_anim) * (1.0f - std::exp(-fdt * 16.0f));
+	m_bios_anim += ((m_bios_ask ? 1.0f : 0.0f) - m_bios_anim) * (1.0f - std::exp(-fdt * 16.0f)); // bioscheck
 
 	// 2.11: the search: what the settings page's box says, the PS5's keyboard while it is up, and the fades.
 	if (m_cfg.search_remote)
@@ -1014,6 +1234,11 @@ void App::Update(double dt, const Input& in)
 			m_launch_time = m_time;
 		if (m_time - m_launch_time > 0.6 && !m_game_achievements.busy)
 			m_done = true;
+	}
+	else if (m_bios_ask) // bioscheck: the BIOS question
+	{
+		UpdateBiosChoice(in);
+		m_prev = in;
 	}
 	else if (m_ask_on)
 	{
@@ -1128,7 +1353,7 @@ void App::Update(double dt, const Input& in)
 					std::fflush(stdout);
 					Sound(Sfx::Edge, 0.0f);
 				}
-				else if (BiosReady()) // vk-285-134
+				else if (BiosReady(BiosWait::Pick)) // vk-285-134; bioscheck: the BIOS question when there is none
 				{
 					if (m_cfg.game_achievements.cancel)
 						m_cfg.game_achievements.cancel();
@@ -1820,6 +2045,8 @@ void App::Build(FrameDesc& f, const std::string& clock)
 		BuildAccount(ui, W, H, k, accent);
 	if (m_ask_anim > 0.001f)
 		BuildDiscAsk(ui, W, H, k, accent);
+	if (m_bios_anim > 0.001f)
+		BuildBiosChoice(ui, W, H, k, accent); // bioscheck
 	BuildSearch(ui, W, H, k, accent); // 2.11: the search line and its keyboard, over everything but the disc question
 	f.ui_images = m_achievement_images; // 2.11: the texture changes among the UI vertices (badges, the disc being copied)
 }
@@ -2045,7 +2272,11 @@ void App::CloseSheet()
 	if (m_cfg.game_achievements.cancel)
 		m_cfg.game_achievements.cancel();
 	if (m_sheet.saved() > 0)
+	{
 		RefreshBadges();
+		if (m_sheet_global)
+			RefreshBios(); // bioscheck: PS5SX2/OpenBios may have changed
+	}
 	std::printf("[options] sheet closed (%d change(s) saved)\n", m_sheet.saved());
 	std::fflush(stdout);
 }
@@ -2254,7 +2485,7 @@ void App::UpdateSheet(double dt, const Input& in)
 			if (m_sheet.TakeSystemMenu())
 			{
 				CloseSheet();
-				if (BiosReady()) // vk-285-134: the PS2's own menu is the BIOS
+				if (BiosReady(BiosWait::SystemMenu)) // vk-285-134: the PS2's own menu is the BIOS (bioscheck: the question when there is none)
 				{
 					m_system_menu = true;
 					m_launching = true;
@@ -2833,18 +3064,27 @@ std::string App::TexturePackHelp(const TexturePackStatus& s, int pick, const std
 // found instead under it. It lights up for a moment when a pick was refused.
 void App::BuildBiosLine(std::vector<UiVertex>& ui, float W, float k)
 {
+	if (!m_bios_missing && m_bios_open_in_use) // bioscheck: the open BIOS is named while games start with it
+	{
+		char note[160];
+		std::snprintf(note, sizeof(note), Tr(Str::BiosInUse), "OpenPS2BIOS (experimental)");
+		m_fonts->AddText(ui, note, W * 0.5f, 250.0f * k, 28.0f * k, Rgba(0.95f, 0.78f, 0.52f, 0.85f), 0.2f, Fonts::Center);
+		return;
+	}
 	if (!m_bios_missing)
 		return;
 	const float since = static_cast<float>(m_time - m_bios_refused);
 	const float flash = since >= 0.0f && since < 1.6f ? 1.0f - since / 1.6f : 0.0f;
-	const float w = 2000.0f * k, x = W * 0.5f - w * 0.5f, y = 222.0f * k, h = m_bios_problem.empty() ? 96.0f * k : 150.0f * k;
+	const float w = 2000.0f * k, x = W * 0.5f - w * 0.5f, y = 222.0f * k, h = m_bios_problem.empty() && !m_cfg.open_bios_bundled ? 96.0f * k : 150.0f * k;
 	Fonts::AddRoundedRect(ui, x, y, w, h, 24.0f * k, Rgba(0.42f + 0.25f * flash, 0.20f + 0.08f * flash, 0.04f, 0.88f));
 	char head[320];
 	std::snprintf(head, sizeof(head), Tr(Str::ShelfNoBios), m_cfg.bios_dir.c_str());
 	const float hpx = 40.0f * k, dpx = 32.0f * k;
 	m_fonts->AddText(ui, Fit(*m_fonts, head, hpx, w - 60.0f * k).c_str(), W * 0.5f, y + 60.0f * k, hpx, Rgba(1, 1, 1), 0.4f, Fonts::Center);
-	if (!m_bios_problem.empty())
-		m_fonts->AddText(ui, Fit(*m_fonts, m_bios_problem, dpx, w - 60.0f * k).c_str(), W * 0.5f, y + 116.0f * k, dpx,
+	// bioscheck: with the open BIOS in the build, the line says a pick asks what to do (rather than what was found instead)
+	const std::string second = m_cfg.open_bios_bundled ? std::string(Tr(Str::ShelfNoBiosChoice)) : m_bios_problem;
+	if (!second.empty())
+		m_fonts->AddText(ui, Fit(*m_fonts, second, dpx, w - 60.0f * k).c_str(), W * 0.5f, y + 116.0f * k, dpx,
 			Rgba(1.0f, 0.86f, 0.62f), 0.2f, Fonts::Center);
 }
 
@@ -3952,7 +4192,7 @@ void App::PollDiscAsk()
 		return;
 	std::string title, serial;
 	const bool pending = m_cfg.disc_ask_poll(title, serial);
-	if (pending && !m_ask_on && !m_launching)
+	if (pending && !m_ask_on && !m_launching && !m_bios_ask)
 	{
 		m_ask_on = true;
 		m_ask_title = title;

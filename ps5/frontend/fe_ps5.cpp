@@ -171,6 +171,19 @@ FE_INCBIN_ASSET(fe_presets, "presets.ini");
 FE_INCBIN_ASSET(fe_hd_sources, "hd-pack-sources.json");
 // 2.11: LaunchBox's art by PS2 serial (fe_launchbox.h; made by tools/make_launchbox_covers.py).
 FE_INCBIN_ASSET(fe_launchbox, "launchbox-covers.txt");
+// bioscheck (2026-10-29): OpenPS2BIOS 0.5, the open-source BIOS PS5SX2 ships (Tamariba Devs, MIT), and its licence.
+FE_INCBIN_ASSET(fe_open_bios, "openps2bios/OpenPS2BIOS-0.5.bin");
+FE_INCBIN_ASSET(fe_open_bios_licence, "openps2bios/LICENSE");
+extern "C" const uint8_t fe_open_bios[], fe_open_bios_end[], fe_open_bios_licence[], fe_open_bios_licence_end[];
+
+bool orbis_frontend_open_bios_image(const unsigned char** data, size_t* size, const unsigned char** licence, size_t* licence_size)
+{
+	*data = fe_open_bios;
+	*size = static_cast<size_t>(fe_open_bios_end - fe_open_bios);
+	*licence = fe_open_bios_licence;
+	*licence_size = static_cast<size_t>(fe_open_bios_licence_end - fe_open_bios_licence);
+	return *size > 0;
+}
 extern "C" const uint8_t fe_font_brands[], fe_font_brands_end[], fe_web_page[], fe_web_page_end[], fe_web_discord[],
 	fe_web_discord_end[], fe_web_x[], fe_web_x_end[], fe_presets[], fe_presets_end[], fe_hd_sources[], fe_hd_sources_end[], fe_launchbox[],
 	fe_launchbox_end[];
@@ -1781,6 +1794,10 @@ int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budge
 static std::mutex g_launch_lock;
 static std::string g_launch_request; // under g_launch_lock
 static bool g_shelf_up = false;      // under g_launch_lock
+// bioscheck: the shelf has no BIOS (App::BiosMissing, each frame): a launch asked from outside is not taken but kept here for the shelf's
+// BIOS question (the disc watcher then leaves the disc alone, or asks again for a finished copy). Under g_launch_lock.
+static bool g_shelf_no_bios = false;
+static std::string g_bios_refused_request;
 // 2.04: the question about a disc just put in (orbis_frontend_ask_disc), under g_launch_lock.
 static std::string g_ask_title, g_ask_serial;
 static bool g_ask_pending = false; // asked and not answered
@@ -1799,6 +1816,11 @@ bool orbis_frontend_request_launch(const std::string& path)
 	std::lock_guard<std::mutex> lock(g_launch_lock);
 	if (!g_shelf_up)
 		return false;
+	if (g_shelf_no_bios) // bioscheck
+	{
+		g_bios_refused_request = path;
+		return false;
+	}
 	g_launch_request = path;
 	return true;
 }
@@ -2266,6 +2288,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.bios_present = paths.bios_check; // vk-285-134
 	acfg.bios_problem = paths.bios_problem;
 	acfg.bios_dir = paths.bios_dir;
+	acfg.open_bios_bundled = paths.open_bios_bundled; // bioscheck
+	acfg.bios_open_in_use = paths.bios_open_in_use;
+	acfg.bios_pending_launch = paths.bios_pending_launch;
 	acfg.games_folder_note = paths.games_folder_note; // 2026-10-16: the empty shelf names the folder you set
 	// live-22 (AI-assisted): while a PS2 disc is being copied (orbis-shims/ProsperoDiscDump.cpp), the shelf shows a
 	// spinning-disc entry with the live percentage, read from this file (the same path the dumper writes).
@@ -2320,11 +2345,37 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	double worst = 0;
 	bool first_shown = false;
 	std::string launch_path; // vk-285-144: a disc's game, asked for from outside
+	auto set_no_bios = [&app] { // bioscheck
+		std::lock_guard<std::mutex> lock(g_launch_lock);
+		g_shelf_no_bios = app.BiosMissing();
+	};
+	set_no_bios();
 	SetShelfUp(ok);
 	while (ok && !app.Done())
 	{
 		const double now = Now();
 		launch_path = TakeLaunchRequest();
+		// bioscheck: a launch from outside the shelf starts only with a BIOS (App::OfferOutsideLaunch looks again); without one the
+		// shelf's BIOS question comes up for it, and picking the open BIOS lets it go (App::TakeApprovedLaunch, after the loop).
+		std::string refused;
+		{
+			std::lock_guard<std::mutex> lock(g_launch_lock);
+			refused.swap(g_bios_refused_request);
+		}
+		if (launch_path.empty() && !refused.empty())
+		{
+			std::printf("[frontend] launch asked for from outside the shelf with no BIOS: %s\n", refused.c_str());
+			std::fflush(stdout);
+			if (app.OfferOutsideLaunch(refused))
+				launch_path = refused; // a BIOS came meanwhile
+		}
+		else if (!launch_path.empty() && !app.OfferOutsideLaunch(launch_path))
+		{
+			std::printf("[frontend] launch asked for from outside the shelf: %s: no BIOS, the shelf asks first\n", launch_path.c_str());
+			std::fflush(stdout);
+			launch_path.clear();
+		}
+		set_no_bios();
 		if (!launch_path.empty())
 		{
 			std::printf("[frontend] launch asked for from outside the shelf: %s\n", launch_path.c_str());
@@ -2441,6 +2492,8 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	}
 
 	SetShelfUp(false);
+	if (launch_path.empty())
+		launch_path = app.TakeApprovedLaunch(); // bioscheck: an outside start the BIOS question let go (the open BIOS was picked)
 	const int chosen = app.Chosen();
 	const bool picked = ok && (app.Done() || !launch_path.empty());
 	const bool system_menu = app.SystemMenuChosen(); // 2026-10-08

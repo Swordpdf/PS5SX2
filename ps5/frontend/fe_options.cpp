@@ -349,6 +349,10 @@ const std::vector<OptionGroup>& OptionGroups()
 					"On: each games folder is listed together with the folders inside it, one level down. Off: only the disc images directly in "
 					"the folder itself. Read when PS5SX2 starts.",
 					true),
+				// bioscheck (2026-10-29, AI-assisted): the open-source BIOS PS5SX2 ships (orbis-shims/OrbisOpenBios.h), chosen on the shelf's
+				// BIOS question or here, and turned off here again.
+				Toggle("PS5SX2/OpenBios", "OpenPS2BIOS (experimental)", "false", "Open BIOS %",
+					"On: with no PS2 BIOS of your own, games start with OpenPS2BIOS, the open-source BIOS PS5SX2 ships (experimental: some games don't work yet; PS1 discs, audio CDs and DVD videos can't start). A BIOS of your own in /data/PCSX2/bios always comes first. Off: games need your own BIOS. Read at each start."),
 			},
 			kTabSettings, false, true},
 		// vk-285-137 (AI-assisted; swordpdf: "add an option to hide games from the shelf"): a game off the shelf (its own file

@@ -345,6 +345,9 @@ const GROUPS = [
       hint: "On: games and the BIOS are also looked for on every USB, extended storage and M.2 drive (/mnt/usb0-7, /mnt/ext0-1) when no game folder or BIOS folder is set. Off: not for games or the BIOS (texture packs on a drive are still found). A folder you add yourself, on a drive too, is still used. Read when PS5SX2 starts." },
     { key: "PS5SX2/ScanSubfolders", label: "Scan subfolders", type: "toggle", def: "true", short: "Subfolders %", restart: true, later: "the subfolder scan",
       hint: "On: each games folder is listed together with the folders inside it, one level down. Off: only the disc images directly in the folder itself. Read when PS5SX2 starts." },
+    // bioscheck (2026-10-29): the open-source BIOS PS5SX2 ships, chosen on the shelf's BIOS question or here.
+    { key: "PS5SX2/OpenBios", label: "OpenPS2BIOS (experimental)", type: "toggle", def: "false", short: "Open BIOS %",
+      hint: "On: with no PS2 BIOS of your own, games start with OpenPS2BIOS, the open-source BIOS PS5SX2 ships (experimental: some games don't work yet; PS1 discs, audio CDs and DVD videos can't start). A BIOS of your own in /data/PCSX2/bios always comes first. Off: games need your own BIOS. Read at each start." },
   ]},
   // vk-285-137 (AI-assisted; swordpdf: "add an option to hide games from the shelf"): a game off the shelf (its own file only;
   // fe_games.cpp ReadBadges), and the switch for all games that puts hidden games back on it, dimmed. The sheet has the
