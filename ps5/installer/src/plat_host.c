@@ -73,6 +73,31 @@ int plat_pid_alive(pid_t pid) {
   return -1;
 }
 
+int plat_app_running(void) {
+  const char *t = getenv("PS5SX2_TEST_BIGAPP");
+  if (!t || !*t)
+    return 0;
+  return strcmp(t, "unknown") == 0 ? -1 : strncmp(t, "PPSA99203", 9) == 0 ? 1 : 0;
+}
+
+int plat_launch_app(char *why, size_t why_size) {
+  if (getenv("PS5SX2_TEST_LAUNCH_FAILS")) {
+    snprintf(why, why_size, "host test: the launch refused");
+    return -1;
+  }
+  char path[4096];
+  snprintf(path, sizeof(path), "%s/launched.txt", plat_root());
+  FILE *f = fopen(path, "a");
+  if (!f) {
+    snprintf(why, why_size, "host test: launched.txt can't be written");
+    return -1;
+  }
+  fprintf(f, "PPSA99203\n");
+  fclose(f);
+  snprintf(why, why_size, "host test: PPSA99203 started");
+  return 0;
+}
+
 const char *plat_test_env(const char *name) {
   const char *v = getenv(name);
   return (v && *v) ? v : NULL;

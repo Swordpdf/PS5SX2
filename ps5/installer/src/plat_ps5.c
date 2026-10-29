@@ -3,11 +3,19 @@
  * Every system call here has a known signature:
  *   - sceKernelSendNotificationRequest: as in the payload SDK's notify samples, with the request laid out
  *     like OnionHEN's debug toast (the helper's "PS5SX2 Helper Loaded!");
- *   - sysctl(CTL_KERN, KERN_ARND), kill(pid, 0), signal(): FreeBSD's own, from the SDK headers.
+ *   - sysctl(CTL_KERN, KERN_ARND), kill(pid, 0), signal(): FreeBSD's own, from the SDK headers;
+ *   - 1.4: sceLncUtilGetAppIdOfRunningBigApp, sceLncUtilGetAppTitleId, sceLncUtilLaunchApp (libSceSystemService) and
+ *     sceUserServiceGetForegroundUser (libSceUserService), loaded with dlopen at run time as the PS5SX3 Installer does
+ *     (its plat_ps5.c, where they run on consoles since TB10): starting the app that way is what its tile does. Never
+ *     fork or LoadExec (they panicked the kernel in the disc daemons' live tests).
  */
 #include "plat.h"
 
+#include "config.h"
+
+#include <dlfcn.h>
 #include <errno.h>
+#include <stdio.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stddef.h>
@@ -101,6 +109,79 @@ int plat_pid_alive(pid_t pid) {
   if (errno == ESRCH)
     return 0;
   return -1;
+}
+
+/* ---- 1.4: the shell: which app runs, and starting PS5SX2 ---- */
+
+typedef struct {
+  uint32_t size;
+  int32_t user_id;
+  uint32_t app_opt;
+  uint64_t crash_report;
+  uint64_t check_flag;
+} lnc_app_param_t;
+
+typedef uint32_t (*get_big_app_t)(void);
+typedef int (*get_title_t)(uint32_t, char *);
+typedef int (*launch_app_t)(const char *, const char **, lnc_app_param_t *);
+typedef int (*user_init_t)(void *);
+typedef int (*user_fg_t)(int *);
+
+static get_big_app_t p_big_app;
+static get_title_t p_title;
+static launch_app_t p_launch;
+static user_fg_t p_fg_user;
+static int g_lnc_loaded;
+
+static void load_lnc(void) {
+  if (g_lnc_loaded)
+    return;
+  g_lnc_loaded = 1;
+  void *h = dlopen("libSceSystemService.sprx", RTLD_NOW | RTLD_GLOBAL);
+  if (h) {
+    p_big_app = (get_big_app_t)dlsym(h, "sceLncUtilGetAppIdOfRunningBigApp");
+    p_title = (get_title_t)dlsym(h, "sceLncUtilGetAppTitleId");
+    p_launch = (launch_app_t)dlsym(h, "sceLncUtilLaunchApp");
+  }
+  void *u = dlopen("libSceUserService.sprx", RTLD_NOW | RTLD_GLOBAL);
+  if (u) {
+    user_init_t init = (user_init_t)dlsym(u, "sceUserServiceInitialize");
+    p_fg_user = (user_fg_t)dlsym(u, "sceUserServiceGetForegroundUser");
+    if (init)
+      (void)init(NULL); /* (already initialized in a process that used it before: harmless) */
+  }
+}
+
+int plat_app_running(void) {
+  load_lnc();
+  if (!p_big_app || !p_title)
+    return -1;
+  const uint32_t id = p_big_app();
+  if (id == 0 || id == 0xffffffffu)
+    return 0;
+  char title[32];
+  memset(title, 0, sizeof(title));
+  if (p_title(id, title) != 0)
+    return -1;
+  return strncmp(title, TITLE_ID, 9) == 0 ? 1 : 0;
+}
+
+int plat_launch_app(char *why, size_t why_size) {
+  load_lnc();
+  if (!p_launch) {
+    snprintf(why, why_size, "sceLncUtilLaunchApp isn't available");
+    return -1;
+  }
+  int user = -1;
+  if (p_fg_user)
+    (void)p_fg_user(&user);
+  lnc_app_param_t prm;
+  memset(&prm, 0, sizeof(prm));
+  prm.size = sizeof(prm);
+  prm.user_id = user;
+  const int rc = p_launch(TITLE_ID, NULL, &prm);
+  snprintf(why, why_size, "sceLncUtilLaunchApp(" TITLE_ID ", user %d) = 0x%08x", user, (unsigned)rc);
+  return rc < 0 ? -1 : 0;
 }
 
 const char *plat_test_env(const char *name) {
