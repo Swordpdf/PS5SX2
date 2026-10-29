@@ -1081,7 +1081,7 @@ inline std::string HelpText(const View& v, const std::string& title, bool own_ti
 				return "The tile is still on the home screen. If the game runs from it, close it first, then try again.";
 			return "The helper took the request but the tile did not show up in time. Press Cross to try again; disctile.log (flag kp_log) says why.";
 		case Phase::NoHelper:
-			return "The helper that makes game tiles is not running yet. The app loads it at start; if it did not, load the PS5SX2 Disc Helper (171j) by hand.";
+			return "The helper that makes game tiles is not running yet. The app loads it at start; if it did not, load the PS5SX2 Disc Helper (171k) by hand.";
 	}
 	return {};
 }
