@@ -79,5 +79,11 @@ if command -v node > /dev/null; then
 else
   echo "SKIP: no node, the sheet's options weren't checked against the page's"
 fi
+# 2026-10-29 (AI-assisted): presets.ini itself (sections, values, the report-based ones).
+if command -v python3 > /dev/null; then
+  python3 "$here/presets_check.py" "$presets" || fail=1
+else
+  echo "SKIP: no python3, presets.ini wasn't checked"
+fi
 head -n 1 "$work/sheet.txt"
 exit $fail

@@ -85,11 +85,34 @@ float GSRendererHW::GetUpscaleMultiplier()
 
 void GSRendererHW::Reset(bool hardware_reset)
 {
+#ifdef ORBIS_VULKAN
+	// PS5 port (2026-10-29, AI-assisted): the queued primitives are drawn before the targets go. GSState::Reset flushes
+	// them too, but only after RemoveAll below, so a draw there ran against a texture cache with no targets -- and a
+	// channel shuffle waiting for its last draw (m_channel_shuffle_width, m_last_rt) still pointed at a deleted target.
+	// Samurai Shodown Anthology and ADK Tamashii (SNK's Neo Geo collections) hit that at the CSR reset when a game is
+	// picked: "(ResizeTexture) Failed to allocate 1572888x1572888 texture" (a freed Target's fields), then signal 11 in
+	// GSTextureVK::GetLinkedFramebuffer or GSDirtyRectList::GetTotalRect from Draw's deferred channel-shuffle RenderHW
+	// (2.15: 12 crash reports, 6 consoles, every one right after the third gsreset). Needs proper testing.
+	Flush(GSFlushReason::RESET);
+#endif
 	// Read back on CSR Reset, conditional downloading on render swap etc handled elsewhere.
 	if (!hardware_reset)
 		g_texture_cache->ReadbackAll();
 
 	g_texture_cache->RemoveAll(true, true, true);
+
+#ifdef ORBIS_VULKAN
+	// A channel shuffle still being skipped through keeps its target in m_last_rt and renders it at its end: that target
+	// is gone now, so the shuffle is dropped (the reset starts the picture over anyway).
+	m_last_rt = nullptr;
+	m_channel_shuffle = false;
+	m_channel_shuffle_width = 0;
+	m_channel_shuffle_finish = false;
+	m_full_screen_shuffle = false;
+	m_last_channel_shuffle_fbp = 0xffff;
+	m_last_channel_shuffle_tbp = 0xffff;
+	m_last_channel_shuffle_end_block = 0xffff;
+#endif
 
 	GSRenderer::Reset(hardware_reset);
 }
