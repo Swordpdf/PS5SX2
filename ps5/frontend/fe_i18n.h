@@ -149,7 +149,6 @@ enum class Str : int
 	LogsOn,                // "Sent"
 	LogsOff,               // "Off"
 	LogsHelp,              // what the row does
-	NotifyLogsNotice,      // the one-time notice that session logs are sent, and how to stop it
 	Count
 };
 

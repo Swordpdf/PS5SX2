@@ -2239,10 +2239,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 			updater->Check(true);
 		else
 			std::printf("[update] no look at start (flag noupdatecheck)\n");
-		// The session logs are sent by default now that the app starts the logger itself (OrbisLoggerAutoStart): say so once, with the way out.
-		const std::string notice = std::string(kWork) + "/log-notice-shown";
-		if (updater->LogUpload() && !OrbisFlag("logger_noautoload") && !up.exists(notice) && up.set_file(notice, true))
-			OrbisNotifyPlain(Tr(Str::NotifyLogsNotice));
+		// Session logs are on by default and no notice says so (owner, 2026-10-29); the Session logs row is the way out.
 	}
 	// 2.11: the shelf's search and the settings page's search box
 	acfg.search_remote = [](std::string& text) { return g_web && g_web->TakeSearchFromPage(text); };

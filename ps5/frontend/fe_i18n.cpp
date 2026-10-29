@@ -139,7 +139,6 @@ const char* const kKeys[kCount] = {
 	"logs.on",
 	"logs.off",
 	"logs.help",
-	"notify.logs_notice",
 };
 
 const char* const kEnglish[kCount] = {
@@ -268,8 +267,6 @@ const char* const kEnglish[kCount] = {
 	"Off",
 	"On: when PS5SX2 closes after a game or a problem, that session's logs go to the PS5SX2 developers, to find and fix problems "
 	"(network addresses removed, no game list). Off: nothing is sent.",
-	"PS5SX2 sends the logs of sessions with a game or a problem to its developers. To turn this off: Square on the shelf, then "
-	"Session logs.",
 };
 
 const char* const kSpanish[kCount] = {

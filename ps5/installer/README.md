@@ -19,7 +19,7 @@ ELF loader on `127.0.0.1:9021` itself, with the launch block (`src/launch.h`) fi
 - **From the shelf** (Square, All games, *System update*; `INSTALLER_LAUNCH_RELAUNCH`): it waits until PS5SX2 is gone (90 s at
   most, its pid and the shell's running app), installs as below and starts PS5SX2 again (`sceLncUtilLaunchApp`, as its tile does)
   when the install went through or there was nothing new. After a failure it doesn't: the notification says why.
-- *Session logs* on the same sheet writes or removes `no-log-upload`. PS5SX2 says once that logs are sent and how to stop it.
+- *Session logs* on the same sheet writes or removes `no-log-upload`. The upload is on by default and nothing on the screen says so (owner, 2026-10-29): that row is the way out.
 
 Sent by hand (the block empty), it does what 1.3 did. A block of another size or magic is ignored.
 

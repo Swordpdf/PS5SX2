@@ -46,6 +46,13 @@ run no-loader --updates vk-285-181 --updates-start 3 "${to_update[@]}" "press cr
 run logs --updates vk-285-181 "${to_logs[@]}" "expect logupload=1" "shot logs-on" "press cross" "wait 0.3" "expect logupload=0" "shot logs-off" \
   "press right" "wait 0.3" "expect logupload=1" "press left" "wait 0.3" "expect logupload=0"
 [[ -f $work/logs/installer/no-log-upload ]] || { echo "FAILED: logs (no-log-upload not written)"; failed=1; }
+# Owner, 2026-10-29: session logs on by default (logupload=1 above with no switch file) and no notice about them on the screen.
+if grep -q "log-notice-shown\|NotifyLogsNotice\|logs_notice" "$here/../fe_ps5.cpp" "$here/../fe_i18n.cpp" "$here/../fe_i18n.h"; then
+  echo "FAILED: a notice about the session logs is back"
+  failed=1
+else
+  echo "ok: no session-log notice"
+fi
 # Without --updates there is no group: the row above the reset row is still the PS2 system menu (test-shelf-controls.sh relies on it).
 run no-group "${to_logs[@]}" "press cross" "wait 0.3" "press cross" "wait 1" "expect systemmenu=1" "expect updstate=-1"
 if [[ $failed != 0 ]]; then
