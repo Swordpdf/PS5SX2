@@ -81,6 +81,11 @@
  *   (disc_auto_drive_busy). disc-auto-alive.txt is stamped every 2 s during a copy too (it was every 5% of it: up to ~50 s apart on a USB DVD,
  *   long enough for the PS5SX3 helper to think this one was gone). Flag /data/PCSX2/flags/disc_oldreads: the old read sizes, to compare.
  *   The copy's last log line gives its reads (how many, the largest, how much of the time the drive was reading).
+ * 171k (2026-10-29, next to the PS5SX3 helper; disc_compat.h has the rules): in the merged helper /dev/cd0 is not looked at while the tile
+ *   thread has left it to the PS5SX3 helper (a PS3 disc's files on the PS5's mount, or a disc whose root folder is not a PS2 one), and a disc
+ *   in the USB drive that is not a PS2 disc is left alone the same way (one TEST UNIT READY + READ CAPACITY every 5 s tells when it goes).
+ *   Which drive holds a PS2 disc read here (a PS2 CD /dev/cd0 does not show, a USB disc) is told to the tile thread, which publishes it all
+ *   in ps5sx2-helper.txt. The stand-alone watcher (no tile thread) is unchanged.
  * Needs proper testing on a console with a disc drive.
  *
  * Copyright (C) 2026 swordpdf
@@ -117,6 +122,7 @@
 #include <ps5/kernel.h>
 #include <ps5/klog.h>
 
+#include "disc_compat.h"
 #include "disc_fastread.h"
 #include "disc_hash.h"
 #include "disc_switch.h"
@@ -364,6 +370,21 @@ static void stamp_self_every_2s(void) {
 /* 171h: flag disc_oldreads: the copies made here read as before 171h (64 KiB through the pass device, 16 sectors per READ CD), to compare */
 #define FLAG_OLDREADS "/data/PCSX2/flags/disc_oldreads"
 static int old_reads(void) { struct stat st; return stat(FLAG_OLDREADS, &st) == 0; }
+
+/* 171k: next to the PS5SX3 helper (disc_compat.h). The tile thread (disctile.c) owns /dev/cd0..3's claims and publishes them; this watcher
+ * keeps the USB drive's (g_usb_dc) and says which drive holds a PS2 disc it reads itself. */
+#ifdef DISC_AUTO_EMBEDDED
+extern int dc_hands_off(int drive);
+extern int dc_on(void);
+extern void dc_publish(int drive, int claim);
+extern void dc_watch_ps2(int drive, int on);
+#else
+static int dc_hands_off(int drive) { (void)drive; return 0; }
+static int dc_on(void) { return 0; }
+static void dc_publish(int drive, int claim) { (void)drive; (void)claim; }
+static void dc_watch_ps2(int drive, int on) { (void)drive; (void)on; }
+#endif
+static dc_drive g_usb_dc;
 
 /* 171h: what the tile thread (disctile.c, same process) must leave alone: the /dev/cdN this watcher reads itself (-1: none), and whether PS5SX2
  * copies the disc in the PS5 drive (it holds /dev/cd0 then; the tile thread looks at the drives every 3 s instead of four times a second). */
@@ -1358,6 +1379,7 @@ static int disc_auto_loop(void) {
             prof_poll = 0;
             usb_done = 0;
             usb_tries = 0;
+            memset(&g_usb_dc, 0, sizeof(g_usb_dc)); /* 171k */
             g_ask_mode = 0;
             startup = 1; /* the disc has been in for a while: no settle wait */
         }
@@ -1408,6 +1430,16 @@ static int disc_auto_loop(void) {
         if (emu_copy_now) {
             if (time(NULL) - cd0_look < 3 && time(NULL) >= cd0_look) look_cd0 = 0;
             else cd0_look = time(NULL);
+        }
+        { /* 171k: the tile thread left /dev/cd0 to the PS5SX3 helper (a disc that is not a PS2 disc): not opened, its profile not asked */
+            static int off_was;
+            const int off = !serial[0] && dc_hands_off(0);
+            if (off != off_was) {
+                off_was = off;
+                say("%s", off ? "cd0: the disc in it is not a PS2 disc: left to the PS5SX3 helper (not looked at) until it goes"
+                              : "cd0: looked at again");
+            }
+            if (off) look_cd0 = 0;
         }
 
         /* Is a disc in, and is it the same one? DIOCGMEDIASIZE doesn't touch the disc, so a
@@ -1514,6 +1546,7 @@ static int disc_auto_loop(void) {
             close(fd);
         }
         startup = 0;
+        dc_watch_ps2(0, serial[0] != '\0'); /* 171k: a PS2 disc in the PS5's drive that this watcher knows (a PS2 CD too) */
 
 
         /* live-2: a USB DVD drive (pass device only, see usb_dump). Checked every 3 s with TEST UNIT READY. (Not while a game plays from a drive: 171f.) */
@@ -1526,26 +1559,53 @@ static int disc_auto_loop(void) {
                     if (usb_fd >= 0) say("usb: optical drive %s: %s", usb_path, usb_what);
                 }
             }
-            if (usb_fd >= 0) {
+            int usb_may = 1;
+            if (usb_fd >= 0 && dc_on()) { /* 171k: a disc that is not a PS2 disc: left alone; one look (ready? its size) every 5 s tells when it goes */
+                int ch = 0;
+                usb_may = dc_gate(&g_usb_dc, 0, mono_s(), &ch);
+                if (usb_may && g_usb_dc.claim == DC_YIELD) {
+                    usb_may = 0;
+                    const long long cap = usb_ready(usb_fd) ? (long long)usb_capacity(usb_fd) : 0;
+                    if (dc_after_look(&g_usb_dc, cap, mono_s())) {
+                        say("usb: the disc in %s that is not a PS2 disc %s: the drive is looked at again%s", usb_path, cap > 0 ? "was replaced" : "went",
+                            cap > 0 ? "" : " after a 5 s rest");
+                        usb_done = 0;
+                        usb_tries = 0;
+                    }
+                }
+            }
+            if (usb_fd >= 0 && usb_may) {
                 if (!usb_ready(usb_fd)) {
                     if (usb_serial[0]) { cleanup(usb_serial); usb_serial[0] = '\0'; }
                     usb_done = 0;
                     usb_tries = 0;
+                    dc_note(&g_usb_dc, DC_KIND_NONE, 0, mono_s());
                     /* a drive that went away: look again later */
                     uint8_t inq[8];
                     const uint8_t c[6] = {0x12, 0, 0, 0, sizeof(inq), 0};
                     if (scsi(usb_fd, c, 6, CAM_DIR_IN, inq, sizeof(inq), 3000, NULL, 0) != 0) {
                         say("usb: %s gone", usb_path);
                         close(usb_fd); usb_fd = -1;
+                        memset(&g_usb_dc, 0, sizeof(g_usb_dc));
                     }
                 } else if (!usb_serial[0] && !usb_done) {
                     char s2[17] = {0};
+                    int k = DC_KIND_UNKNOWN;
                     if (read_serial_with(usb_sector, &usb_fd, s2)) {
                         memcpy(usb_serial, s2, sizeof(usb_serial));
                         usb_seen = time(NULL);
                         usb_tries = 0;
                         say("usb: PS2 disc %s in %s", usb_serial, usb_path);
+                        dc_note(&g_usb_dc, DC_KIND_PS2, (long long)usb_capacity(usb_fd), mono_s());
+                    } else if (usb_tries == 0 && dc_on() &&
+                               ((k = dc_iso_kind(usb_sector, &usb_fd)) == DC_KIND_PS3 || k == DC_KIND_PS1)) {
+                        /* 171k: its root folder says PS3 (or PS1): left alone at once, no diagnosis of the drive */
+                        usb_done = 1;
+                        dc_note(&g_usb_dc, k, (long long)usb_capacity(usb_fd), mono_s());
+                        say("usb: %s in %s, not a PS2 disc: left to %s until it goes (a look every 5 s)", dc_kind_name(k), usb_path,
+                            k == DC_KIND_PS3 ? "the PS5SX3 helper" : "the system");
                     } else {
+                        if (usb_tries == 0) dc_note(&g_usb_dc, DC_KIND_UNKNOWN, 0, mono_s());
                         /* say why: sector 16 straight, and what it holds */
                         uint8_t pvd[2048] = {0};
                         char why[80] = "";
@@ -1576,7 +1636,9 @@ static int disc_auto_loop(void) {
                             ok16 ? label : "", usb_capacity(usb_fd));
                         if (++usb_tries >= 5) {
                             usb_done = 1;
-                            say("usb: disc in %s: no PS2 SYSTEM.CNF after %d tries: ignoring until it's taken out", usb_path, usb_tries);
+                            say("usb: disc in %s: no PS2 SYSTEM.CNF after %d tries: ignoring until it's taken out (171k: not asked meanwhile but for a "
+                                "look every 5 s)", usb_path, usb_tries);
+                            if (dc_on()) dc_note(&g_usb_dc, DC_KIND_OTHER, (long long)usb_capacity(usb_fd), mono_s());
                         }
                     }
                 }
@@ -1603,6 +1665,8 @@ static int disc_auto_loop(void) {
                 }
             }
         }
+
+        dc_publish(DC_USB, usb_fd < 0 ? DC_NONE : dc_published(&g_usb_dc, mono_s())); /* 171k */
 
         char iso[1024];
         switch (st) {

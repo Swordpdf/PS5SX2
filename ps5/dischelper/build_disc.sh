@@ -22,7 +22,7 @@ SQLITE=${SQLITE_DIR:-}
 W=${BUILD_DIR:-$HOME/rps5/discbuild}; mkdir -p $W/obj && cd $W
 for f in disctile.c tile.c tile.h; do sed 's/\r$//' "$HERE/$f" > $f; done
 for f in stb_image.h stb_truetype.h; do sed 's/\r$//' "$(stbsrc $f)" > $f; done
-for f in disc_launch.c disc_hash.c disc_hash.h disc_switch.h disc_fastread.h; do sed 's/\r$//' "$DAEMON/$f" > $f; done
+for f in disc_launch.c disc_hash.c disc_hash.h disc_switch.h disc_fastread.h disc_compat.h disc_compat_db.h; do sed 's/\r$//' "$DAEMON/$f" > $f; done
 for f in sgdb_art.cpp fe_https.cpp fe_https_ps5.cpp fe_https.h fe_https_roots.inc; do sed 's/\r$//' "$HERE/https/$f" > $f; done
 for f in kp.c kp.h; do sed 's/\r$//' "$HERE/$f" > $f; done
 CC=$SDK/bin/prospero-clang; CXX=$SDK/bin/prospero-clang++

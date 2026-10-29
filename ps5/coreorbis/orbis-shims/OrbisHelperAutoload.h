@@ -20,7 +20,7 @@
 namespace orbis_helper
 {
 // The revision the app ships (the helper source's PAYLOAD_REV). Bump together with the helper.
-inline constexpr const char* kShippedRev = "171j";
+inline constexpr const char* kShippedRev = "171k"; // 171k: next to the PS5SX3 helper (ps5/disclaunch/disc_compat.h)
 
 // Compare two revision strings like "171i" / "171j" / "180": the leading integer first, then the suffix lexically.
 // < 0 running older, 0 same, > 0 running newer; INT_MIN when either is empty/garbled (treated as "older/unknown").

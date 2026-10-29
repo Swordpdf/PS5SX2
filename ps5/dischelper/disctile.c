@@ -58,6 +58,8 @@
 #include "tile.h"
 #include "disc_switch.h"
 #include "kp.h"
+#include "disc_compat.h"    /* 171k: next to the PS5SX3 helper: a non-PS2 disc's drive is left to it (yield), published in ps5sx2-helper.txt */
+#include "disc_compat_db.h" /* 171k: a removed tile's concept rows stay when another title uses the concept */
 #ifdef DISC_HOST_THREAD
 #include "progress.h" /* 171f: payload_progress() of the helper's host (main.c / main-nomount.c): the revision lands in payload-init.log although no log file is written */
 #endif
@@ -80,7 +82,7 @@ static void write_helper_status(void); /* 179: forward decl; defined lower, used
 #define MAX_DRIVES 4
 #define NSLOTS     8
 #define POLL_US    250000
-#define PAYLOAD_REV "171j" /* written in the log's first line, so that a log says which payload made it: 171j = 171i + DiscSpeed8 SceShellCore 8x patch and 60 s drive pin (disc_speed8.c; flag disc_nospeed8), game tiles ON by default (gametile_off switches off); 171i = 171h + the flag kp_log looked at every 10 s (not only at the start); 171h = disc speed (the copies of disc_launch.c read in bigger pieces, a drive the watcher reads is not opened here, every 3 s while PS5SX2 copies), 171 = the first reload build, 171b = cover/art refresh on reload, clean slots first,
+#define PAYLOAD_REV "171k" /* written in the log's first line, so that a log says which payload made it: 171k = 171j + next to the PS5SX3 helper (disc_compat.h: a drive with a disc that is not a PS2 disc is left alone until the disc goes - not opened, not asked, not pinned to 8x - and ps5sx2-helper.txt says so (compat=1, cd0..cd3=, usb=), so that the PS5SX3 helper takes the drive without stopping this one; the system's disc tile put back at a stop only for a PS2 disc; a removed tile's concept rows that another title uses stay; flag disc_noyield = 171j's way); 171j = 171i + DiscSpeed8 SceShellCore 8x patch and 60 s drive pin (disc_speed8.c; flag disc_nospeed8), game tiles ON by default (gametile_off switches off); 171i = 171h + the flag kp_log looked at every 10 s (not only at the start); 171h = disc speed (the copies of disc_launch.c read in bigger pieces, a drive the watcher reads is not opened here, every 3 s while PS5SX2 copies), 171 = the first reload build, 171b = cover/art refresh on reload, clean slots first,
                             * tile-gone timing; 171c = the Reload tile kept next to the disc tile, the uninstall on its own thread asked every 0.4 s, half a second of debounce at eject;
                             * 171d = a tile's game closed when its disc goes out, the leftover database rows of a removed tile deleted, concept rows for the order, a title card when there is no cover;
                             * 171e = kp.c: quiet while the console shuts down or rests (no drive, file, database, ShadowMount+ or notification access), the log files off in a KP test build,
@@ -845,6 +847,14 @@ static int purge_title_rows(const char *tid) {
                 sqlite3_finalize(st);
             }
         }
+        { /* 171k: a concept that a title outside PS5SX2's IDs uses too (a PS5SX3 tile's, a game's) keeps its rows (disc_compat_db.h) */
+            static char ctabs[16][80];
+            for (int i = 0; i < nt; i++)
+                if (!concept_table_for(db, tabs[i], ctabs[i], sizeof(ctabs[i]))) ctabs[i][0] = '\0';
+            char kept[200];
+            if (cids[0] && dc_db_keep_shared_concepts(db, tabs, ctabs, nt, cids, sizeof(cids), kept, sizeof(kept)) > 0)
+                say("tile %s: its concept(s) %s are used by a title that is not PS5SX2's too: their rows stay", tid, kept);
+        }
         for (int i = 0; i < nt; i++) {
             char sql[500], ct[80];
             snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE titleId='%s'", tabs[i], tid);
@@ -1171,6 +1181,7 @@ typedef struct {
     int ready;         /* the tile is registered AND mounted: only then the system's disc tile is hidden and the person is told */
     time_t ready_t0;   /* when the scan was taken (the wait for the mount is counted from here), 0 = not yet */
     int diag;          /* how many of the state lines were written while waiting */
+    int kinded;        /* 171k: the disc's kind (disc_compat.h, its root folder) was asked once */
     char title[96];    /* for the "ready" notification */
     double t_disc, t_serial, t_built, t_scan; /* when (monotonic seconds): the disc went in, its serial was read, the tile was built, the scan was asked for */
     int warm;          /* the tile came from a staged folder */
@@ -2944,16 +2955,81 @@ static void reload_finish_tick(time_t now) {
 #include "gametile.c"
 #endif
 
+/* ---------------------------------------------------------------- 171k: next to the PS5SX3 helper (disc_compat.h has the rules)
+ * The tile thread classifies /dev/cd0..cd3 (g_dc[0..3]); the disc watcher (disc_launch.c) keeps the USB drive's claim itself and tells
+ * which drive holds a PS2 disc it reads (a PS2 CD, which /dev/cd0 does not show); DiscSpeed8 pins the drive only for a PS2 disc. */
+static dc_drive g_dc[DC_NDRIVES];
+static int g_dc_pub[DC_NDRIVES] = {DC_EMPTY, DC_EMPTY, DC_EMPTY, DC_EMPTY, DC_NONE}; /* what each drive is, as published (atomic) */
+static int g_dc_watch_ps2[DC_NDRIVES]; /* the watcher holds a PS2 disc in that drive */
+static volatile int g_dc_dirty;        /* a published claim changed: ps5sx2-helper.txt is written at once */
+static int g_dc_off;                   /* flag disc_noyield (read at the start): 171j's way, no drive is ever yielded */
+
+/* The published claim of a drive (a PS2 disc the watcher holds wins). Asked by the disc watcher and DiscSpeed8. */
+int dc_claim_of(int drive);
+int dc_claim_of(int drive) {
+    if (drive < 0 || drive >= DC_NDRIVES) return DC_NONE;
+    if (__atomic_load_n(&g_dc_watch_ps2[drive], __ATOMIC_RELAXED)) return DC_PS2;
+    return __atomic_load_n(&g_dc_pub[drive], __ATOMIC_RELAXED);
+}
+void dc_publish(int drive, int claim);
+void dc_publish(int drive, int claim) {
+    if (drive < 0 || drive >= DC_NDRIVES) return;
+    if (__atomic_exchange_n(&g_dc_pub[drive], claim, __ATOMIC_RELAXED) != claim) g_dc_dirty = 1;
+}
+void dc_watch_ps2(int drive, int on);
+void dc_watch_ps2(int drive, int on) {
+    if (drive < 0 || drive >= DC_NDRIVES) return;
+    const int v = on ? 1 : 0;
+    if (__atomic_exchange_n(&g_dc_watch_ps2[drive], v, __ATOMIC_RELAXED) != v) g_dc_dirty = 1;
+}
+/* 1 when the drive is left to the other helper (or the system) now: the watcher does not open it */
+int dc_hands_off(int drive);
+int dc_hands_off(int drive) { return !g_dc_off && dc_claim_of(drive) == DC_YIELD; }
+/* 0 with the flag disc_noyield: nothing is ever yielded (the watcher asks it for the USB drive) */
+int dc_on(void);
+int dc_on(void) { return !g_dc_off; }
+
+static int dc_fs_exists(void *u, const char *p) { (void)u; return exists(p); }
+/* the disc mounts of the mount table (from /dev/cdN), read at most every 250 ms (tile thread only: getmntinfo's buffer is not the thread's own) */
+static int dc_fs_mounts(void *u, dc_mnt *out, int max) {
+    (void)u;
+    static dc_mnt cache[16];
+    static int ncache;
+    static double at = -1;
+    const double now = mono_s();
+    if (at < 0 || now - at >= 0.25 || now < at) {
+        at = now;
+        ncache = 0;
+        struct statfs *m = NULL;
+        const int n = getmntinfo(&m, MNT_NOWAIT);
+        for (int i = 0; i < n && m && ncache < 16; i++) {
+            if (strncmp(m[i].f_mntfromname, "/dev/cd", 7) != 0) continue;
+            snprintf(cache[ncache].from, sizeof(cache[ncache].from), "%s", m[i].f_mntfromname);
+            snprintf(cache[ncache].on, sizeof(cache[ncache].on), "%s", m[i].f_mntonname);
+            ncache++;
+        }
+    }
+    const int k = ncache < max ? ncache : max;
+    memcpy(out, cache, (size_t)k * sizeof(dc_mnt));
+    return k;
+}
+static int dc_fd_sector(void *ctx, uint32_t lba, uint8_t *out) { return read_lba(*(int *)ctx, lba, out); }
+
 static int g_kp_nodrive; /* flag kp_nodrive (read at the start): the drives are never opened, so no tile is made: for the kernel-panic test */
 
-static void poll_drive(int i) {
+static void poll_drive_look(int i) {
     Drive *d = &g_drv[i];
     char dev[16];
-    if (g_kp_nodrive || kp_quiet()) return; /* 171e: no open() of /dev/cdN while the console resets its drive for a restart */
     snprintf(dev, sizeof(dev), "/dev/cd%d", i);
     off_t media = 0;
     int fd = exists(dev) ? open(dev, O_RDONLY) : -1;
     if (fd >= 0 && (ioctl(fd, DIOCGMEDIASIZE, &media) != 0 || media <= 0)) media = 0;
+    if (g_dc[i].claim == DC_YIELD) { /* 171k: the yielded drive's one look per DC_LOOK_S: its size only, nothing read */
+        if (!dc_after_look(&g_dc[i], (long long)media, mono_s())) { if (fd >= 0) close(fd); return; }
+        say("%s: the disc that is not a PS2 disc %s: the drive is looked at again%s", dev, media > 0 ? "was replaced by another" : "went",
+            media > 0 ? "" : " (after a 5 s rest)");
+        if (media <= 0) { if (fd >= 0) close(fd); return; } /* (the disc-out bookkeeping below happens after the rest) */
+    }
     if (media > 0) {
         d->gone = 0;
         if (!d->present || media != d->media) { /* a disc, or another one */
@@ -2965,8 +3041,10 @@ static void poll_drive(int i) {
             d->ready = 0;
             d->ready_t0 = 0;
             d->diag = 0;
+            d->kinded = 0;
             d->t_disc = mono_s();
             say("%s: a disc is in (%lld bytes)", dev, (long long)media);
+            dc_note(&g_dc[i], DC_KIND_UNKNOWN, (long long)media, mono_s());
         }
         if (!d->serial[0] && d->tries < (int)(5000000 / POLL_US) && !d->building) {
             d->tries++;
@@ -2975,18 +3053,36 @@ static void poll_drive(int i) {
                 snprintf(d->serial, sizeof(d->serial), "%s", serial);
                 d->t_serial = mono_s();
                 say("%s: PS2 disc %s", dev, serial);
+                dc_note(&g_dc[i], DC_KIND_PS2, (long long)media, mono_s());
                 if (flag("disctile_nowait")) hide_system_tile(); /* the old way; otherwise it is hidden when OUR tile is launchable (check_ready) */
                 purge_free_slots("a PS2 disc was read"); /* the ghosts of removed tiles go before a new one is made */
                 reload_row_front("a PS2 disc was read"); /* before the disc tile is installed: it then stands first and the Reload tile right behind it */
                 start_tile(i, serial);
-            } else if (d->tries == (int)(5000000 / POLL_US)) {
-                say("%s: no PS2 serial on this disc (not a PS2 DVD, or not readable): no tile", dev);
+            } else {
+                /* 171k: the first failed read asks the root folder what the disc is: a PS3 (or PS1) disc's drive is left alone at once */
+                int k = DC_KIND_UNKNOWN;
+                if (!d->kinded && !g_dc_off) {
+                    d->kinded = 1;
+                    k = dc_iso_kind(dc_fd_sector, &fd);
+                    if (k == DC_KIND_UNKNOWN) d->kinded = 0; /* (sector 16 did not read: asked again at the next try) */
+                }
+                if (k == DC_KIND_PS3 || k == DC_KIND_PS1) {
+                    dc_note(&g_dc[i], k, (long long)media, mono_s());
+                    say("%s: %s (its root folder), not a PS2 disc: no tile, and the drive is left to %s until the disc goes (one look at its size every %.0f s)",
+                        dev, dc_kind_name(k), k == DC_KIND_PS3 ? "the PS5SX3 helper" : "the system", DC_LOOK_S);
+                    d->tries = (int)(5000000 / POLL_US) + 1;
+                } else if (d->tries == (int)(5000000 / POLL_US)) {
+                    say("%s: no PS2 serial on this disc (not a PS2 DVD, or not readable): no tile%s", dev,
+                        g_dc_off ? "" : "; the drive is left alone until the disc goes (one look at its size every 5 s)");
+                    if (!g_dc_off) dc_note(&g_dc[i], DC_KIND_OTHER, (long long)media, mono_s());
+                }
             }
         }
     } else if (d->present) {
         if (++d->gone == 1) d->t_gone0 = mono_s(); /* the media is gone: since when */
         if (d->gone >= (int)(500000 / POLL_US) && !d->building) { /* a disc out (half a second of no media: it was two seconds, then one; a tile that stays after the eject was noticed) */
             say("%s: the disc is out", dev);
+            dc_note(&g_dc[i], DC_KIND_NONE, 0, mono_s());
             g_remove_t0 = d->t_gone0;
             if (d->slot >= 0) { remove_tile(d->slot, "disc out"); g_slot_busy[d->slot] = 0; d->slot = -1; }
             d->present = 0;
@@ -2998,6 +3094,27 @@ static void poll_drive(int i) {
         }
     }
     if (fd >= 0) close(fd);
+}
+
+/* 171k: the drive looked at only when disc_compat.h's gate says so (a PS3 disc's files on the PS5's mount: never; a yielded disc: its size
+ * every DC_LOOK_S; the 5 s after a yielded disc went: not at all); what the drive is now published for the PS5SX3 helper. */
+static void poll_drive(int i) {
+    if (g_kp_nodrive || kp_quiet()) return; /* 171e: no open() of /dev/cdN while the console resets its drive for a restart */
+    if (g_dc_off) { poll_drive_look(i); return; }
+    const int was = dc_published(&g_dc[i], mono_s());
+    char where[160] = "";
+    const dc_fs fs = {dc_fs_exists, dc_fs_mounts, NULL};
+    const int mount = dc_mount_ps3(&fs, i, where, sizeof(where));
+    int changed = 0;
+    const int may = dc_gate(&g_dc[i], mount, mono_s(), &changed);
+    if (changed && g_dc[i].claim == DC_YIELD)
+        say("/dev/cd%d: a PS3 disc (its files on the PS5's mount %s): the drive is left to the PS5SX3 helper until they go (not opened, not asked)", i, where);
+    else if (changed)
+        say("/dev/cd%d: the PS3 disc's files are gone from the PS5's mount: the drive is looked at again after a %.0f s rest", i, DC_GRACE_S);
+    if (may) poll_drive_look(i);
+    const int now_pub = dc_published(&g_dc[i], mono_s());
+    if (now_pub != was) say("/dev/cd%d: %s -> %s (published in ps5sx2-helper.txt)", i, dc_claim_name(was), dc_claim_name(now_pub));
+    dc_publish(i, now_pub);
 }
 
 static void __attribute__((unused)) on_term(int s) { (void)s; g_stop = 1; }
@@ -3018,6 +3135,8 @@ static int payload_run(int hosted) {
     payload_progress("disc payload " PAYLOAD_REV); /* 171f: payload-init.log (fsync'ed) says which payload runs, with the log files off too */
 #endif
     g_kp_nodrive = kp_flag("kp_nodrive");
+    g_dc_off = flag("disc_noyield"); /* 171k: no drive is ever left to the PS5SX3 helper (171j's way) */
+    say("next to the PS5SX3 helper: %s", g_dc_off ? "OFF (flag disc_noyield): every drive is looked at as in 171j" : "a drive whose disc is not a PS2 disc is left alone until it goes; ps5sx2-helper.txt says compat=1 and what each drive is");
     kp_start(); /* 171e: the shutdown watch's report, and the :9020 answerer when asked */
     signal(SIGPIPE, SIG_IGN); /* a ShadowMount+ that closes early must not end the whole process (a host that has not done it yet) */
     if (!hosted) {
@@ -3172,7 +3291,7 @@ static int payload_run(int hosted) {
 #ifdef DISC_HOST_THREAD
         gt_tick(now);
 #endif
-        { static time_t hs_last; if (now != hs_last) { hs_last = now; write_helper_status(); } } /* 179: refresh ps5sx2-helper.txt (the app's auto-load heartbeat) */
+        { static time_t hs_last; if (now != hs_last || g_dc_dirty) { hs_last = now; g_dc_dirty = 0; write_helper_status(); } } /* 179: refresh ps5sx2-helper.txt (the app's auto-load heartbeat) */
         usleep(POLL_US);
     }
     say("stopping: removing the tiles");
@@ -3183,9 +3302,11 @@ static int payload_run(int hosted) {
             say("tile %s removed (stopping): uninstall HTTP %d %s", kSlots[g_drv[i].slot], code, code > 0 ? reply : "");
         }
     {
-        int disc_in = 0;
-        for (int i = 0; i < MAX_DRIVES; i++) if (g_drv[i].present) disc_in = 1;
-        show_system_tile(disc_in);
+        /* 171k: put back only when this payload hid it, for a PS2 disc; with another disc in (a PS3 one) the PS5SX3 helper may keep it hidden */
+        int ps2_in = 0;
+        for (int i = 0; i < MAX_DRIVES; i++) if (g_drv[i].present && g_drv[i].serial[0]) ps2_in = 1;
+        if (ps2_in) show_system_tile(1);
+        else say("stopping: no PS2 disc is in: the system's disc tile is left as it is");
     }
     unlink(PID_FILE);
     unlink("/data/PCSX2/logs/ps5sx2-helper.txt"); /* 179: the app sees the helper is gone */
@@ -3201,6 +3322,13 @@ static void write_helper_status(void) {
     FILE *f = fopen(tmp, "w");
     if (!f) return;
     fprintf(f, "pid=%d\ntime=%lld\nrev=%s\n", (int)getpid(), (long long)time(NULL), PAYLOAD_REV);
+    if (!g_dc_off) { /* 171k: next to the PS5SX3 helper (disc_compat.h): what each drive is */
+        int claims[DC_NDRIVES];
+        for (int i = 0; i < DC_NDRIVES; i++) claims[i] = dc_claim_of(i);
+        char lines[160];
+        dc_status_lines(claims, lines, sizeof(lines));
+        fputs(lines, f);
+    }
     fclose(f);
     rename(tmp, path);
 }

@@ -21,7 +21,7 @@ pthread_create(&t, &a, disc_auto_thread, NULL);
   `/dev/cd0` and `/dev/pass*` and send notifications (the standalone build does
   `kernel_set_ucred_authid(getpid(), 0x4800000000010003)` and `kernel_set_ucred_caps(getpid(), all 0xff)`).
 - **Signals:** the standalone build sets `SIGCHLD` to `SIG_IGN`; embedded leaves signals to the host.
-- **Files to compile:** `disc_launch.c` and `disc_hash.c` (with `disc_hash.h`, `disc_switch.h` and `disc_fastread.h`), `-std=gnu11`, the PS5 payload SDK
+- **Files to compile:** `disc_launch.c` and `disc_hash.c` (with `disc_hash.h`, `disc_switch.h`, `disc_fastread.h` and `disc_compat.h`; the merged helper also `disc_compat_db.h`, `disc_speed8.c`), `-std=gnu11`, the PS5 payload SDK
   (`<cam/...>`, `<ps5/kernel.h>`, `<ps5/klog.h>`). No extra libraries: libSceSystemService and libSceLncUtil are opened
   with `dlopen` at run time.
 - **Only one copy:** don't send `DiscLaunch.elf` while the host runs it. Embedded doesn't write the pid file, so the two

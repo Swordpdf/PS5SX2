@@ -72,7 +72,7 @@ for f in jb.c jb.h progress.h; do sed 's/\r$//' "$HOST/$f" > $f; done
 for f in mount.c mount.h; do sed 's/\r$//' "$HOST/$f" > $f; done   # kept in the folder for both variants; compiled for "normal" only
 for f in disctile.c gametile.c tile.c tile.h; do sed 's/\r$//' "$HERE/$f" > $f; done
 for f in stb_image.h stb_truetype.h; do sed 's/\r$//' "$(stbsrc $f)" > $f; done
-for f in disc_launch.c disc_hash.c disc_hash.h disc_switch.h disc_fastread.h disc_speed8.c disc_speed8.h; do sed 's/\r$//' "$DAEMON/$f" > $f; done
+for f in disc_launch.c disc_hash.c disc_hash.h disc_switch.h disc_fastread.h disc_speed8.c disc_speed8.h disc_compat.h disc_compat_db.h; do sed 's/\r$//' "$DAEMON/$f" > $f; done
 for f in sgdb_art.cpp fe_https.cpp fe_https_ps5.cpp fe_https.h fe_https_roots.inc; do sed 's/\r$//' "$HERE/https/$f" > $f; done
 for f in kp.c kp.h; do sed 's/\r$//' "$HERE/$f" > $f; done
 # 171g: the game tiles' title IDs go into the BUILT-IN list of the copy of jb.c (the jailbreak watcher gives them root like the disc tiles'; gametile.c also appends them to
@@ -159,4 +159,4 @@ for n in 51 60; do
 done
 echo "gate: PPSA99251..PPSA99260 are in jb.o's built-in list and in the ELF"
 ls -la PS5SXHelper.elf && sha256sum PS5SXHelper.elf && cp PS5SXHelper.elf "$HERE/$OUT"
-echo "built $OUT: helper 171j (DiscSpeed8 8x shell patch + 60 s drive pin, flag disc_nospeed8), game tiles ON by default (flag gametile_off switches off), log files $([ "$HELPER_LOGS" = 1 ] && echo ON || echo "off (flag kp_log)"), jb/mount patches $([ "$KP" = 1 ] && echo ON || echo off), symbols $([ "$STRIP" = 1 ] && echo stripped || echo kept)"
+echo "built $OUT: helper 171k (next to the PS5SX3 helper: non-PS2 discs yielded, flag disc_noyield; DiscSpeed8 8x shell patch + 60 s drive pin for PS2 discs, flag disc_nospeed8), game tiles ON by default (flag gametile_off switches off), log files $([ "$HELPER_LOGS" = 1 ] && echo ON || echo "off (flag kp_log)"), jb/mount patches $([ "$KP" = 1 ] && echo ON || echo off), symbols $([ "$STRIP" = 1 ] && echo stripped || echo kept)"

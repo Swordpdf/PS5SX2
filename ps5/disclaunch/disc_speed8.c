@@ -15,12 +15,16 @@
  * direct map (kernel_copyin), like ShadowMountPlus. Every step is logged to /data/PCSX2/logs/disc-speed8.log (fsynced)
  * and the klog. A flag file /data/PCSX2/flags/disc_nospeed8 turns all of it off (the thread logs that and returns).
  *
+ * 171k: the 60 s pin (and its GET CONFIGURATION) only while the disc in the PS5's drive is a PS2 disc (disc_compat.h: dc_claim_of(0)); a PS3,
+ * PS4/PS5 or video disc is the PS5SX3 helper's or the system's to set the speed of (the PS5SX3 helper sets a BD's own speed).
+ *
  * No fork, no LoadExec, no exit; the thread stays resident and only ever writes its own 18 verified bytes into the shell.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 swordpdf
  */
 #include "disc_speed8.h"
+#include "disc_compat.h" /* 171k: the pin only for a PS2 disc (the published claim of /dev/cd0) */
 
 #include <dirent.h>
 #include <errno.h>
@@ -579,6 +583,8 @@ static int push_8x(void) {
 /* ------------------------------------------------------------------ */
 /* The thread                                                           */
 /* ------------------------------------------------------------------ */
+extern int dc_claim_of(int drive); /* disctile.c (171k) */
+
 void *ds8_thread(void *arg) {
     (void)arg;
     struct stat st;
@@ -617,7 +623,14 @@ void *ds8_thread(void *arg) {
             patch_shell();
 
         /* re-send the 8x CDB every 60 s while a disc is in (an unpatched shell can reset the drive after us) */
-        if (disc_in() && difftime(time(NULL), last_push) >= 60.0) {
+        const int ps2 = dc_claim_of(0) == DC_PS2; /* 171k */
+        static int ps2_was = -1;
+        if (ps2 != ps2_was) {
+            ps2_was = ps2;
+            step(ps2 ? "pin: a PS2 disc is in the PS5's drive: pinned to 8x every 60 s"
+                     : "pin: no PS2 disc in the PS5's drive: not pinned, the drive not asked (171k)");
+        }
+        if (ps2 && disc_in() && difftime(time(NULL), last_push) >= 60.0) {
             last_push = time(NULL);
             if (push_8x())
                 step("pin: db 01 00 80 re-sent to the drive (8.0, rotation 1)");
