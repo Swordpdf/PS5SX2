@@ -125,6 +125,30 @@ enum class Str : int
 	CopyDumpPct,        // 179: "Copying %d%%" (the disc-copy entry on the shelf)
 	CopyEtaMin,         // 179: "%d min left" (time left for the disc copy)
 	CopyEtaLessMin,     // 179: "under a minute left"
+	// 180 (AI-assisted): the sheet for all games' PS5SX2 group: System update and Session logs (fe_update.h). English only so far: the
+	// other tables fall back to it (a lang/<code>.txt can translate them).
+	UpdateHeader,          // "PS5SX2" (the group's title)
+	UpdateRow,             // "System update"
+	UpdateCheck,           // "Check for updates"
+	UpdateChecking,        // "Checking..."
+	UpdateCurrent,         // "Up to date (%s)" (%s: the release's name)
+	UpdateNewer,           // "Newer than the release (%s)"
+	UpdateAvailable,       // "%s: install" (%s: the release's name)
+	UpdatePressAgain,      // "Press again to install"
+	UpdateFailed,          // "Couldn't check: %s" (%s: why, in English)
+	UpdateInterrupted,     // "An update was cut off: repair"
+	UpdateStarting,        // "Starting the installer..."
+	UpdateStarted,         // "Closing to update..."
+	UpdateStartFailed,     // "Couldn't start the installer: %s"
+	UpdateHelp,            // what the row does
+	UpdateHelpAvailable,   // "Cross twice: ... %s ..." (%s: the release's name and tag)
+	UpdateHelpInterrupted, // a cut-off install: what Cross does
+	UpdateHelpStarted,     // the installer runs: what happens next
+	NotifyUpdateAvailable, // "PS5SX2: %s is out. ..." (the look at the shelf's start)
+	LogsRow,               // "Session logs"
+	LogsOn,                // "Sent"
+	LogsOff,               // "Off"
+	LogsHelp,              // what the row does
 	Count
 };
 

@@ -6,7 +6,22 @@ A payload ELF, separate from the PS5SX2 Helper. Send it with the payload loader,
 - **The first copy sent after a boot stays running as the logger.** When PS5SX2 closes after a game, or after anything went wrong, that session's logs are sent to the log relay (see "Which sessions are sent"). A copy sent later in the same boot installs and exits, since the first copy holds `logger.lock`.
 - **The no-log installer** (`PS5SX2Installer-nolog.elf`, `make ps5 NOLOG=1`) only installs, then exits. It has no logger in it, no report code and no relay address: nothing is kept or sent.
 
-On consoles since 1.0 (2026-09-28), testers' included; 1.3 hasn't run on one yet.
+On consoles since 1.0 (2026-09-28), testers' included; 1.3 and 1.4 haven't run on one yet.
+
+## 1.4: PS5SX2 starts it
+
+PS5SX2 ships the installer in its own folder (`PPSA99203/PS5SX2Installer.elf`, so `/app0/PS5SX2Installer.elf`) and sends it to the
+ELF loader on `127.0.0.1:9021` itself, with the launch block (`src/launch.h`) filled in. Nobody has to load it by hand any more:
+
+- **At every start, as the session logger** (`INSTALLER_LAUNCH_LOGGER`): no install, no GitHub request, no notification. It stays
+  running as the logger, or leaves at once when a logger already runs (`logger.lock`) or `no-log-upload` is there. PS5SX2 doesn't
+  even send it then (`ps5/coreorbis/orbis-shims/OrbisInstallerStart.cpp`; the flag file `flags/logger_noautoload` stops it too).
+- **From the shelf** (Square, All games, *System update*; `INSTALLER_LAUNCH_RELAUNCH`): it waits until PS5SX2 is gone (90 s at
+  most, its pid and the shell's running app), installs as below and starts PS5SX2 again (`sceLncUtilLaunchApp`, as its tile does)
+  when the install went through or there was nothing new. After a failure it doesn't: the notification says why.
+- *Session logs* on the same sheet writes or removes `no-log-upload`. The upload is on by default and nothing on the screen says so (owner, 2026-10-29): that row is the way out.
+
+Sent by hand (the block empty), it does what 1.3 did. A block of another size or magic is ignored.
 
 ## What it changes
 

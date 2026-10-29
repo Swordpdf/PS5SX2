@@ -116,6 +116,29 @@ const char* const kKeys[kCount] = {
 	"notify.tile_game_missing",
 	"notify.tile_game_invalid",
 	"CopyDumpPct", "CopyEtaMin", "CopyEtaLessMin", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
+	// 180: the PS5SX2 group (System update, Session logs)
+	"update.header",
+	"update.row",
+	"update.check",
+	"update.checking",
+	"update.current",
+	"update.newer",
+	"update.available",
+	"update.press_again",
+	"update.failed",
+	"update.interrupted",
+	"update.starting",
+	"update.started",
+	"update.start_failed",
+	"update.help",
+	"update.help_available",
+	"update.help_interrupted",
+	"update.help_started",
+	"notify.update_available",
+	"logs.row",
+	"logs.on",
+	"logs.off",
+	"logs.help",
 };
 
 const char* const kEnglish[kCount] = {
@@ -217,6 +240,33 @@ const char* const kEnglish[kCount] = {
 	"PS5SX2: the game of this home screen tile was not found (%s). Is its drive connected? The shelf opens instead.",
 	"PS5SX2: this home screen tile doesn't name a game PS5SX2 can start. The shelf opens instead.",
 	"Copying %d%%", "%d min left", "under a minute left", // 179: CopyDumpPct, CopyEtaMin, CopyEtaLessMin
+	// 180: the PS5SX2 group (System update, Session logs). The other tables leave these out: English is shown.
+	"PS5SX2",
+	"System update",
+	"Check for updates",
+	"Checking...",
+	"Up to date (%s)",
+	"Newer than the release (%s)",
+	"%s: install",
+	"Press again to install",
+	"Couldn't check: %s",
+	"An update was cut off: repair",
+	"Starting the installer...",
+	"Closing to update...",
+	"Couldn't start the installer: %s",
+	"Cross: look for a newer PS5SX2 (the releases of Swordpdf/PS5SX2 on GitHub). An update never touches your games, BIOS, saves "
+	"or memory cards.",
+	"Cross twice: PS5SX2 closes, the PS5SX2 Installer downloads %s (its size and SHA-256 checked), installs it and starts PS5SX2 "
+	"again. Your games, BIOS, saves and the settings you changed are kept; an install that is cut off is undone.",
+	"An update was cut off before it finished. Cross: PS5SX2 closes, the PS5SX2 Installer puts your previous files back (or finishes "
+	"it), installs the latest release and starts PS5SX2 again.",
+	"The PS5SX2 Installer waits for PS5SX2 to close, then installs the update and starts PS5SX2 again. Notifications show how it goes.",
+	"PS5SX2: %s is out. To install it: Square on the shelf, then System update.",
+	"Session logs",
+	"Sent",
+	"Off",
+	"On: when PS5SX2 closes after a game or a problem, that session's logs go to the PS5SX2 developers, to find and fix problems "
+	"(network addresses removed, no game list). Off: nothing is sent.",
 };
 
 const char* const kSpanish[kCount] = {

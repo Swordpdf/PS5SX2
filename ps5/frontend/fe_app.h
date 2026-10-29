@@ -17,6 +17,7 @@
 #include "fe_sound.h"
 #include "fe_texpacks.h"
 #include "fe_text.h"
+#include "fe_update.h"
 
 #include <functional>
 #include <map>
@@ -90,6 +91,8 @@ struct AppConfig
 	std::string tiles_dir;
 	std::string own_tile_game;
 	std::function<std::string(const GameInfo&)> tile_cover;
+	// 180 (AI-assisted): PS5SX2 updating itself and the session-log switch: the sheet for all games' PS5SX2 group (fe_update.h). Unset: no group.
+	UpdateService updates;
 };
 
 class App
@@ -200,6 +203,11 @@ private:
 	// shelf's line while a pack is on its way.
 	void UpdateTexturePackRow(const Input& in, double now);
 	std::string OnlinePatchValue() const; // 2026-10-08: the "Get patches and cheats" row's value
+	// 180: the PS5SX2 group's rows (fe_update.h): a press on either, what they show and say, and the close after the installer started.
+	void UpdateRowPress(const OptionsSheet::Row& row, double now);
+	std::string UpdateRowValue(const OptionsSheet::Row& row) const;
+	std::string UpdateRowHelp(const OptionsSheet::Row& row) const;
+	void UpdateQuitTick();
 	// 2.12: the sheet's Home screen tile row (fe_gametile.h): whether the shown game can have one, the state looked at (throttled; only with the row shown or an ask
 	// pending), a press (Cross, Left or Right add; Triangle or Cross remove), and what the row shows and says. HomeTileValue and HomeTileHelp read what PollTiles
 	// found: no file access per frame.
@@ -431,6 +439,10 @@ private:
 	// 2026-10-08: the online patches' state last seen for the sheet's game (a finished fetch reloads the sheet's rows).
 	std::string m_online_seen_serial;
 	OnlinePatchStatus::State m_online_seen = OnlinePatchStatus::State::Idle;
+	// 180: System update: the first Cross on an available release arms (until then), and the time PS5SX2 closes once the installer runs (< 0: not yet).
+	double m_update_armed_until = -1;
+	double m_update_quit_at = -1;
+	bool m_update_quit_done = false;
 	// 2.12: the Home screen tile row: every ask made (also for games whose sheet has closed), the lines of the helper's state.txt, what the sheet's game shows,
 	// and the game it is for (its normalized path, title and serial as the request carries them).
 	gametile::Tracker m_tile;

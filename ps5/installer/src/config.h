@@ -2,7 +2,7 @@
 #pragma once
 
 #define INSTALLER_NAME "PS5SX2 Installer"
-#define INSTALLER_VERSION "1.3"
+#define INSTALLER_VERSION "1.4"
 #define INSTALLER_UA "PS5SX2-Installer/" INSTALLER_VERSION
 
 /* The no-log build (make ps5 NOLOG=1): installs and leaves, with no logger in it. */
@@ -25,6 +25,9 @@
 #endif
 
 #define TITLE_ID "PPSA99203"
+
+/* 1.4: how long a copy PS5SX2 sent for an update waits for PS5SX2 to close (launch.h). */
+#define APP_EXIT_WAIT_SECONDS 90
 
 /* Logical paths; plat_root() is put in front of them (empty on the PS5, a test folder on the host). */
 #define P_DATA "/data"

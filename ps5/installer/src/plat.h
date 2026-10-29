@@ -21,6 +21,15 @@ time_t plat_boot_time(void);
 /* 1 if a process with this pid exists, 0 if not, -1 if we can't tell. */
 int plat_pid_alive(pid_t pid);
 
+/* 1.4: whether PS5SX2 (PPSA99203) is the console's running app (the shell's "big app", running or suspended): 1 yes,
+ * 0 no, -1 when the system can't be asked. The host tests say it with $PS5SX2_TEST_BIGAPP (a title ID). */
+int plat_app_running(void);
+
+/* 1.4: starts PS5SX2 and brings it to the front, as its tile does (sceLncUtilLaunchApp for the foreground user; never
+ * fork or LoadExec). 0 when the system took the request; `why` gets the system's answer either way. On the host: a
+ * line in $PS5SX2_ROOT/launched.txt. */
+int plat_launch_app(char *why, size_t why_size);
+
 /* Host tests only: extra CA file (PEM) and URL overrides; NULL on the PS5. */
 const char *plat_test_env(const char *name);
 

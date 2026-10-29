@@ -3512,7 +3512,19 @@ int main()
   extern void orbis_log_hen_config();
   orbis_log_hen_config();
   const double t_elev = orbis_mono_seconds();
-  const bool hen_ok = orbis_hen_jailbreak();
+  bool hen_ok = orbis_hen_jailbreak();
+  // 180: nobody answered the request: the PS5SX2 Helper (OnionHEN-based: it answers it) is not running, as when the user loads only
+  // kstuff and ShadowMount(Plus). Send the helper the app ships to the ELF loader on 127.0.0.1:9021 now, from the sandbox, and ask
+  // again (OrbisHelperAutoload.cpp). Not with the flag file helper_noautoload, when it can be read this early.
+  {
+    extern bool OrbisHelperStartBeforeJailbreak();
+    if (!hen_ok && OrbisHelperStartBeforeJailbreak())
+    {
+      usleep(1500 * 1000); // the helper's broker starts watching for requests
+      hen_ok = orbis_hen_jailbreak();
+      orbis_boot_phase("elevation after sending the helper: %s", hen_ok ? "answered" : "still not answered");
+    }
+  }
   if (hen_ok)
     g_jailbreak_ok = 1;
   else
@@ -3527,6 +3539,9 @@ int main()
   // 179: load the PS5SX2 Disc Helper ourselves (PS5SX3-style, 127.0.0.1:9021) so the user need not load it by hand
   // (OrbisHelperAutoload.cpp; the flag file helper_noautoload skips it, and it never replaces a newer or a busy helper).
   { extern void OrbisHelperAutoStart(); OrbisHelperAutoStart(); }
+  // 180: and the PS5SX2 Installer as the session logger (OrbisInstallerStart.cpp: never an install from here; skipped with the
+  // installer's no-log-upload switch, the flag file logger_noautoload, or when a logger already runs), so the user loads neither ELF.
+  { extern void OrbisLoggerAutoStart(const char*); OrbisLoggerAutoStart(ORBIS_BUILD_TAG); }
 #ifdef ORBIS_VULKAN
   orbis_ensure_data_layout(); // vk-285-115: the release's switch files on a console set up by hand
 #endif

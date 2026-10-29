@@ -16,6 +16,12 @@
 #include <climits>
 #include <cstdlib>
 #include <string>
+#include <vector>
+
+// 180: sends a whole ELF to the console's ELF loader on 127.0.0.1:9021 and closes the sending side (OrbisHelperAutoload.cpp; the
+// helper's start and the PS5SX2 Installer's, OrbisInstallerStart.cpp). True when the loader took all of it; `detail` says what
+// happened, for boot.log; `no_loader` (may be null) is set when nothing answered on the port.
+bool OrbisLoaderSend(const std::vector<unsigned char>& data, std::string& detail, bool* no_loader);
 
 namespace orbis_helper
 {

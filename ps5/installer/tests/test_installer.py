@@ -14,6 +14,7 @@ import random
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -130,7 +131,7 @@ def publish(tag, data, name=None, **kw):
     return name
 
 
-def run(root, env_extra=None, timeout=300, expect_rc=0, logger=False):
+def run(root, env_extra=None, timeout=300, expect_rc=0, logger=False, binary=None):
     env = dict(os.environ)
     env.update({
         'PS5SX2_ROOT': root,
@@ -147,7 +148,7 @@ def run(root, env_extra=None, timeout=300, expect_rc=0, logger=False):
     env.update(env_extra or {})
     nf = os.path.join(root, 'notifications.txt')
     before = open(nf).read().splitlines() if os.path.exists(nf) else []
-    p = subprocess.run([BIN], env=env, capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run([binary or BIN], env=env, capture_output=True, text=True, timeout=timeout)
     after = open(nf).read().splitlines() if os.path.exists(nf) else []
     notes = after[len(before):]
     if expect_rc is not None and p.returncode != expect_rc:
@@ -1324,15 +1325,197 @@ def t_nolog(files112, z112):
         check(bad not in p.stderr, 'sanitizer: ' + bad)
     work = data(root, 'PS5SX2-Installer')
     log = open(os.path.join(work, 'installer.log')).read()
-    check('1.3 (no log upload) started' in log and 'the no-log build: no logs are kept or sent' in log, 'its log says so')
+    check('1.4 (no log upload) started' in log and 'the no-log build: no logs are kept or sent' in log, 'its log says so')
     check('PS5SX2 vk-285-112 installed' in open(os.path.join(root, 'notifications.txt')).read(), 'it installed')
     for name in ('outbox', 'console-id.txt', 'logger-state.txt', 'logger.lock'):
         check(not os.path.exists(os.path.join(work, name)), 'no-log build: no %s' % name)
     check(relay_count() == 0, 'no-log build: nothing reached the relay')
     notes = open(os.path.join(root, 'notifications.txt')).read()
-    check('PS5SX2 Installer 1.3 (no log upload): checking' in notes and 'log upload is on' not in notes,
+    check('PS5SX2 Installer 1.4 (no log upload): checking' in notes and 'log upload is on' not in notes,
           'no-log build: its notifications')
     drop('nolog')
+
+
+# ---------------------------------------------------------------- 1.4: started by PS5SX2 (src/launch.h)
+
+MARKER = b'PS5SX2-INSTALLER-LAUNCH-1'
+BLOCK = 176
+MAGIC = 0x32495850
+F_RELAUNCH, F_LOGGER = 1, 2
+
+
+def patched_binary(name, flags, pid, app_tag='vk-285-111', expect_tag='', binary=None, magic=MAGIC, size=BLOCK):
+    """A copy of the host build with its launch block filled in, as PS5SX2 fills it in the ELF it sends
+    (ps5/coreorbis/orbis-shims/OrbisInstallerLaunch.h)."""
+    blob = bytearray(open(binary or BIN, 'rb').read())
+    at = -1
+    pos = blob.find(MARKER)
+    while pos >= 0:
+        if not any(blob[pos + len(MARKER):pos + BLOCK]):
+            check(at < 0, 'the launch block is there once')
+            at = pos
+        pos = blob.find(MARKER, pos + 1)
+    check(at >= 0, 'the launch block is in the binary')
+    block = (MARKER.ljust(32, b'\0') + struct.pack('<IIIi', magic, size, flags, pid) +
+             app_tag.encode().ljust(64, b'\0') + expect_tag.encode().ljust(64, b'\0'))
+    check(len(block) == BLOCK, 'block size')
+    blob[at:at + BLOCK] = block
+    path = os.path.join(WORK, name)
+    with open(path, 'wb') as f:
+        f.write(blob)
+    os.chmod(path, 0o755)
+    return path
+
+
+def installer_log(root):
+    p = data(root, 'PS5SX2-Installer', 'installer.log')
+    return open(p, errors='replace').read() if os.path.exists(p) else ''
+
+
+def api_requests():
+    p = os.path.join(WORK, 'requests.log')
+    return sum(1 for l in open(p) if '/releases/latest' in l) if os.path.exists(p) else 0
+
+
+def launched(root):
+    p = os.path.join(root, 'launched.txt')
+    return open(p).read() if os.path.exists(p) else ''
+
+
+def t_launch_block(z112, files112):
+    """1.4: PS5SX2 sends the installer itself. As its logger at each start: never an install, quiet when switched
+    off; for an update: waits for PS5SX2 to close, installs, starts it again (not after a failure, not when PS5SX2
+    never closes). An empty block (sent by hand) installs as before."""
+    # 1. the logger copy: nothing installed, GitHub not asked, no notification
+    root = os.path.join(WORK, 'launch-logger')
+    shutil.rmtree(root, ignore_errors=True)
+    mk_user(root, files112, small=True)
+    publish('vk-285-112', z112)
+    before = snapshot(root)
+    n_api = api_requests()
+    binary = patched_binary('installer-logger', F_LOGGER, os.getpid(), 'vk-285-111')
+    notes, _ = run(root, binary=binary)
+    check(notes == [], 'the logger copy shows nothing: %s' % notes)
+    check(api_requests() == n_api, 'the logger copy does not ask GitHub')
+    check(diff(before, snapshot(root)) == ([], [], []), 'the logger copy changes nothing outside its folder')
+    log = installer_log(root)
+    check('started by PS5SX2 vk-285-111 (pid %d) as its session logger' % os.getpid() in log, 'the block is logged')
+    check('install: not this time' in log, 'no install is logged')
+    check(not os.path.exists(data(root, 'PS5SX2-Installer', 'journal.txt')), 'no journal')
+
+    # 1b. the logger copy really stays as the logger (it holds logger.lock) and a second one leaves at once
+    env = logger_env(root)
+    proc = subprocess.Popen([binary], env=env, stderr=open(os.path.join(WORK, 'launch-logger.stderr'), 'w'))
+    try:
+        wait_log(root, 'logger: running')
+        p2 = subprocess.run([binary], env=env, capture_output=True, text=True, timeout=60)
+        check(p2.returncode == 0, 'a second logger copy leaves')
+        check('logger: another copy is already running' in installer_log(root), 'and says why')
+    finally:
+        proc.kill()
+        proc.wait()
+    check(api_requests() == n_api, 'still no GitHub request')
+
+    # 1c. the switch no-log-upload: the logger copy leaves at once, quietly (no "log upload is off" popup)
+    open(data(root, 'PS5SX2-Installer', 'no-log-upload'), 'w').close()
+    t0 = time.time()
+    p3 = subprocess.run([binary], env=env, capture_output=True, text=True, timeout=60)
+    check(p3.returncode == 0 and time.time() - t0 < 30, 'switched off: it leaves')
+    check('the logger is switched off' in installer_log(root), 'switched off: logged')
+    check(not os.path.exists(os.path.join(root, 'notifications.txt')) or
+          'log upload is off' not in open(os.path.join(root, 'notifications.txt')).read(), 'switched off: no popup')
+    os.remove(data(root, 'PS5SX2-Installer', 'no-log-upload'))
+
+    # 1d. a no-log build sent as the logger leaves at once, nothing kept
+    nolog = patched_binary('installer-nolog-logger', F_LOGGER, os.getpid(), binary=BIN_NOLOG)
+    p4 = subprocess.run([nolog], env=env, capture_output=True, text=True, timeout=60)
+    check(p4.returncode == 0 and 'the no-log build has no logger' in installer_log(root), 'no-log build as logger: leaves')
+    drop('launch-logger')
+
+    # 2. for an update: waits for PS5SX2 to close, installs, starts it again
+    root = os.path.join(WORK, 'launch-update')
+    shutil.rmtree(root, ignore_errors=True)
+    mk_user(root, files112, small=True)
+    publish('vk-285-112', z112)
+    app_proc = subprocess.Popen(['sleep', '60'])
+    with open(data(root, 'PCSX2', 'pid.txt'), 'w') as f:
+        f.write(str(app_proc.pid))
+    binary = patched_binary('installer-update', F_RELAUNCH, app_proc.pid, 'vk-285-111', 'vk-285-112')
+    env = dict(logger_env(root))
+    env.update({'PS5SX2_TEST_NO_LOGGER': '1', 'PS5SX2_TEST_EXIT_WAIT': '60',
+                'ASAN_OPTIONS': 'detect_leaks=1:abort_on_error=1'})
+    proc = subprocess.Popen([binary], env=env, stderr=open(os.path.join(WORK, 'launch-update.stderr'), 'w'))
+    try:
+        time.sleep(4)
+        check(proc.poll() is None, 'the installer waits while PS5SX2 runs')
+        check(launched(root) == '', 'nothing started yet')
+        check(b'build=vk-285-111' in open(data(root, 'homebrew', TITLE, 'eboot.bin'), 'rb').read(), 'nothing installed yet')
+        app_proc.kill()
+        app_proc.wait()
+        proc.wait(timeout=240)
+    finally:
+        if app_proc.poll() is None:
+            app_proc.kill()
+        if proc.poll() is None:
+            proc.kill()
+    err = open(os.path.join(WORK, 'launch-update.stderr')).read()
+    check('AddressSanitizer' not in err and 'runtime error' not in err, 'sanitizer clean')
+    notes = open(os.path.join(root, 'notifications.txt')).read()
+    check('waiting for PS5SX2 to close' in notes and 'PS5SX2 vk-285-112 installed' in notes and 'Starting PS5SX2' in notes,
+          'waited, installed, started: %s' % notes.splitlines()[-4:])
+    check(launched(root) == TITLE + '\n', 'PS5SX2 started again once')
+    log = installer_log(root)
+    check('started by PS5SX2 vk-285-111 (pid %d) for an update; the shelf showed vk-285-112' % app_proc.pid in log,
+          'the block is logged')
+    check('has closed after' in log, 'the wait is logged')
+    check(b'build=vk-285-112' in open(data(root, 'homebrew', TITLE, 'eboot.bin'), 'rb').read(), '112 installed')
+
+    # 3. nothing new: PS5SX2 is started again too
+    os.remove(os.path.join(root, 'launched.txt'))
+    binary = patched_binary('installer-update2', F_RELAUNCH, 3999999, 'vk-285-112', 'vk-285-112')
+    notes, _ = run(root, binary=binary)
+    check(any('up to date (vk-285-112)' in n for n in notes) and launched(root) == TITLE + '\n',
+          'up to date: started again: %s' % notes)
+
+    # 4. a damaged download: nothing installed, not started (the notification says why)
+    os.remove(os.path.join(root, 'launched.txt'))
+    publish('vk-285-113', z112, digest='sha256:' + '1' * 64)
+    before = snapshot(root)
+    notes, _ = run(root, binary=binary)
+    check(launched(root) == '', 'a failed update: not started: %s' % notes[-2:])
+    check(any('Nothing was changed' in n for n in notes), 'the failure is shown: %s' % notes[-2:])
+    check('PS5SX2 is not started again' in installer_log(root), 'and logged')
+    check(diff(before, snapshot(root)) == ([], [], []), 'a failed update changes nothing')
+
+    # 5. PS5SX2 never closes: nothing installed, not started
+    publish('vk-285-112', z112)
+    stuck = subprocess.Popen(['sleep', '60'])
+    try:
+        binary = patched_binary('installer-update3', F_RELAUNCH, stuck.pid, 'vk-285-111')
+        before = snapshot(root)
+        notes, _ = run(root, binary=binary, env_extra={'PS5SX2_TEST_EXIT_WAIT': '2'})
+        check(any("PS5SX2 didn't close, so nothing was installed" in n for n in notes), 'gives up: %s' % notes[-2:])
+        check(diff(before, snapshot(root)) == ([], [], []), 'nothing changed')
+        check(launched(root) == '', 'not started')
+    finally:
+        stuck.kill()
+        stuck.wait()
+
+    # 6. the shell still has PS5SX2 as its app (the process gone): waits for that too
+    binary = patched_binary('installer-update4', F_RELAUNCH, 3999999, 'vk-285-111')
+    notes, _ = run(root, binary=binary, env_extra={'PS5SX2_TEST_EXIT_WAIT': '2', 'PS5SX2_TEST_BIGAPP': TITLE})
+    check(any("PS5SX2 didn't close" in n for n in notes), 'the shell counts: %s' % notes[-2:])
+
+    # 7. a launch that's refused: said on the screen
+    notes, _ = run(root, binary=binary, env_extra={'PS5SX2_TEST_LAUNCH_FAILS': '1'})
+    check(any("PS5SX2 couldn't be started" in n for n in notes), 'a refused start is shown: %s' % notes[-2:])
+
+    # 8. a block of another size or magic is ignored: the copy behaves as one sent by hand (installs, starts nothing)
+    binary = patched_binary('installer-update5', F_LOGGER, 3999999, 'vk-285-111', size=BLOCK + 8)
+    notes, _ = run(root, binary=binary)
+    check(any('up to date (vk-285-112)' in n for n in notes) and launched(root) == '', 'a foreign block: as by hand')
+    check('launch block: size 184' in installer_log(root), 'and logged')
+    drop('launch-update')
 
 
 # ---------------------------------------------------------------- main
@@ -1409,6 +1592,8 @@ def main():
             ('logger 1.3: shelf-only sessions not sent, problems and games are; no notifications',
              lambda: t_logger_shelf_filter(files112, z112)),
             ('the no-log build: installs and leaves, nothing kept or sent', lambda: t_nolog(files112, z112)),
+            ('1.4: started by PS5SX2 (launch block): logger copy, update, relaunch',
+             lambda: t_launch_block(z112, files112)),
         ]
         only = os.environ.get('ONLY')
         failed = 0
