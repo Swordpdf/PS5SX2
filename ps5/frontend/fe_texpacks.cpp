@@ -6,6 +6,7 @@
 
 #include "fe_texpacks.h"
 #include "fe_sevenzip.h" // b176: the .7z reader (LZMA SDK), streamed
+#include "fe_texwrite.h" // 2026-10-29: the files written by a process of their own (the title's write allowance)
 #include "fe_settings.h"
 
 #include "OrbisTexturePak.h" // pcsx2/: the one-file pack's format, shared with GSTextureReplacements.cpp
@@ -370,6 +371,9 @@ private:
 // with ~195 MB to spare that is memory the system takes back from somewhere), and a thread of its own writes the full buffers while the unpacking thread
 // fills the next (three buffers of 8 MiB): the unpacking is no longer held up by a write, nor the write by the unpacking. Flags, for a console that asks for
 // them: texpack_sync (fdatasync after each buffer) and texpack_direct (O_DIRECT).
+//
+// 2026-10-29: the file goes through a TexOutFile: written by the texture pack writer's process when the manager has one (Options::remote; the
+// console holds a title's own writes to ~2 MiB/s after its first ~1.3 GiB, fe_texwrite.h), by this process otherwise or when that one stops.
 class PakWriter
 {
 public:
@@ -377,6 +381,8 @@ public:
 	{
 		bool sync_each = false;
 		bool direct = false;
+		TexRemoteWriter* remote = nullptr;                 // 2026-10-29: the writer process, or null
+		std::function<void(const std::string&)> log;        // 2026-10-29: its fallbacks are said here
 		std::function<void(const char*)> thread_start;
 		// b176: asked (every 50 ms) while the unpacking thread waits for a free buffer, so a stop is heard when the disk is slow (an 8 MiB buffer takes 4 s at the
 		// 2 MB/s the console writes at times); true: Hand gives up. Unset: waits as before.
@@ -389,9 +395,7 @@ public:
 	}
 	~PakWriter()
 	{
-		StopWriter();
-		if (m_fd >= 0)
-			close(m_fd);
+		StopWriter(); // m_out closes the file
 	}
 	PakWriter(const PakWriter&) = delete;
 	PakWriter& operator=(const PakWriter&) = delete;
@@ -399,15 +403,9 @@ public:
 	bool Open(const std::string& path)
 	{
 		m_path = path;
-		int flags = O_WRONLY | O_CREAT | O_TRUNC;
-#ifdef O_DIRECT
-		if (m_opt.direct)
-			m_fd = open(path.c_str(), flags | O_DIRECT, 0666);
-		if (m_fd < 0)
-#endif
-			m_fd = open(path.c_str(), flags, 0666);
-		if (m_fd < 0)
-			return Fail(errno);
+		if (!m_out.Open(path, true, m_opt.remote, m_opt.direct, m_opt.log))
+			return Fail(m_out.Errno());
+		m_write_at = 0;
 		for (std::vector<uint8_t>& b : m_bufs)
 			b.assign(kBufferBytes, 0);
 		m_lens.assign(m_bufs.size(), 0);
@@ -423,7 +421,7 @@ public:
 	// One entry, `name` its path under replacements/: Begin, any number of Append / AppendZeros, End.
 	bool Begin(const std::string& name)
 	{
-		if (m_fd < 0 || m_failed)
+		if (!m_out.IsOpen() || m_failed)
 			return false;
 		m_entry = OrbisTexturePak::Entry();
 		m_entry.offset = m_offset;
@@ -468,7 +466,7 @@ public:
 	// The rest of the data, the index, then the header. False (Error, NoSpace) when a write failed.
 	bool Finish()
 	{
-		if (m_fd < 0)
+		if (!m_out.IsOpen())
 			return false;
 		if (m_fill_len > 0 && !Hand(false))
 		{
@@ -484,20 +482,10 @@ public:
 		if (!WriteAll(index.data(), index.size()))
 			return false;
 		const std::vector<uint8_t> header = OrbisTexturePak::MakeHeader(static_cast<uint32_t>(m_index.size()), m_offset, index.size());
-		size_t at = 0;
-		while (at < header.size())
-		{
-			const ssize_t w = pwrite(m_fd, header.data() + at, header.size() - at, static_cast<off_t>(at));
-			if (w < 0 && errno == EINTR)
-				continue;
-			if (w <= 0)
-				return Fail(errno);
-			at += static_cast<size_t>(w);
-		}
-		const int fd = m_fd;
-		m_fd = -1;
-		if (close(fd) != 0)
-			return Fail(errno);
+		if (!m_out.PWrite(header.data(), header.size(), 0))
+			return Fail(m_out.Errno());
+		if (!m_out.Close())
+			return Fail(m_out.Errno());
 		return true;
 	}
 
@@ -520,6 +508,9 @@ public:
 	// Seconds the writer thread spent in write() (and fdatasync), and seconds the unpacking thread waited for a free buffer (the writes were behind).
 	double WriteSeconds() const { return m_write_us.load() / 1e6; }
 	double WaitSeconds() const { return m_wait_us / 1e6; }
+	// 2026-10-29: the bytes the writer process wrote, and the bytes this process wrote itself (after Finish, or the writer thread's end).
+	uint64_t RemoteBytes() const { return m_out.RemoteBytes(); }
+	uint64_t LocalBytes() const { return m_out.LocalBytes(); }
 
 private:
 	static constexpr size_t kBufferBytes = 8u << 20;
@@ -585,10 +576,8 @@ private:
 			}
 			const auto t0 = std::chrono::steady_clock::now();
 			bool ok = !m_failed.load() && WriteAll(m_bufs[static_cast<size_t>(b)].data(), m_lens[static_cast<size_t>(b)]);
-#ifndef _WIN32
-			if (ok && m_opt.sync_each && fdatasync(m_fd) != 0 && errno != EINVAL)
-				ok = Fail(errno);
-#endif
+			if (ok && m_opt.sync_each && !m_out.Sync())
+				ok = Fail(m_out.Errno());
 			m_write_us += static_cast<uint64_t>(
 				std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());
 			{
@@ -611,24 +600,19 @@ private:
 			m_writer.join();
 	}
 
+	// The bytes at the file's end (the buffers, then the index): one call, which the TexOutFile sends to the writer process or writes itself.
 	bool WriteAll(const uint8_t* p, size_t n)
 	{
-		while (n > 0)
-		{
-			const ssize_t w = write(m_fd, p, n);
-			if (w < 0 && errno == EINTR)
-				continue;
-			if (w <= 0)
-				return Fail(errno);
-			p += w;
-			n -= static_cast<size_t>(w);
-		}
+		if (!m_out.PWrite(p, n, m_write_at))
+			return Fail(m_out.Errno());
+		m_write_at += n;
 		return true;
 	}
 
 	Options m_opt;
 	std::string m_path;
-	int m_fd = -1;
+	TexOutFile m_out;       // 2026-10-29 (was a descriptor of this process's)
+	uint64_t m_write_at = 0; // where the next buffer goes in the file
 	std::thread m_writer;
 	std::mutex m_mutex;
 	std::condition_variable m_work, m_room;
@@ -877,6 +861,7 @@ struct SevenZipRun
 	std::function<void(const char*)> thread_start;
 	std::function<std::string()> memory_text; // "flexible memory free 150 MiB"
 	bool sync_each = false, direct = false;
+	TexRemoteWriter* remote = nullptr; // 2026-10-29
 	uint64_t packed_total = 0;
 
 	// the wanted entries (the first pass counts them, the second runs the same decisions again)
@@ -997,6 +982,8 @@ struct SevenZipRun
 					options.direct = direct;
 					options.thread_start = thread_start;
 					options.stopping = stopping;
+					options.remote = remote;
+					options.log = log;
 					pak = std::make_unique<PakWriter>(std::move(options));
 					good = pak->Open(dir + "/" + OrbisTexturePak::kFileName);
 				}
@@ -1617,6 +1604,11 @@ bool TexturePackManager::Stop(int wait_ms)
 	m_cv.notify_all();
 	if (m_platform.abort)
 		m_platform.abort();
+	{
+		std::lock_guard<std::mutex> lock(m_writer_mutex); // 2026-10-29: a write the writer process is doing is not waited for
+		if (m_writer)
+			m_writer->Abort();
+	}
 	if (!m_thread.joinable())
 		return true;
 	const double until = Now() + wait_ms / 1000.0;
@@ -1814,6 +1806,7 @@ void TexturePackManager::Run()
 			continue;
 		}
 		Process(job);
+		EndWriter(); // 2026-10-29: the writer process ends with the job (a new one is started for the next)
 		std::lock_guard<std::mutex> lock(m_mutex);
 		m_current.clear();
 		m_installed.erase(job.serial);
@@ -2064,6 +2057,7 @@ void TexturePackManager::Process(const Job& job_in)
 		}
 	}
 	Log("starting " + job.name + " for " + job.serial + " (" + FormatBytes(job.bytes) + (job.host == "gdrive" ? ", from Google Drive" : "") + ")");
+	StartWriter();
 	if (FileSize(full) != job.bytes && !Download(job, part, full))
 	{
 		cancelled();
@@ -2141,6 +2135,9 @@ void TexturePackManager::Process(const Job& job_in)
 		return;
 	}
 	Log("unpacked " + std::to_string(files) + " files in " + std::to_string(static_cast<int>(Now() - t0)) + " s");
+	if (m_writer)
+		Log("the writer process wrote " + FormatBytes(m_writer->BytesWritten()) + " for this pack (download and unpack), its calls " +
+			std::to_string(static_cast<int>(m_writer->WriteSeconds())) + " s" + (m_writer->Usable() ? "" : "; it stopped on the way and the app wrote the rest"));
 	SetState(job.serial, State::Installing);
 	// <serial>/ (and a second disc's) into the textures folder, beside or into what is there.
 	bool moved = true;
@@ -2171,6 +2168,62 @@ void TexturePackManager::Process(const Job& job_in)
 	Finish(job, files);
 }
 
+// 2026-10-29: Google Drive answers a range of a file whose download quota is used up with its "Google Drive - Quota exceeded" page (HTTP 200,
+// text/html, ~2 KB) instead of the bytes, while a one-byte range (the size probe) still works. Build 177 took that page for the file's first
+// bytes: it went into the .part file (2,040 bytes), every later range asked from there was refused, and the download never got further. A pack
+// file never begins with an HTML page: one is recognised by its start.
+static bool LooksLikeHtmlPage(const void* data, size_t n)
+{
+	const char* p = static_cast<const char*>(data);
+	size_t i = 0;
+	while (i < n && i < 16 && (p[i] == ' ' || p[i] == '\t' || p[i] == '\r' || p[i] == '\n'))
+		i++;
+	const std::string head = Lower(std::string(p + i, std::min<size_t>(n - i, 15)));
+	return head.rfind("<!doctype html", 0) == 0 || head.rfind("<html", 0) == 0;
+}
+
+// The message for Drive's page in place of a file.
+static std::string DrivePageMessage(const std::string& page)
+{
+	if (page.find("Quota exceeded") != std::string::npos || page.find("quota") != std::string::npos)
+		return "Google Drive's download limit for this file is used up for now (\"Quota exceeded\"): try again tomorrow, or pick the archive.org pack if there is one";
+	return "Google Drive sent a page instead of the file: try again later";
+}
+
+// 2026-10-29: the texture pack writer process for this job (fe_texwrite.h): a pack is written twice, and a title's writes are held to ~2 MiB/s after its
+// first ~1.3 GiB. Not with the flag texpack_titlewrites, nor on a platform without launch_writer (the PC), nor for 10 min after one that did not come.
+void TexturePackManager::StartWriter()
+{
+	if (m_writer || !m_platform.launch_writer || (m_platform.flag && m_platform.flag("texpack_titlewrites")))
+		return;
+	if (m_writer_failed_at >= 0 && Now() - m_writer_failed_at < 600)
+		return;
+	MakeDirs(m_work); // the root must be there for the writer (the downloads folder is in it)
+	std::string why;
+	const double t0 = Now();
+	std::unique_ptr<TexRemoteWriter> w = TexRemoteWriter::Start(m_textures, m_platform.writer_log, m_platform.launch_writer, m_platform.log, 5000, why);
+	if (!w)
+	{
+		m_writer_failed_at = Now();
+		Log("no writer process (" + why + "): the app writes the pack itself (the console slows a title's writes after its first ~1.3 GB)");
+		return;
+	}
+	Log("writer process " + std::to_string(w->Pid()) + " ready in " + std::to_string(static_cast<int>((Now() - t0) * 1000)) + " ms: it writes the download and the unpacked pack");
+	std::lock_guard<std::mutex> lock(m_writer_mutex);
+	m_writer = std::move(w);
+}
+
+void TexturePackManager::EndWriter()
+{
+	std::unique_ptr<TexRemoteWriter> w;
+	{
+		std::lock_guard<std::mutex> lock(m_writer_mutex);
+		w = std::move(m_writer);
+	}
+	if (w && !w->Usable())
+		m_writer_failed_at = Now();
+}
+
 bool TexturePackManager::Download(const Job& job, const std::string& part, const std::string& full)
 {
 	MakeDirs(m_work);
@@ -2194,6 +2247,22 @@ bool TexturePackManager::Download(const Job& job, const std::string& part, const
 	// What came before goes through the checksum first (2.11: a Drive pack has none to be checked against: its part is taken as it is).
 	Md5 md5;
 	const bool checksummed = job.md5.size() == 32;
+	if (have > 0 && job.host == "gdrive")
+	{
+		char head[64] = {};
+		size_t n = 0;
+		if (FILE* f = std::fopen(part.c_str(), "rb"))
+		{
+			n = std::fread(head, 1, sizeof(head), f);
+			std::fclose(f);
+		}
+		if (LooksLikeHtmlPage(head, n))
+		{
+			Log("the part of " + job.name + " begins with Google Drive's page, not the file (an older build kept it): started again");
+			unlink(part.c_str());
+			have = 0;
+		}
+	}
 	if (have > 0 && !checksummed)
 		Log("picking up " + job.name + " at " + FormatBytes(have) + " (no checksum for this download: the archive's own checks come when it is unpacked)");
 	if (have > 0 && checksummed)
@@ -2226,12 +2295,26 @@ bool TexturePackManager::Download(const Job& job, const std::string& part, const
 		}
 		Log("picking up " + job.name + " at " + FormatBytes(have));
 	}
-	FILE* f = std::fopen(part.c_str(), have > 0 ? "ab" : "wb");
-	if (!f)
+	// 2026-10-29: the download's bytes go to the file kDownloadBuffer at a time (they come from the network in TLS records of 16 KiB, and each write
+	// costs the console ~3 ms whatever its size: 16 KiB writes alone held a download to ~5 MB/s), through the writer process when there is one.
+	TexOutFile out;
+	if (!out.Open(part, have == 0, m_writer.get(), false, [this](const std::string& line) { Log(line.substr(line.compare(0, 11, "[texpacks] ") == 0 ? 11 : 0)); }))
 	{
 		SetState(job.serial, State::Failed, 0, 0, "Couldn't write to " + m_work);
 		return false;
 	}
+	std::vector<uint8_t> pending;
+	pending.reserve(kDownloadBuffer);
+	uint64_t in_file = have;
+	const auto flush = [&] {
+		if (pending.empty())
+			return true;
+		if (!out.PWrite(pending.data(), pending.size(), in_file))
+			return false;
+		in_file += pending.size();
+		pending.clear();
+		return true;
+	};
 	SetState(job.serial, State::Downloading, have, job.bytes);
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -2253,10 +2336,20 @@ bool TexturePackManager::Download(const Job& job, const std::string& part, const
 			break;
 		const uint64_t want = std::min<uint64_t>(kChunk, job.bytes - have);
 		uint64_t got = 0;
+		std::string page; // 2026-10-29: Drive's page in place of the file (never written)
 		const auto sink = [&](const void* data, size_t n) {
-			if (got + n > want || std::fwrite(data, 1, n, f) != n)
+			if (got == 0 && job.host == "gdrive" && LooksLikeHtmlPage(data, n))
 			{
-				write_failed = got + n <= want;
+				page.assign(static_cast<const char*>(data), std::min<size_t>(n, 4096));
+				return false;
+			}
+			if (got + n > want)
+				return false;
+			const uint8_t* b = static_cast<const uint8_t*>(data);
+			pending.insert(pending.end(), b, b + n);
+			if (pending.size() >= kDownloadBuffer && !flush())
+			{
+				write_failed = true;
 				return false;
 			}
 			md5.Update(data, n);
@@ -2265,11 +2358,12 @@ bool TexturePackManager::Download(const Job& job, const std::string& part, const
 			return !Stopping(job.serial);
 		};
 		const int status = m_platform.get_range ? m_platform.get_range(url, have, want, sink) : -1;
-		std::fflush(f);
+		if (!write_failed && !flush()) // what is in the file always ends where a range ended: a stop keeps every byte counted
+			write_failed = true;
 		have += got;
 		if (write_failed)
 		{
-			std::fclose(f);
+			out.Close();
 			SetState(job.serial, State::NeedSpace, 0, 0, "Couldn't write the download (is the disk full?)");
 			Log("writing the download failed at " + FormatBytes(have));
 			return false;
@@ -2279,6 +2373,17 @@ bool TexturePackManager::Download(const Job& job, const std::string& part, const
 			failures = 0;
 			continue;
 		}
+		if (!page.empty())
+		{
+			// Not tried again and again: the quota is Google's, per file, for a day.
+			const size_t t = page.find("<title>"), te = page.find("</title>");
+			out.Close();
+			Log("range at " + std::to_string(have) + ": Google Drive answered " + std::to_string(status) + " with a page (" +
+				(t != std::string::npos && te != std::string::npos && te > t ? page.substr(t + 7, te - t - 7) : std::string("no title")) + "), not the file; " +
+				FormatBytes(have) + " of it kept for later");
+			SetState(job.serial, State::Failed, 0, 0, DrivePageMessage(page));
+			return false;
+		}
 		if (Stopping(job.serial))
 			break;
 		failures++;
@@ -2286,7 +2391,7 @@ bool TexturePackManager::Download(const Job& job, const std::string& part, const
 			std::to_string(want) + " bytes (try " + std::to_string(failures) + ")");
 		if (failures >= 6)
 		{
-			std::fclose(f);
+			out.Close();
 			SetState(job.serial, State::Failed, 0, 0,
 				status > 0 ? job.Source() + " answered " + std::to_string(status) +
 					                  (job.host == "gdrive" && got < want ? " (Google Drive may be limiting downloads of this file)" : std::string())
@@ -2298,10 +2403,17 @@ bool TexturePackManager::Download(const Job& job, const std::string& part, const
 		while (Now() < until && !Stopping(job.serial))
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	}
-	std::fclose(f);
+	if (!out.Close())
+	{
+		SetState(job.serial, State::NeedSpace, 0, 0, "Couldn't write the download (is the disk full?)");
+		Log("closing the download failed (errno " + std::to_string(out.Errno()) + ")");
+		return false;
+	}
 	const double secs = Now() - t0;
 	Log("downloaded " + FormatBytes(have - at_start) + " in " + std::to_string(static_cast<int>(secs)) + " s" +
-		(secs > 0 ? " (" + FormatBytes(static_cast<uint64_t>((have - at_start) / secs)) + "/s)" : std::string()));
+		(secs > 0 ? " (" + FormatBytes(static_cast<uint64_t>((have - at_start) / secs)) + "/s)" : std::string()) +
+		(out.RemoteBytes() ? ", " + FormatBytes(out.RemoteBytes()) + " written by the writer process" : std::string(", written by the app")) +
+		(out.LocalBytes() && out.RemoteBytes() ? " and " + FormatBytes(out.LocalBytes()) + " by the app" : std::string()));
 	if (have < job.bytes)
 		return false; // stopped: the part stays for next time
 	SetState(job.serial, State::Verifying, job.bytes, job.bytes);
@@ -2440,6 +2552,8 @@ bool TexturePackManager::Unpack(const Job& job, const std::string& full, const s
 				options.sync_each = m_platform.flag && m_platform.flag("texpack_sync");
 				options.direct = m_platform.flag && m_platform.flag("texpack_direct");
 				options.thread_start = m_platform.thread_start;
+				options.remote = m_writer.get();
+				options.log = [this](const std::string& line) { Log(line.compare(0, 11, "[texpacks] ") == 0 ? line.substr(11) : line); };
 				pak = std::make_unique<PakWriter>(std::move(options));
 				good = pak->Open(dir + "/" + OrbisTexturePak::kFileName);
 			}
@@ -2676,11 +2790,12 @@ bool TexturePackManager::Unpack7z(const Job& job, const std::string& full, const
 	run.staging = staging;
 	run.stopping = [this, &job] { return Stopping(job.serial); };
 	run.progress = [this, &job](uint64_t done) { SetProgress(job.serial, done); };
-	run.log = [this](const std::string& line) { Log(line); };
+	run.log = [this](const std::string& line) { Log(line.compare(0, 11, "[texpacks] ") == 0 ? line.substr(11) : line); };
 	run.thread_start = m_platform.thread_start;
 	run.memory_text = memory;
 	run.sync_each = flag("texpack_sync");
 	run.direct = flag("texpack_direct");
+	run.remote = m_writer.get();
 	run.packed_total = info->pack_total;
 	Sz7Scan scan;
 	const Sz7Code scan_code = Sz7ScanFiles(z.get(), SevenZipRun::SWant, &run, &scan);

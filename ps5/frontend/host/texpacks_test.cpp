@@ -9,6 +9,8 @@
 
 #include "fe_settings.h"
 #include "fe_texpacks.h"
+#include "fe_texwrite.h"
+#include "fe_texwrite_proto.h"
 
 #include "OrbisTexturePak.h"
 
@@ -21,7 +23,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <arpa/inet.h>
+#include <csignal>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -212,6 +219,8 @@ struct FakeArchive
 	int probe_status = 206;
 	std::string probe_type = "application/octet-stream";
 	std::atomic<int> probes{0}, drive_ranges{0};
+	// 2026-10-29: Drive's "Quota exceeded" page, sent (200, ~2 KB) for any range of a Drive file but a one-byte one, when set
+	std::string drive_page;
 	// 2.11: the project's current Drive list (https://example.test/hd-pack-sources.json in the tests)
 	std::string hosted;
 	int hosted_status = 404;
@@ -245,6 +254,11 @@ struct FakeArchive
 					return 404;
 				served = f->second;
 				drive_ranges++;
+				if (!drive_page.empty() && length > 1)
+				{
+					sink(drive_page.data(), drive_page.size());
+					return 200;
+				}
 			}
 			else
 				return 404;
@@ -568,6 +582,7 @@ struct SzRig
 	}
 	std::string base, textures, downloads, cache;
 	std::unique_ptr<TexturePackManager> m;
+	std::function<bool(const std::string&, std::string&)> launch; // 2026-10-29: the writer process (fe_texwrite.h), when set
 
 	SzRig(const std::string& fixtures, const std::string& root, const std::string& name)
 	{
@@ -591,6 +606,7 @@ struct SzRig
 		p.flag = [this](const char* n) { return flags.Has(n); };
 		p.free_bytes = [this](const std::string&) { return free_bytes.load(); };
 		p.free_memory = [this] { return free_memory.load(); };
+		p.launch_writer = launch;
 		p.thread_start = [this](const char* role) {
 			if (std::string(role) == "pakwriter")
 			{
@@ -637,6 +653,351 @@ void CheckAgainstManifest(const std::string& pak_path, const std::string& manife
 			std::printf("  (entry %s differs)\n", name.c_str());
 	}
 	CHECK(checked == pak.size());
+}
+
+
+// ---- 2026-10-29: the texture pack writer process (fe_texwrite.h, ps5/coreorbis/tex-writer/tex_writer.c built for the PC as TEX_WRITER_BIN)
+
+// The console's ELF loader, played by fork + exec: the payload with the request written over its marker, run as a process of its own (without
+// LD_PRELOAD: the write model of texwrite_bench.sh is the title's alone). `pids` gets each one started; `mutate` may change the request first.
+static std::function<bool(const std::string&, std::string&)> HostLaunch(const std::string& dir, std::vector<pid_t>* pids,
+	std::function<std::string(const std::string&)> mutate = nullptr)
+{
+	return [dir, pids, mutate](const std::string& request_in, std::string& why) {
+		const char* bin = std::getenv("TEX_WRITER_BIN");
+		const std::string elf = bin ? ReadAll(bin) : std::string();
+		const std::string request = mutate ? mutate(request_in) : request_in;
+		const std::vector<uint8_t> patched = TexWriterPatched(reinterpret_cast<const uint8_t*>(elf.data()), elf.size(), request);
+		if (patched.empty())
+		{
+			why = "no payload (TEX_WRITER_BIN) or no marker in it";
+			return false;
+		}
+		static std::atomic<int> n{0};
+		const std::string path = dir + "/tex_writer-" + std::to_string(n++) + ".elf";
+		{
+			std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(patched.data()), static_cast<std::streamsize>(patched.size()));
+		}
+		chmod(path.c_str(), 0755);
+		const pid_t pid = fork();
+		if (pid == 0)
+		{
+			unsetenv("LD_PRELOAD");
+			execl(path.c_str(), path.c_str(), static_cast<char*>(nullptr));
+			_exit(127);
+		}
+		if (pid < 0)
+		{
+			why = "fork failed";
+			return false;
+		}
+		if (pids)
+			pids->push_back(pid);
+		std::thread([pid] { waitpid(pid, nullptr, 0); }).detach();
+		return true;
+	};
+}
+
+static std::string Blob(size_t n, uint32_t seed)
+{
+	std::string out(n, '\0');
+	uint32_t x = seed * 2654435761u + 1;
+	for (size_t i = 0; i < n; i++)
+	{
+		x ^= x << 13;
+		x ^= x >> 17;
+		x ^= x << 5;
+		out[i] = static_cast<char>(x);
+	}
+	return out;
+}
+
+static void TestWriterProcess(const std::string& fixtures, const std::string& work)
+{
+	std::printf("---- the texture pack writer process\n");
+	if (!std::getenv("TEX_WRITER_BIN"))
+	{
+		std::printf("  (TEX_WRITER_BIN not set: test-texpacks.sh builds it)\n");
+		CHECK(false);
+		return;
+	}
+	const std::string base = work + "/tw", root = base + "/textures";
+	mkdir(base.c_str(), 0777);
+	mkdir(root.c_str(), 0777);
+	mkdir((root + "/sub").c_str(), 0777);
+	SafeLog log;
+	const auto logfn = [&log](const std::string& line) {
+		std::printf("%s\n", line.c_str());
+		log.Add(line);
+	};
+	std::vector<pid_t> pids;
+
+	// The request over the marker: found, written, NUL-ended; one that doesn't fit or a file without the marker: nothing.
+	{
+		const std::string elf = ReadAll(std::getenv("TEX_WRITER_BIN"));
+		const std::string req = TexWriterRequest(4242, std::string(32, 'a'), "/data/PCSX2/textures", "/data/PCSX2/logs/texwrite.log");
+		const std::vector<uint8_t> out = TexWriterPatched(reinterpret_cast<const uint8_t*>(elf.data()), elf.size(), req);
+		CHECK(out.size() == elf.size());
+		const std::string patched(out.begin(), out.end());
+		const size_t at = patched.find(req);
+		CHECK(at != std::string::npos && patched[at + req.size()] == '\0' && elf.compare(0, at, patched, 0, at) == 0);
+		CHECK(TexWriterPatched(reinterpret_cast<const uint8_t*>(elf.data()), elf.size(), req + std::string(TW_REQUEST_ROOM, 'x')).empty());
+		CHECK(TexWriterPatched(reinterpret_cast<const uint8_t*>("no marker here"), 14, req).empty());
+	}
+
+	// 1. Files through the payload: whole, at offsets, a write bigger than one message split, mode 0666; paths it refuses; a file outside its root is the app's.
+	{
+		std::string why;
+		std::unique_ptr<TexRemoteWriter> w = TexRemoteWriter::Start(root, base + "/tw.log", HostLaunch(base, &pids), logfn, 5000, why);
+		CHECK(w && w->Usable());
+		if (!w)
+		{
+			std::printf("  (no writer: %s)\n", why.c_str());
+			return;
+		}
+		CHECK(w->Pid() == static_cast<uint32_t>(pids.back()));
+		DIR* d = opendir(root.c_str());
+		int marks = 0;
+		while (dirent* e = d ? readdir(d) : nullptr)
+			marks += std::string(e->d_name).rfind(".ps5sx2-texwrite-", 0) == 0;
+		if (d)
+			closedir(d);
+		CHECK(marks == 0);
+		const std::string a = Blob(3 << 20, 1), b = Blob((9 << 20) + 5, 2);
+		{
+			TexOutFile f;
+			CHECK(f.Open(root + "/sub/a.bin", true, w.get(), false, logfn) && f.Remote());
+			CHECK(f.PWrite(b.data(), b.size(), a.size())); // the later part first: the offsets are the payload's to keep
+			CHECK(f.PWrite(a.data(), a.size(), 0));
+			CHECK(f.Close());
+			CHECK(f.RemoteBytes() == a.size() + b.size() && f.LocalBytes() == 0);
+		}
+		CHECK(ReadAll(root + "/sub/a.bin") == a + b);
+		struct stat st = {};
+		CHECK(stat((root + "/sub/a.bin").c_str(), &st) == 0 && (st.st_mode & 0777) == 0666);
+		CHECK(w->BytesWritten() == a.size() + b.size());
+		// kept as it is (a download picking up), then truncated (a new pack file)
+		{
+			TexOutFile f;
+			CHECK(f.Open(root + "/sub/a.bin", false, w.get(), false, logfn) && f.Remote());
+			CHECK(f.PWrite("XY", 2, 1) && f.Close());
+			CHECK(ReadAll(root + "/sub/a.bin") == a.substr(0, 1) + "XY" + a.substr(3) + b);
+			CHECK(f.Open(root + "/sub/a.bin", true, w.get(), false, logfn) && f.PWrite("new", 3, 0) && f.Close());
+			CHECK(ReadAll(root + "/sub/a.bin") == "new");
+		}
+		uint32_t h = 0;
+		int err = 0;
+		CHECK(!w->Open(root + "/sub/../escape.bin", true, h, err) && err == EPERM && w->Usable());
+		CHECK(!w->Open(root + "/./x.bin", true, h, err) && err == EPERM);
+		CHECK(!w->Open(root + "//x.bin", true, h, err) && err == EPERM);
+		CHECK(!w->Open(root + "/nofolder/x.bin", true, h, err) && err == ENOENT);
+		CHECK(!w->Open(root + "/sub", true, h, err) && err != 0); // a folder is no file
+		CHECK(!w->Open(base + "/outside.bin", true, h, err) && err == EPERM && !Exists(base + "/outside.bin"));
+		// a symbolic link on the way, or as the file, is never followed out of the root
+		CHECK(symlink(base.c_str(), (root + "/link").c_str()) == 0);
+		CHECK(symlink((base + "/target.bin").c_str(), (root + "/filelink.bin").c_str()) == 0);
+		CHECK(!w->Open(root + "/link/escape.bin", true, h, err) && err != 0 && !Exists(base + "/escape.bin"));
+		CHECK(!w->Open(root + "/filelink.bin", true, h, err) && err != 0 && !Exists(base + "/target.bin"));
+		CHECK(w->Usable());
+		// TexOutFile: what the payload refuses or can't reach, the app writes
+		{
+			TexOutFile f;
+			CHECK(f.Open(base + "/outside.bin", true, w.get(), false, logfn) && !f.Remote());
+			CHECK(f.PWrite("own", 3, 0) && f.Close() && f.LocalBytes() == 3 && ReadAll(base + "/outside.bin") == "own");
+		}
+		// the disk's own refusal comes back as an error (not a fallback): a write to a file opened, then made read-only, is not the case here; an
+		// unknown handle is the protocol's EBADF
+		CHECK(!w->Write(77, 0, "x", 1, err) && err == EBADF && w->Usable());
+		CHECK(!w->Close(77, err) && err == EBADF);
+
+		// 2. The payload goes away in the middle (killed): the next piece and the rest are written by the app into the same file, nothing lost.
+		{
+			TexOutFile f;
+			CHECK(f.Open(root + "/sub/b.bin", true, w.get(), false, logfn) && f.Remote());
+			CHECK(f.PWrite(a.data(), 1 << 20, 0));
+			kill(static_cast<pid_t>(w->Pid()), SIGKILL);
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			CHECK(f.PWrite(a.data() + (1 << 20), a.size() - (1 << 20), 1 << 20));
+			CHECK(!f.Remote() && !w->Usable());
+			CHECK(f.Close());
+			CHECK(f.RemoteBytes() == (1u << 20) && f.LocalBytes() == a.size() - (1 << 20));
+			CHECK(ReadAll(root + "/sub/b.bin") == a);
+			TexOutFile g; // a new file after it: the app's from the start
+			CHECK(g.Open(root + "/sub/c.bin", true, w.get(), false, logfn) && !g.Remote() && g.PWrite("c", 1, 0) && g.Close());
+			CHECK(log.Has("the writer process stopped answering"));
+		}
+	}
+
+	// 3. A connection with the wrong token first (another program on the loopback): closed; the payload's is taken.
+	{
+		std::string why;
+		const auto launch = HostLaunch(base, &pids);
+		std::unique_ptr<TexRemoteWriter> w = TexRemoteWriter::Start(root, "", [&](const std::string& req, std::string& y) {
+			const int port = std::atoi(req.c_str() + req.find("port=") + 5);
+			const int s = socket(AF_INET, SOCK_STREAM, 0);
+			struct sockaddr_in addr = {};
+			addr.sin_family = AF_INET;
+			addr.sin_port = htons(static_cast<uint16_t>(port));
+			addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			if (connect(s, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0)
+			{
+				tw_hello bad = {};
+				bad.magic = TW_HELLO_MAGIC;
+				bad.version = TW_VERSION;
+				bad.max_data = TW_MAX_DATA;
+				send(s, &bad, sizeof(bad), 0);
+			}
+			std::thread([s] {
+				std::this_thread::sleep_for(std::chrono::seconds(2));
+				close(s);
+			}).detach();
+			return launch(req, y);
+		}, logfn, 5000, why);
+		CHECK(w && w->Usable());
+		if (w)
+		{
+			TexOutFile f;
+			CHECK(f.Open(root + "/sub/d.bin", true, w.get(), false, logfn) && f.Remote() && f.PWrite("d", 1, 0) && f.Close());
+		}
+	}
+
+	// 4. A payload that never comes (the loader took it and nothing started): null within the wait, the reason said.
+	{
+		std::string why;
+		const double t0 = Now();
+		std::unique_ptr<TexRemoteWriter> w = TexRemoteWriter::Start(root, "", [](const std::string&, std::string&) { return true; }, logfn, 400, why);
+		CHECK(!w && why.find("did not connect") != std::string::npos && Now() - t0 < 3);
+		CHECK(!TexRemoteWriter::Start(root, "", [](const std::string&, std::string& y) { y = "no loader"; return false; }, logfn, 400, why) && why == "no loader");
+		CHECK(!TexRemoteWriter::Start("relative", "", HostLaunch(base, &pids), logfn, 400, why));
+	}
+
+	// 5. A payload that sees another folder under the same name (a title's own view of /data): refused, its mark file deleted.
+	{
+		const std::string other = base + "/other";
+		mkdir(other.c_str(), 0777);
+		std::string why;
+		std::unique_ptr<TexRemoteWriter> w = TexRemoteWriter::Start(root, "", HostLaunch(base, &pids, [&](const std::string& req) {
+			std::string r = req;
+			const size_t at = r.find("root=") + 5;
+			r.replace(at, r.find('\n', at) - at, other);
+			return r;
+		}), logfn, 5000, why);
+		CHECK(!w && why.find("sees another") != std::string::npos);
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		DIR* d = opendir(other.c_str());
+		int left = 0;
+		while (dirent* e = d ? readdir(d) : nullptr)
+			left += e->d_name[0] != '.' || std::string(e->d_name).rfind(".ps5sx2-texwrite-", 0) == 0;
+		if (d)
+			closedir(d);
+		CHECK(left == 1); // (the payload's mark stays in the folder the app can't see as its own: harmless, and the case is an error)
+	}
+
+	// 6. Through the manager: a .7z pack from Drive (download and pack file) written by the payload, the same pack file as without it; the log says so.
+	{
+		const std::string sroot = work + "/sz";
+		std::string without;
+		for (int pass = 0; pass < 2; pass++)
+		{
+			SzRig r(fixtures, sroot, pass ? "writer-on" : "writer-off");
+			if (pass)
+				r.launch = HostLaunch(base, &pids);
+			r.fx.drive_files["SZFILE0000000005"] = "sz-big-mt.7z";
+			r.Open(SzSource("SZFILE0000000005", "Big MT.7z", "\"SLUS-77777\""));
+			CHECK(WaitFor(*r.m, "SLUS-77777", State::Available, 5));
+			CHECK(r.m->Begin("SLUS-77777", 0, "", "", "Big"));
+			CHECK(WaitFor(*r.m, "SLUS-77777", State::Installed, 120));
+			CheckAgainstManifest(r.textures + "/SLUS-77777/replacements.pak", fixtures + "/sz-big-mt.7z.manifest", 8);
+			const std::string pak = ReadAll(r.textures + "/SLUS-77777/replacements.pak");
+			if (pass)
+			{
+				CHECK(!without.empty() && pak == without);
+				CHECK(r.log.Has("writer process ") && r.log.Has(" written by the writer process") && r.log.Has("the writer process wrote "));
+				CHECK(!r.log.Has("by the app"));
+			}
+			else
+			{
+				without = pak;
+				CHECK(!r.log.Has("writer process") && r.log.Has("written by the app"));
+			}
+			r.Close();
+		}
+		// the flag texpack_titlewrites: no payload started
+		{
+			SzRig r(fixtures, sroot, "writer-flag");
+			const size_t before = pids.size();
+			r.launch = HostLaunch(base, &pids);
+			r.flags.Set("texpack_titlewrites", true);
+			r.fx.drive_files["SZFILE0000000006"] = "sz-nonsolid.7z";
+			r.Open(SzSource("SZFILE0000000006", "Non Solid.7z", "\"SLUS-33334\""));
+			CHECK(WaitFor(*r.m, "SLUS-33334", State::Available, 5));
+			CHECK(r.m->Begin("SLUS-33334", 0, "", "", "NS"));
+			CHECK(WaitFor(*r.m, "SLUS-33334", State::Installed, 60));
+			CHECK(pids.size() == before && !r.log.Has("writer process "));
+			r.Close();
+		}
+		// a payload that never connects: the app writes the pack itself and says why, once (not again for the next pack within 10 minutes)
+		{
+			SzRig r(fixtures, sroot, "writer-absent");
+			std::atomic<int> launches{0};
+			r.launch = [&launches](const std::string&, std::string&) {
+				launches++;
+				return true;
+			};
+			r.fx.drive_files["SZFILE0000000006"] = "sz-nonsolid.7z";
+			r.fx.drive_files["SZFILE0000000001"] = "sz-good.7z";
+			r.Open(SzSource("SZFILE0000000006", "Non Solid.7z", "\"SLUS-33334\"") + "," + SzSource("SZFILE0000000001", "Spider Pack.7z", "\"SLUS-20776\""));
+			CHECK(WaitFor(*r.m, "SLUS-33334", State::Available, 5));
+			CHECK(r.m->Begin("SLUS-33334", 0, "", "", "NS"));
+			CHECK(WaitFor(*r.m, "SLUS-33334", State::Installed, 60));
+			CheckAgainstManifest(r.textures + "/SLUS-33334/replacements.pak", fixtures + "/sz-nonsolid.7z.manifest", 25);
+			CHECK(r.log.Has("no writer process (the writer did not connect"));
+			CHECK(r.m->Begin("SLUS-20776", 0, "", "", "Spider"));
+			CHECK(WaitFor(*r.m, "SLUS-20776", State::Installed, 60));
+			CHECK(launches == 1);
+			r.Close();
+		}
+	}
+	// 7. Google Drive's "Quota exceeded" page in place of the file (the 177 reports: "range at 0: status 200, 2040 of 33554432 bytes", then every later
+	// range refused): the page is never written into the download, the pack fails at once with Drive's reason (no six tries), and a part an older build
+	// left with the page at its start is started again.
+	{
+		const std::string sroot = work + "/sz";
+		SzRig r(fixtures, sroot, "drive-quota");
+		r.fx.drive_files["SZFILE0000000006"] = "sz-nonsolid.7z";
+		r.fx.drive_page = "<!DOCTYPE html><html><head><title>Google Drive - Quota exceeded</title></head><body>Too many users have viewed or downloaded this file recently.</body></html>";
+		r.Open(SzSource("SZFILE0000000006", "Non Solid.7z", "\"SLUS-33334\""));
+		CHECK(WaitFor(*r.m, "SLUS-33334", State::Available, 5));
+		CHECK(r.m->Begin("SLUS-33334", 0, "", "", "NS"));
+		CHECK(WaitFor(*r.m, "SLUS-33334", State::Failed, 20));
+		CHECK(r.m->Status("SLUS-33334").message.find("Quota exceeded") != std::string::npos);
+		CHECK(r.log.Has("Google Drive answered 200 with a page (Google Drive - Quota exceeded), not the file"));
+		CHECK(r.fx.drive_ranges == 1); // asked once, not six times
+		const std::string part = r.downloads + "/gSZFILE0000000006.part";
+		CHECK(!Exists(part) || ReadAll(part).empty());
+		r.Close();
+		// an older build's part: the page at its start
+		r.fx.drive_page.clear();
+		mkdir(r.downloads.c_str(), 0777);
+		std::ofstream(part, std::ios::binary) << "<!DOCTYPE html><html><head><title>Google Drive - Quota exceeded</title>";
+		r.Open(SzSource("SZFILE0000000006", "Non Solid.7z", "\"SLUS-33334\""));
+		for (int i = 0; i < 250 && r.m->Status("SLUS-33334").state == State::Loading; i++)
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		r.m->Begin("SLUS-33334", 0, "", "", "NS"); // (or carried on by itself from the job file)
+		CHECK(WaitFor(*r.m, "SLUS-33334", State::Installed, 60));
+		CHECK(r.log.Has("begins with Google Drive's page, not the file"));
+		CheckAgainstManifest(r.textures + "/SLUS-33334/replacements.pak", fixtures + "/sz-nonsolid.7z.manifest", 25);
+		r.Close();
+	}
+	// the payloads end with their connections
+	std::this_thread::sleep_for(std::chrono::milliseconds(300));
+	int alive = 0;
+	for (pid_t pid : pids)
+		alive += kill(pid, 0) == 0;
+	CHECK(alive == 0);
+	if (alive)
+		for (pid_t pid : pids)
+			kill(pid, SIGKILL);
 }
 
 void TestSevenZipPacks(const std::string& fixtures, const std::string& work)
@@ -1352,6 +1713,7 @@ int main(int argc, char** argv)
 	mkdir((work + "/pakformat").c_str(), 0777);
 	TestPakFormat(work + "/pakformat");
 	TestSevenZipPacks(fixtures, work); // b176
+	TestWriterProcess(fixtures, work); // 2026-10-29
 	TestShippedList(fixtures, work);
 	TestBigSevenZip(work);
 	if (const char* only = std::getenv("TEXPACKS_ONLY_7Z"); only && *only) // (review) a quicker run while working on the .7z path: TEXPACKS_ONLY_7Z=1 test-texpacks.sh

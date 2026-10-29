@@ -23,7 +23,7 @@ mkdir -p "$obj"
 flags=(-O1 -g -Wall -Wno-unused-function -I"$fe" -I"$pcsx2/pcsx2" -I"$pcsx2/3rdparty/vulkan/include" -I"$pcsx2/3rdparty/libchdr/include"
   -I"$pcsx2/ps5/third_party/lz4" -I"$pcsx2/3rdparty/rapidjson/include" -I"$pcsx2/ps5/third_party/libarchive/libarchive")
 objs=()
-for src in fe_app fe_covers fe_games fe_renderer fe_text fe_vk fe_i18n fe_settings fe_options fe_sound fe_texpacks fe_patchdl fe_bios; do
+for src in fe_app fe_covers fe_games fe_renderer fe_text fe_vk fe_i18n fe_settings fe_options fe_sound fe_texpacks fe_texwrite fe_patchdl fe_bios; do
   o="$obj/$src.o"
   if [[ ! -f $o || $fe/$src.cpp -nt $o || -n $(find "$fe" -maxdepth 1 -name '*.h' -newer "$o" -print -quit) ]]; then
     "$CXX" -std=c++20 "${flags[@]}" -c "$fe/$src.cpp" -o "$o"

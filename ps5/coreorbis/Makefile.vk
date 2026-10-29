@@ -344,7 +344,7 @@ SHIM_SRCS := ./orbis-shims/ProsperoInput.cpp ./orbis-shims/ProsperoCDVD.cpp \
   ./orbis-shims/ProsperoHenJailbreak.cpp \
   ./orbis-shims/ps5_shaderc.cpp ./orbis-shims/orbis_vk.cpp ./orbis-shims/orbis_eeprof.cpp \
   ./orbis-shims/game_select.cpp ./orbis-shims/orbis_paths.cpp ./orbis-shims/orbis_memprobe.cpp \
-  ./orbis-shims/ProsperoKbdMouse.cpp ./orbis-shims/ProsperoNotify.cpp ./orbis-shims/ProsperoImeRelay.cpp ./orbis-shims/ProsperoRelaunch.cpp ./orbis-shims/ProsperoUsbPad.cpp ./orbis-shims/ProsperoMic.cpp ./orbis-shims/ProsperoDiscDump.cpp ./orbis-shims/ProsperoDiscSpeed.cpp \
+  ./orbis-shims/ProsperoKbdMouse.cpp ./orbis-shims/ProsperoNotify.cpp ./orbis-shims/ProsperoImeRelay.cpp ./orbis-shims/ProsperoTexWriter.cpp ./orbis-shims/ProsperoRelaunch.cpp ./orbis-shims/ProsperoUsbPad.cpp ./orbis-shims/ProsperoMic.cpp ./orbis-shims/ProsperoDiscDump.cpp ./orbis-shims/ProsperoDiscSpeed.cpp \
   ./orbis-shims/ProsperoHTTPDownloader.cpp ./orbis-shims/ProsperoHTTPConsole.cpp ./orbis-shims/ProsperoAchievements.cpp \
   ./orbis-shims/ProsperoAchievementBrowser.cpp \
   ./orbis-shims/orbis_gs_shaders.cpp \
@@ -359,7 +359,7 @@ FE_DIR := ../frontend
 FE_SRCS := $(FE_DIR)/fe_app.cpp $(FE_DIR)/fe_covers.cpp $(FE_DIR)/fe_games.cpp \
   $(FE_DIR)/fe_renderer.cpp $(FE_DIR)/fe_sound.cpp $(FE_DIR)/fe_text.cpp $(FE_DIR)/fe_vk.cpp $(FE_DIR)/fe_ps5.cpp \
   $(FE_DIR)/fe_web.cpp $(FE_DIR)/fe_i18n.cpp $(FE_DIR)/fe_settings.cpp $(FE_DIR)/fe_options.cpp \
-  $(FE_DIR)/fe_texpacks.cpp $(FE_DIR)/fe_https.cpp $(FE_DIR)/fe_https_ps5.cpp \
+  $(FE_DIR)/fe_texpacks.cpp $(FE_DIR)/fe_texwrite.cpp $(FE_DIR)/fe_https.cpp $(FE_DIR)/fe_https_ps5.cpp \
   $(FE_DIR)/fe_patchdl.cpp $(FE_DIR)/fe_bios.cpp
 # vk-285-50: Project Nayuki's QR Code generator (MIT, C) for the shelf's QR tile, and the files
 # fe_ps5.cpp embeds from frontend/assets (the settings page, its icons, Font Awesome's brands font).
@@ -546,6 +546,19 @@ $(IME_RELAY_ELF): ./ime-relay/ime_relay.c
 $(OBJDIR)/shim/orbis-shims/ProsperoImeRelay.o: ./orbis-shims/ProsperoImeRelay.cpp $(IME_RELAY_ELF)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -DORBIS_IME_RELAY_ELF=\"$(abspath $(IME_RELAY_ELF))\" -c $< -o $@
+
+# 2026-10-29 (AI-assisted): the HD texture packs' writer payload (tex-writer/tex_writer.c), the same way, embedded in ProsperoTexWriter.o: a process
+# of its own writes the packs' downloads and pack files, because the console holds a title's own writes to ~2 MiB/s after its first ~1.3 GiB
+# (frontend/fe_texwrite.h). Plain libc (sockets, openat, pwrite): no -l flags. Check `readelf -h` for a non-zero entry point (the llvm-18 view,
+# reference-eboot-build-pipeline).
+TEX_WRITER_ELF := $(OBJDIR)/tex-writer/tex_writer.elf
+$(TEX_WRITER_ELF): ./tex-writer/tex_writer.c $(FE_DIR)/fe_texwrite_proto.h
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Werror -O2 -I$(FE_DIR) -o $@ $<
+	$(PS5_PAYLOAD_SDK)/bin/prospero-strip $@
+$(OBJDIR)/shim/orbis-shims/ProsperoTexWriter.o: ./orbis-shims/ProsperoTexWriter.cpp $(TEX_WRITER_ELF) $(FE_DIR)/fe_texwrite.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -DORBIS_TEX_WRITER_ELF=\"$(abspath $(TEX_WRITER_ELF))\" -c $< -o $@
 
 # 2.11 (AI-assisted): the relaunch payload (relaunch/relaunch.c), the same way: "back to the menu" (L1 + R1 + Touch) closes the app
 # the plain way (LoadExec("exit")) and this payload, started through the console's ELF loader before the close, starts the main app
