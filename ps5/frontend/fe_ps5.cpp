@@ -28,6 +28,7 @@
 #include "ps5/coreorbis/orbis-shims/ProsperoNotify.h" // 2026-10-05: the texture packs' popup
 #include "OrbisPaths.h" // live-22: OrbisLogPath for the disc-dump progress file the shelf shows
 #include "ps5/coreorbis/orbis-shims/ProsperoImeRelay.h" // 2.11: the keyboard through the ELF loader's payload (experiment, flags/imerelay)
+#include "ps5/coreorbis/orbis-shims/ProsperoTexWriter.h" // 2026-10-29: the texture packs' writer process
 #ifdef PS5SX2_ACHIEVEMENTS
 #include "ps5/coreorbis/orbis-shims/ProsperoAchievements.h"
 #include "pcsx2/Achievements.h"
@@ -2129,6 +2130,13 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 			OrbisNotifyRich(Tr(ok ? Str::HdTexturesReady : Str::HdTexturesFailed), sub.c_str(), "");
 		};
 		tp.now = [] { return Now(); };
+		// 2026-10-29: the packs' downloads and pack files written by a process of its own (fe_texwrite.h): the console holds the title's own writes to
+		// ~2 MiB/s after its first ~1.3 GiB. Flag texpack_titlewrites: written by the app, as before. The payload says what it did in logs/texwrite.log.
+		if (OrbisTexWriterBuilt())
+		{
+			tp.launch_writer = [](const std::string& request, std::string& why) { return OrbisTexWriterLaunch(request, why); };
+			tp.writer_log = OrbisLogPath("texwrite.log");
+		}
 		const std::string textures = paths.textures_dir;
 		texpacks = new TexturePackManager(tp, textures, textures + "/.ps5sx2-downloads", paths.texture_pack_list);
 		// 2.11: Drive's packs (built into the app) and the player's own list beside the other files in /data/PCSX2

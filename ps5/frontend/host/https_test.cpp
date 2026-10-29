@@ -540,6 +540,31 @@ static void GetUrls(int argc, char** argv)
 	std::printf("get: done\n");
 }
 
+// 2026-10-29: "probe <url> [offset]..." asks each address for ONE byte with the app's own client, as the texture packs' Drive probe does
+// (fe_ps5.cpp tp.probe: a sink that stops at once), and says the status, Content-Range's total and the type: the read-only check that a
+// download host still answers our TLS and HTTP, without fetching a pack.
+static void Probe(int argc, char** argv)
+{
+	if (const char* p = std::getenv("https_proxy"))
+		UseProxy(p);
+	HttpsClient c(HostPlatform());
+	std::string err;
+	CHECK(c.Init(err));
+	for (int i = 2; i < argc; i++)
+	{
+		const char* url = argv[i];
+		uint64_t offset = 0;
+		if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
+			offset = std::strtoull(argv[++i], nullptr, 10);
+		std::string error;
+		const int status = c.Get(url, true, offset, 1, [](const void*, size_t) { return false; }, 30000, &error);
+		std::printf("  %s @%llu -> %d, total %llu, type %s%s%s\n", url, static_cast<unsigned long long>(offset), status,
+			static_cast<unsigned long long>(c.LastTotal()), c.LastContentType().c_str(), error.empty() ? "" : " | ", error.c_str());
+		CHECK((status == 206 || status == 200) && c.LastTotal() > 0 && c.LastContentType().compare(0, 9, "text/html") != 0);
+	}
+	std::printf("probe: done\n");
+}
+
 int main(int argc, char** argv)
 {
 	const std::string mode = argc > 1 ? argv[1] : "";
@@ -551,9 +576,11 @@ int main(int argc, char** argv)
 		Real();
 	else if (mode == "get" && argc > 2)
 		GetUrls(argc, argv);
+	else if (mode == "probe" && argc > 2)
+		Probe(argc, argv);
 	else
 	{
-		std::printf("usage: https_test units | local <servers.json> | real | get <url>...\n");
+		std::printf("usage: https_test units | local <servers.json> | real | get <url>... | probe <url> [offset]...\n");
 		return 2;
 	}
 	std::printf(g_failures ? "%d FAILED\n" : "all passed\n", g_failures);

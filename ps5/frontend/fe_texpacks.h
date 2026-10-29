@@ -37,6 +37,8 @@
 
 namespace fe
 {
+class TexRemoteWriter; // fe_texwrite.h
+
 // The archive.org item and where its files are.
 constexpr const char* kTexturePackItem = "pcsx2-hd-texture-packs";
 
@@ -174,6 +176,10 @@ struct TexturePackPlatform
 	// is built without exceptions, so a failed `new` anywhere ends the app). A 7z unpack asks before it takes a dictionary and the pack writer's
 	// buffers, and is refused with a message when it wouldn't leave a margin. Unset, or UINT64_MAX: unknown, no check. Flag texpack_nomemgate: no check.
 	std::function<uint64_t()> free_memory;
+	// 2026-10-29: starts the texture pack writer payload (fe_texwrite.h) with this request text (the console: through its ELF loader); false and why
+	// when it can't. Unset: the app writes the packs itself (the PC). writer_log: the file the payload says what it did in ("" none).
+	std::function<bool(const std::string& request, std::string& why)> launch_writer;
+	std::string writer_log;
 };
 
 class TexturePackManager
@@ -210,6 +216,7 @@ public:
 	// The marker file in a pack's folder ("ps5sx2-pack.txt"): which pack, from where, when.
 	static constexpr const char* kMarker = "ps5sx2-pack.txt";
 	static constexpr uint64_t kChunk = 32ull << 20;
+	static constexpr size_t kDownloadBuffer = 4u << 20; // 2026-10-29: the download is written this much at a time
 
 private:
 	struct Job
@@ -253,6 +260,8 @@ private:
 	void ResumeJobs();
 	void Process(const Job& job);
 	bool Download(const Job& job, const std::string& part, const std::string& full);
+	void StartWriter(); // 2026-10-29: the writer process for the job (m_writer), when the platform has one
+	void EndWriter();
 	bool Unpack(const Job& job, const std::string& full, const std::string& staging, uint32_t& files, bool& no_space, std::string& error);
 	// b176: the same for a .7z (fe_sevenzip.c, streamed through the same pack writer). `drop`: the pack can never be used here (a method or
 	// dictionary the reader refuses ...): the download and the job are deleted and the refusal is kept for the next try (RefusedFile).
@@ -298,6 +307,10 @@ private:
 	std::string m_current;                      // the serial being worked on
 	bool m_cancel_current = false;
 	mutable std::map<std::string, Installed> m_installed; // a cache: the folder is looked at every few seconds
+	// 2026-10-29: the writer process of the job in progress (the worker's; m_writer_mutex for Stop's Abort from another thread)
+	std::unique_ptr<TexRemoteWriter> m_writer;
+	std::mutex m_writer_mutex;
+	double m_writer_failed_at = -1;
 	// The download speed: bytes and time at the last measure.
 	uint64_t m_rate_bytes = 0;
 	double m_rate_time = 0;

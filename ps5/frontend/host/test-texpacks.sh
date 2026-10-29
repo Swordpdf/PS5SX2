@@ -43,8 +43,12 @@ done
 objs+=("$work/obj/fe_sevenzip.o")
 "$CXX" -std=c++20 -O1 -g -Wall -Wno-unused-function -I"$fe" -I"$pcsx2/pcsx2" -I"$la/libarchive" -I"$pcsx2/3rdparty/rapidjson/include" \
   -I"$pcsx2/3rdparty/vulkan/include" -I"$pcsx2/3rdparty/libchdr/include" -I"$pcsx2/ps5/third_party/lz4" "${san[@]}" \
-  "$here/texpacks_test.cpp" "$fe/fe_texpacks.cpp" "$fe/fe_settings.cpp" "$fe/fe_games.cpp" "$fe/fe_covers.cpp" "$fe/fe_text.cpp" \
+  "$here/texpacks_test.cpp" "$fe/fe_texpacks.cpp" "$fe/fe_texwrite.cpp" "$fe/fe_settings.cpp" "$fe/fe_games.cpp" "$fe/fe_covers.cpp" "$fe/fe_text.cpp" \
   "$fe/fe_i18n.cpp" "${objs[@]}" "$work/obj/lz4.o" "$work/obj/chd_stub.o" -lz -lpthread -o "$work/texpacks_test"
+
+# 2026-10-29: the texture pack writer payload (ps5/coreorbis/tex-writer/tex_writer.c), built for the PC: the tests start it as a process of its own,
+# the way the console's ELF loader does, and the manager writes the packs through it (TEX_WRITER_BIN).
+"$CC" -O1 -g -Wall -Wextra -Werror -I"$fe" "$pcsx2/ps5/coreorbis/tex-writer/tex_writer.c" -o "$work/tex_writer"
 
 # The fixtures: a pack laid out as archive.org's are (with the maker's dumps/ and a readme beside it), and a two-disc one.
 mkdir -p "$work/fixtures" "$work/run"
@@ -113,4 +117,4 @@ real=()
 if [[ -n ${TEXPACKS_REAL:-} ]]; then
   real=("${TEXPACKS_REAL%:*}" "${TEXPACKS_REAL##*:}")
 fi
-HD_PACK_SOURCES="$fe/assets/hd-pack-sources.json" ASAN_OPTIONS=detect_leaks=1 "$work/texpacks_test" "$work/fixtures" "$work/run" "${real[@]}"
+TEX_WRITER_BIN="$work/tex_writer" HD_PACK_SOURCES="$fe/assets/hd-pack-sources.json" ASAN_OPTIONS=detect_leaks=1 "$work/texpacks_test" "$work/fixtures" "$work/run" "${real[@]}"
