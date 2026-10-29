@@ -122,6 +122,7 @@
 #include "disc_switch.h"
 #ifdef DISC_AUTO_EMBEDDED
 #include "kp.h" /* 171e: the host payload's shutdown watch and log switch (kp.c) */
+#include "disc_speed8.h" /* 171j: DiscSpeed8's SceShellCore 8x patch + 60 s drive pin, on a thread of its own */
 #else
 static int kp_quiet(void) { return 0; }
 static int kp_log_files(void) { return 1; }
@@ -1302,6 +1303,9 @@ static int disc_auto_loop(void) {
     switch_ensure_file(); /* /data/PCSX2/switch.txt, 0 or 1: the notifications about the disc tiles (see disc_switch.h); written with 0 when it is not there */
 
     notify("PS5SX2 disc-auto running: put a PS2 DVD in");
+#ifdef DISC_AUTO_EMBEDDED
+    ds8_start(); /* 171j: DiscSpeed8 - patch SceShellCore so every setSpeed is 8.0 and pin the drive to 8x every 60 s (flag disc_nospeed8 turns it off) */
+#endif
     say("PS5SX2 %s", emu_alive() ? "is running" : "is not running");
 
     char serial[17] = {0};
