@@ -27,6 +27,10 @@
 #include "fe_web.h"
 #include "ps5/coreorbis/orbis-shims/ProsperoNotify.h" // 2026-10-05: the texture packs' popup
 #include "OrbisPaths.h" // live-22: OrbisLogPath for the disc-dump progress file the shelf shows
+#include "OrbisGameDb.h" // gamedb (2026-10-30): the eboot's GameIndex.yaml behind resources/
+#include "fe_discsettings.h" // gamedb (2026-10-30): a disc's settings file
+#include "ps5/coreorbis/orbis-shims/ProsperoDiscDump.h" // gamedb (2026-10-30): OrbisDiscSettingsStem
+#include "ps5/coreorbis/orbis-shims/OrbisDiscDrive.h" // gamedb (2026-10-30): SafeSerial
 #include "ps5/coreorbis/orbis-shims/ProsperoImeRelay.h" // 2.11: the keyboard through the ELF loader's payload (experiment, flags/imerelay)
 #include "ps5/coreorbis/orbis-shims/ProsperoTexWriter.h" // 2026-10-29: the texture packs' writer process
 #ifdef PS5SX2_ACHIEVEMENTS
@@ -1641,12 +1645,26 @@ extern "C" void orbis_event_log(const char* line)
 		g_event_busy.store(false, std::memory_order_release);
 }
 
+namespace
+{
+// gamedb (2026-10-30, AI-assisted): the game database for the shelf and the page: resources/GameIndex.yaml, else the eboot's own copy
+// (OrbisGameDb.h), so a console without the resources folder still gets the games' names and their hardware fixes rows.
+void UseGameDb(const OrbisFrontendPaths& paths)
+{
+	const char* data = nullptr;
+	size_t size = 0;
+	OrbisBuiltinGameDb(&data, &size);
+	SetGameDbFallback(data, size);
+	SetGameDbFile(paths.gamedb_file);
+}
+} // namespace
+
 bool orbis_web_start(const OrbisFrontendPaths& paths, const char* build_tag)
 {
 	if (g_web)
 		return true;
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
-	SetGameDbFile(paths.gamedb_file);       // vk-285-113
+	UseGameDb(paths);                       // vk-285-113; gamedb (2026-10-30): with the eboot's copy behind the file
 	SetShareRoots(paths.share_roots);       // vk-285-156
 	WebConfig cfg;
 	cfg.game_dirs = ScanRoots(paths); // 2026-10-16: the same folders as the shelf (games/, the top folder, the drives; or only the folders set)
@@ -1758,7 +1776,7 @@ int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budge
 		return 0;
 	const double t0 = Now();
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
-	SetGameDbFile(paths.gamedb_file);       // vk-285-113
+	UseGameDb(paths);                       // vk-285-113; gamedb (2026-10-30): with the eboot's copy behind the file
 	std::vector<GameInfo> games = ScanGames(ScanRoots(paths), paths.scan_subfolders); // test build 1: USB drives, when visible here
 	for (GameInfo& g : games)
 		g.serial = ReadSerial(g); // 2.02: through the serial cache, keyed by what ScanGames already has
@@ -1907,7 +1925,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		std::fflush(stdout);
 	};
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
-	SetGameDbFile(paths.gamedb_file);       // vk-285-113
+	UseGameDb(paths);                       // vk-285-113; gamedb (2026-10-30): with the eboot's copy behind the file
 	SetShareRoots(paths.share_roots);       // vk-285-156
 	std::vector<GameInfo> games = ScanGames(ScanRoots(paths), paths.scan_subfolders); // test build 1: USB drives; 2026-10-16: or only the folders set
 	int on_usb = 0, on_nfs = 0;
@@ -2292,6 +2310,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.bios_present = paths.bios_check; // vk-285-134
 	acfg.bios_problem = paths.bios_problem;
 	acfg.bios_dir = paths.bios_dir;
+	acfg.gamedb_missing = paths.gamedb_missing; // gamedb (2026-10-30)
 	acfg.open_bios_bundled = paths.open_bios_bundled; // bioscheck
 	acfg.bios_open_in_use = paths.bios_open_in_use;
 	acfg.bios_pending_launch = paths.bios_pending_launch;
@@ -2321,6 +2340,13 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	title = g_drive_title;
 	serial = g_drive_serial;
 	return true;
+	};
+	// gamedb (2026-10-30, AI-assisted): the disc entries' sheet writes the file a start from the drive reads (main-boot.cpp, the same rule).
+	acfg.disc_settings_stem = [settings_dir = paths.settings_dir](const std::string& serial) {
+		if (!OrbisDiscDrive::SafeSerial(serial))
+			return std::string();
+		return DiscSettingsStem(serial, OrbisDiscSettingsStem(serial),
+			[&](const std::string& stem) { return access((settings_dir + "/" + stem + ".ini").c_str(), F_OK) == 0; });
 	};
 	acfg.drive_disc_reask = [] {
 	std::lock_guard<std::mutex> lock(g_launch_lock);

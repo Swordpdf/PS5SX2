@@ -61,6 +61,9 @@ struct AppConfig
 	std::function<bool()> bios_present;
 	std::function<std::string()> bios_problem;
 	std::string bios_dir;
+	// gamedb (2026-10-30, AI-assisted): resources/GameIndex.yaml is missing or unusable (main-boot.cpp, OrbisGameDb.h): the shelf names
+	// the file under the BIOS line (games still get their fixes from the eboot's copy). Empty: nothing to say.
+	std::string gamedb_missing;
 	// bioscheck (2026-10-29, AI-assisted): a pick refused for want of a BIOS asks what to do (the BIOS question): the open-source BIOS this
 	// build ships (open_bios_bundled; picking it writes gs.ini PS5SX2/OpenBios=true, then bios_present looks again and the pick starts), or
 	// the player's own in bios_dir. bios_open_in_use: games start with the open BIOS now (the shelf names it). bios_pending_launch: a start
@@ -88,6 +91,10 @@ struct AppConfig
 	// and serial (false when none); drive_disc_reask asks the watcher about it again (the question comes back as disc_ask_poll's).
 	std::function<bool(std::string& title, std::string& serial)> drive_disc_poll;
 	std::function<void()> drive_disc_reask;
+	// gamedb (2026-10-30, AI-assisted; #bugs: a disc game ignored its own settings): the settings file stem of disc `serial` (fe_discsettings.h, the
+	// file a start from the drive reads), for the entries of the disc in the drive and of a disc being copied: their sheet is the disc's own.
+	// Unset or "": those entries open only the all-games sheet.
+	std::function<std::string(const std::string& serial)> disc_settings_stem;
 	// fix180 (tester on 180: "started a game from disc brings you back ... into the shelf to the first game entry"): the last game played was the disc in
 	// the drive (lastgame.txt "disc:<serial>"): when the drive's entry for that serial comes (the watcher reports it a few seconds after the start), it is
 	// picked, unless the player has moved the shelf by then.
@@ -135,6 +142,7 @@ public:
 	// bioscheck: a start from outside the shelf that waited on the BIOS question and may go now (the open BIOS was picked); "" for none.
 	std::string TakeApprovedLaunch();
 	bool BiosMissing() const { return m_bios_missing; }
+	bool GameDbNoteShown() const { return m_gamedb_note_shown; } // gamedb (2026-10-30): the note was drawn on the last frame
 	bool BiosChoiceOpen() const { return m_bios_ask; }
 	int BiosChoiceRow() const { return m_bios_ask ? m_bios_sel : -1; } // 0 the open BIOS, 1 your own (0 is your own without the open BIOS)
 
@@ -144,6 +152,7 @@ public:
 	bool AccountOpen() const { return m_account.open; }
 	bool SheetOpen() const { return m_sheet_open; }
 	int SheetTab() const { return m_sheet.tab(); }
+	const std::string& SheetFileLabel() const { return m_sheet.file_label(); } // gamedb (2026-10-30): "settings/<stem>.ini" or "gs.ini"
 	bool PickerOpen() const { return m_picker.open; } // vk-285-135
 	int ShelfCount() const { return static_cast<int>(m_games.size()); } // vk-285-137: the games on the shelf
 	// live-22: the disc dump entry's percentage (0-100) while one is on the shelf, else -1 (the host test checks it).
@@ -478,6 +487,7 @@ private:
 	// vk-285-134: no PS2 BIOS (AppConfig::bios_present said so at start or at the last pick), what was found instead,
 	// and when a pick was refused for it (the line lights up).
 	bool m_bios_missing = false;
+	bool m_gamedb_note_shown = false; // gamedb (2026-10-30)
 	std::string m_bios_problem;
 	double m_bios_refused = -10;
 	// bioscheck: what waits on the BIOS question: a pick of the shelf, the system menu, or a start from outside the shelf.
@@ -490,6 +500,8 @@ private:
 	};
 	bool BiosReady(BiosWait wait = BiosWait::None, const std::string& path = std::string()); // looks again; false (the line lit, the question up) when there's still none
 	void BuildBiosLine(std::vector<UiVertex>& ui, float W, float k);
+	void BuildGameDbLine(std::vector<UiVertex>& ui, float W, float k); // gamedb (2026-10-30)
+	std::string DiscStem(const std::string& serial) const;           // gamedb (2026-10-30)
 	// bioscheck: the BIOS question (Left/Right choose, Cross confirms, Circle closes it).
 	bool m_bios_ask = false;
 	int m_bios_sel = 0;

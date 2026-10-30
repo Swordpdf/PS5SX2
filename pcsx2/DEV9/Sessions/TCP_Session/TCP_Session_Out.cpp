@@ -18,6 +18,11 @@
 
 #include "TCP_Session.h"
 
+#ifdef ORBIS_VULKAN
+#include "OrbisDev9Send.h" // killzone-online (2026-10-30): the TCP send that never waits long on the emulation's thread
+#include <sys/select.h>
+#endif
+
 using namespace PacketReader;
 using namespace PacketReader::IP;
 using namespace PacketReader::IP::TCP;
@@ -331,6 +336,48 @@ namespace Sessions
 				receivedPS2SeqNumbers.push_back(expectedSeqNumber);
 
 				// Send the Data
+#ifdef ORBIS_VULKAN
+				// PS5 port (killzone-online, 2026-10-30, AI-assisted): this runs on the emulation's thread, and the loop below waited with no
+				// limit for room in the socket while the server's side was full: Killzone online (#bugs 2026-10-30, PS Rewired) froze ~34 s
+				// mid-match until the send failed ("TCP: Send error: 32") and the server dropped the game. Now it waits 20 ms at most and keeps
+				// the rest (OrbisDev9Send.h), which the receive thread and the next sends pass on; the PS2 is answered as before. Only the
+				// bytes not sent already (from `delta`) go out: the loop below started at 0 and sent a resent segment's old bytes again.
+				{
+					PayloadPtr* payload = static_cast<PayloadPtr*>(tcp->GetPayload());
+					const int len = payload->GetLength() - delta;
+					std::lock_guard<std::mutex> lock(pendingSentry);
+					const OrbisDev9SendResult r = OrbisDev9Send(
+						[this](const u8* data, int size) {
+							const int ret = send(client, reinterpret_cast<const char*>(data), size, 0);
+							return ret == SOCKET_ERROR ? -errno : ret;
+						},
+						[this](std::chrono::microseconds wait) {
+							fd_set writeSet;
+							FD_ZERO(&writeSet);
+							FD_SET(client, &writeSet);
+							timeval tv{0, static_cast<suseconds_t>(wait.count())};
+							select(client + 1, nullptr, &writeSet, nullptr, &tv);
+						},
+						pendingSend, &payload->data[delta], len, std::chrono::milliseconds(20), destPort);
+					if (r.error != 0)
+					{
+						CloseByRemoteRST();
+						Console.Error("DEV9: TCP: Send error: %d", r.error);
+						return true;
+					}
+					if (r.overflow)
+					{
+						CloseByRemoteRST();
+						Console.Error("DEV9: TCP: the server took nothing of %zu bytes for too long (port %u): connection closed", pendingSend.size(), destPort);
+						return true;
+					}
+					// the first few, then at powers of two (a slow server would fill the log otherwise)
+					const unsigned kept = g_orbis_dev9_kept.load(std::memory_order_relaxed);
+					if (r.kept_now && (kept <= 5 || (kept & (kept - 1)) == 0))
+						Console.WriteLn("DEV9: TCP: the server's side is full (port %u): %d of %d bytes kept for later (%zu waiting; %u times so far)",
+							destPort, r.kept_now, len, pendingSend.size(), kept);
+				}
+#else
 				int sent = 0;
 				PayloadPtr* payload = static_cast<PayloadPtr*>(tcp->GetPayload());
 				while (sent != payload->GetLength())
@@ -357,6 +404,7 @@ namespace Sessions
 					else
 						sent += ret;
 				}
+#endif
 
 				expectedSeqNumber += tcp->GetPayload()->GetLength() - delta;
 				// Done send
@@ -511,6 +559,15 @@ namespace Sessions
 
 		state = TCP_State::Closing_ClosedByPS2;
 
+#ifdef ORBIS_VULKAN
+		{
+			// killzone-online (2026-10-30): what the server had no room for goes before the FIN (200 ms at most)
+			std::lock_guard<std::mutex> lock(pendingSentry);
+			int err = 0;
+			if (!pendingSend.empty() && (!FlushPendingLocked(std::chrono::milliseconds(200), &err) || !pendingSend.empty()))
+				Console.Error("DEV9: TCP: closing with %zu bytes the server never took (port %u, error %d)", pendingSend.size(), destPort, err);
+		}
+#endif
 		const int result = shutdown(client, SD_SEND);
 		if (result == SOCKET_ERROR)
 			Console.Error("DEV9: TCP: Shutdown SD_SEND error: %d",
@@ -578,6 +635,15 @@ namespace Sessions
 		receivedPS2SeqNumbers.push_back(expectedSeqNumber);
 		expectedSeqNumber += 1;
 
+#ifdef ORBIS_VULKAN
+		{
+			// killzone-online (2026-10-30): what the server had no room for goes before the FIN (200 ms at most)
+			std::lock_guard<std::mutex> lock(pendingSentry);
+			int err = 0;
+			if (!pendingSend.empty() && (!FlushPendingLocked(std::chrono::milliseconds(200), &err) || !pendingSend.empty()))
+				Console.Error("DEV9: TCP: closing with %zu bytes the server never took (port %u, error %d)", pendingSend.size(), destPort, err);
+		}
+#endif
 		const int result = shutdown(client, SD_SEND);
 		if (result == SOCKET_ERROR)
 			Console.Error("DEV9: TCP: Shutdown SD_SEND error: %d",

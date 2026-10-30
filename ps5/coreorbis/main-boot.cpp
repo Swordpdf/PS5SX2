@@ -34,6 +34,7 @@
 #include "../frontend/fe_i18n.h" // vk-285-110: the notifications' text
 #include "../frontend/fe_bios.h" // vk-285-134: the BIOS before the shelf
 #include "../frontend/fe_games.h" // vk-285-139: fe::DiscSet
+#include "../frontend/fe_discsettings.h" // gamedb (2026-10-30): a disc's settings file, the same rule as the shelf's
 #include "../frontend/fe_roots.h"    // 2026-10-16: the folders games are listed from (the ones you set only, or the usual places)
 #include "../frontend/fe_options.h"  // 2026-10-16: fe::SplitFolderList (PS5SX2/GameFolders)
 #include "../frontend/fe_gametile.h" // 2.12: a game tile's marker, its launch check and its folder (fe::gametile)
@@ -56,6 +57,9 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "common/SettingsWrapper.h" // eerec-285
 #include "debug_overlay.h"
 #include "OrbisPaths.h" // vk-285-33: the /data/PCSX2 folder layout
+#include "OrbisGameDb.h" // gamedb (2026-10-30): GameIndex.yaml in the eboot, for a console without resources/
+#include "OrbisDev9Send.h" // killzone-online (2026-10-30): the ticker's stall line names a DEV9 send that waits
+#include "OrbisStall.h"    // killzone-online (2026-10-30): the stall line itself
 #include "OrbisDriver.h" // vk-285-115: ps5vk or RADV
 #include "SIO/Pad/Pad.h"
 #include "SIO/Pad/PadDualshock2.h"
@@ -2804,6 +2808,16 @@ static OrbisFrontendPaths orbis_frontend_paths(bool allow_download)
     fe.share_roots.push_back(s.mount_point);
   fe.serial_cache = OrbisDir("cache") + "/chd-serials.txt"; // vk-285-108
   fe.gamedb_file = OrbisDir("resources") + "/GameIndex.yaml"; // vk-285-113: the games' names, for the shelf and the page
+  {
+    // gamedb (2026-10-30, AI-assisted): no usable resources/GameIndex.yaml (a store package, an eboot copied by hand): games get this
+    // build's own copy (OrbisGameDb.h), and the shelf says the folder is incomplete. OrbisDir answers /data/PCSX2 without the folder.
+    std::string why;
+    if (OrbisGameDbFolderProblem(OrbisDir("resources"), &why))
+    {
+      fe.gamedb_missing = "/data/PCSX2/resources/GameIndex.yaml";
+      printf("[boot] game database: %s: games use this build's own copy; the shelf says so\n", why.c_str());
+    }
+  }
   fe.memcards_dir = OrbisDir("memcards"); // vk-285-113: the settings page's memory card list and creator
   fe.test_build = g_orbis_test_build;
   fe.build_label = orbis_build_label();
@@ -3940,6 +3954,16 @@ int main()
   orbis_boot_log_release("before the settings page starts"); // vk-285-113: still holding? (the folder can show up late)
   // vk-285-144 (AI-assisted): a PS2 DVD in the drive, copied to games/ and started (orbis-shims/ProsperoDiscDump.cpp).
   OrbisDiscNoteTile(s_tile_marker_seen && !s_tile_marker_drive.empty()); // 2.11 (dumpxmb): a disc tile never honours the disc helper's exec signal
+  {
+    // gamedb (2026-10-30, AI-assisted): the disc watcher and a disc start name a disc after the database (OrbisDiscSettingsStem: its copy's
+    // name and its settings file's); it was set only by the settings page's start, so with nowebui a disc's file was "PS2 disc (<serial>)"
+    // here and "<Title> (<serial>)" on the shelf. Set before either, with the eboot's copy behind resources/.
+    const char* db = nullptr;
+    size_t db_size = 0;
+    OrbisBuiltinGameDb(&db, &db_size);
+    fe::SetGameDbFallback(db, db_size);
+    fe::SetGameDbFile(OrbisDir("resources") + "/GameIndex.yaml");
+  }
   OrbisDiscDumpStart();
   if (!orbis_flag("nowebui"))
     orbis_web_start(orbis_frontend_paths(false), orbis_build_label().c_str());
@@ -4338,10 +4362,9 @@ int main()
       const bool safe = OrbisDiscDrive::SafeSerial(serial);
       if (safe)
       {
-        const std::string by_copy = OrbisDiscSettingsStem(serial);
-        const bool old_file = access(("/data/PCSX2/settings/" + serial + ".ini").c_str(), F_OK) == 0;
-        const bool new_file = access(("/data/PCSX2/settings/" + by_copy + ".ini").c_str(), F_OK) == 0;
-        stem = old_file && !new_file ? serial : by_copy;
+        // gamedb (2026-10-30): the rule is fe::DiscSettingsStem's, which the shelf's disc entry uses for the file its sheet writes.
+        stem = fe::DiscSettingsStem(serial, OrbisDiscSettingsStem(serial),
+          [](const std::string& s) { return access(("/data/PCSX2/settings/" + s + ".ini").c_str(), F_OK) == 0; });
         web_serial = serial;
       }
       else
@@ -5351,6 +5374,31 @@ int main()
                  static_cast<int>(EmuConfig.GS.HWDownloadMode));
       }
 #endif
+      {
+        // killzone-online (2026-10-30, AI-assisted): the emulation stopped (the EE's cycle count still while the VM runs). Killzone online froze
+        // ~34 s and nothing in the logs said where; now boot.log says it while it lasts (after 2 s, then every 5 s) and settings.log once it
+        // ends, with the EE's and IOP's pc and a DEV9 TCP send that waits (OrbisDev9Send.h), if any.
+        static OrbisStallWatch s_stall;
+        const long long dev9_since = g_orbis_dev9_send_since_us.load(std::memory_order_acquire);
+        OrbisStallSample smp;
+        smp.running = VMManager::GetState() == VMState::Running;
+        smp.ee_cycle = cpuRegs.cycle;
+        smp.ee_pc = cpuRegs.pc;
+        smp.iop_pc = psxRegs.pc;
+        smp.dev9_wait_ms = dev9_since ? (OrbisDev9NowUs() - dev9_since) / 1000 : -1;
+        smp.dev9_port = g_orbis_dev9_send_port.load(std::memory_order_relaxed);
+        smp.dev9_kept = g_orbis_dev9_kept.load(std::memory_order_relaxed);
+        smp.dev9_wait_max_ms = g_orbis_dev9_wait_max_us.exchange(0, std::memory_order_relaxed) / 1000;
+        std::string boot_line, event_line;
+        s_stall.Second(smp, &boot_line, &event_line);
+        if (!boot_line.empty())
+          printf("%s\n", boot_line.c_str());
+        if (!event_line.empty())
+        {
+          printf("[stall] %s\n", event_line.c_str());
+          OrbisDeferredEvent(event_line.c_str());
+        }
+      }
       printf("[boot] t+%ds state=%d eepc=%08x eecy=%llu ioppc=%08x iopcy=%llu rec=%d/%d\n", i + 1,
         (int)VMManager::GetState(), cpuRegs.pc, (unsigned long long)cpuRegs.cycle,
         psxRegs.pc, (unsigned long long)psxRegs.cycle,

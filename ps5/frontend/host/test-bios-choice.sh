@@ -37,6 +37,12 @@ run() { # run <name> <data folder> <fe_host arguments and steps...>
 ini() { grep -s "^$2=" "$1/gs.ini" | head -1 | cut -d= -f2-; }
 nobios=(--no-bios "In /data/PCSX2/bios: the folder is empty.")
 
+# gamedb (2026-10-30): resources/GameIndex.yaml missing: the shelf names it under the BIOS line (alone, and with the BIOS line up); not without.
+gdb=(--no-gamedb /data/PCSX2/resources/GameIndex.yaml)
+run gamedb-note "$work/gamedb-note" "${gdb[@]}" "wait 1" "expect gamedbnote=1" "expect biosmissing=0" "shot gamedb-note"
+run gamedb-note-nobios "$work/gamedb-note-nobios" "${gdb[@]}" "${nobios[@]}" "wait 1" "expect gamedbnote=1" "expect biosmissing=1" "shot gamedb-note-nobios"
+run gamedb-none "$work/gamedb-none" "wait 1" "expect gamedbnote=0"
+
 # Without the open BIOS in the build: a pick asks, only "your own" is offered; Cross on it says where, and nothing starts.
 d="$work/own-only"
 run own-only "$d" "${nobios[@]}" "game 0" "wait 1" "expect biosmissing=1" "shot bios-line" "press cross" "wait 0.4" "expect biosask=1" \
