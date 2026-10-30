@@ -43,9 +43,11 @@ bool Exists(const std::string& path)
 }
 
 // The installer the app ships, then one a tester put beside the settings by hand.
+// fix180: and the app's folder by its /data path: /app0 is the app's folder only before the jailbreak, and the logger and the System update row look
+// after it (all 51 vk-285-180 reports: "logger: skip (no installer shipped with the app)", though the package has PPSA99203/PS5SX2Installer.elf).
 std::string FindInstaller()
 {
-	static const char* const kPaths[] = {"/app0/PS5SX2Installer.elf", "/data/PCSX2/PS5SX2Installer.elf"};
+	static const char* const kPaths[] = {"/app0/PS5SX2Installer.elf", "/data/homebrew/PPSA99203/PS5SX2Installer.elf", "/data/PCSX2/PS5SX2Installer.elf"};
 	for (const char* p : kPaths)
 	{
 		struct stat s;
