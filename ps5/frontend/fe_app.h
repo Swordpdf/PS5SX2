@@ -88,6 +88,10 @@ struct AppConfig
 	// and serial (false when none); drive_disc_reask asks the watcher about it again (the question comes back as disc_ask_poll's).
 	std::function<bool(std::string& title, std::string& serial)> drive_disc_poll;
 	std::function<void()> drive_disc_reask;
+	// fix180 (tester on 180: "started a game from disc brings you back ... into the shelf to the first game entry"): the last game played was the disc in
+	// the drive (lastgame.txt "disc:<serial>"): when the drive's entry for that serial comes (the watcher reports it a few seconds after the start), it is
+	// picked, unless the player has moved the shelf by then.
+	std::string preselect_disc_serial;
 	// 2.11: the shelf's search, from the settings page on a phone or PC. search_remote gives the text the page set since the last
 	// call (true; "" clears the search); search_report tells the page what the shelf is searching for (it shows it in its box).
 	std::function<bool(std::string& text)> search_remote;
@@ -406,6 +410,7 @@ private:
 	double m_note_time = -10;
 
 	int m_selected = 0;
+	bool m_moved = false; // fix180: the player (or a chord) moved the shelf since it opened
 	bool m_system_menu = false; // 2026-10-08: the PS2 system menu was started from the sheet
 	float m_scroll = 0, m_scroll_vel = 0; // the shelf's position (a game index), sprung to m_selected
 	double m_time = 0;

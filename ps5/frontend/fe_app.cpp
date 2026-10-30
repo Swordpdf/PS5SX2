@@ -544,6 +544,7 @@ bool App::Step(int dir)
 		return false;
 	m_last_dir = dir > 0 ? 1 : -1; // 2.11: the backs ahead are fetched on this side first
 	m_selected = next;
+	m_moved = true; // fix180
 	m_flip_latched = false; // 2.11: a case turned over goes back when the shelf moves
 	m_select_time = m_time;
 	if (m_covers && m_index[static_cast<size_t>(m_selected)] >= 0) // live-22: the dump entry (kDumpIndex) isn't the service's
@@ -1115,6 +1116,15 @@ m_drive_serial = serial;
 m_drive_title = m_games[0].title;
 EnsureDiscArt(serial);
 std::printf("[frontend] disc in the drive: %s (%s) is the first entry on the shelf\n", m_drive_title.c_str(), serial.c_str());
+// fix180: the game played last was this disc from the drive, and the shelf has not been moved since it opened: the disc's entry is picked
+if (!m_moved && !m_cfg.preselect_disc_serial.empty() && serial == m_cfg.preselect_disc_serial)
+{
+m_selected = 0;
+m_scroll = 0.0f;
+m_scroll_vel = 0;
+m_select_time = m_time;
+std::printf("[frontend] disc in the drive: it was played last, so it is picked\n");
+}
 std::fflush(stdout);
 }
 

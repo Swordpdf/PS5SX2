@@ -1947,8 +1947,11 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	// Keep the shelf available without games too, for settings and account sign-in.
 	const std::string last = ReadLastGame(paths.top_dir);
 	int preselect = 0;
+	// fix180: "disc:<serial>" (main-boot.cpp writes it for a game started from a drive): a copy of that disc on the shelf is picked now; the drive's own
+	// entry, which the watcher reports a few seconds later, is picked when it comes (AppConfig::preselect_disc_serial)
+	const std::string last_disc = last.compare(0, 5, "disc:") == 0 ? last.substr(5) : std::string();
 	for (size_t i = 0; i < games.size(); i++)
-		if (games[i].file == last)
+		if (last_disc.empty() ? games[i].file == last : (!games[i].serial.empty() && games[i].serial == last_disc))
 			preselect = static_cast<int>(i);
 	// vk-285-69: one game opens the shelf too, not the game straight away: the shelf's QR code is how
 	// testers reach the settings page and its Download logs (swordpdf, 2026-09-26).
@@ -2075,6 +2078,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.build_label = paths.build_label;
 	acfg.test_note = paths.test_note; // vk-285-105
 	acfg.preselect = preselect;
+	acfg.preselect_disc_serial = last_disc; // fix180
 	acfg.sound = mixer;
 	// vk-285-114: the options sheet (Square) edits the files the settings page does, and logs as it does.
 	acfg.options.settings_dir = paths.settings_dir;

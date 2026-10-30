@@ -4250,6 +4250,27 @@ int main()
     }
   }
   OrbisDiscNoteGameStarting("main-boot: a game is chosen");
+  // fix180 (tester on 180: back from a disc game the shelf showed the first entry): the shelf picks the game played last (lastgame.txt). A game from a
+  // drive is "disc:<serial>" (the shelf picks a copy of that disc, or the drive's entry when it comes); any other start its file name, as the shelf writes.
+  if (!s_game_path.empty() && s_game_path != kOrbisSystemMenuPath)
+  {
+    std::string last;
+    if (OrbisDiscDrive::IsDrivePath(s_game_path))
+    {
+      const std::string serial = fe::ReadSerial(s_game_path);
+      if (OrbisDiscDrive::SafeSerial(serial))
+        last = "disc:" + serial;
+    }
+    else
+      last = s_game_path.substr(s_game_path.rfind('/') + 1);
+    if (!last.empty())
+      if (FILE* lf = fopen("/data/PCSX2/lastgame.txt", "w"))
+      {
+        fprintf(lf, "%s\n", last.c_str());
+        fclose(lf);
+        printf("[boot] last game for the shelf: %s\n", last.c_str());
+      }
+  }
   // 2026-10-08 (AI-assisted; testers asked for the PS2's own boot and menu): the sheet's "PS2 system menu" (fe_ps5.h
   // kOrbisSystemMenuPath): no disc, so VMManager boots the BIOS into its menu (AutoDetectSource: an empty file name is
   // CDVD_SourceType::NoDisc); gs.ini's settings, no game's file. Needs proper testing on the console.
