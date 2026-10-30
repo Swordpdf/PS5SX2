@@ -572,6 +572,68 @@ int main()
 		loader.Stop();
 	}
 
+	// fix180: GUARD mode. The main app leaves by its own exec; the guard launches PPSA99203 only when no new process says it is up. (a) the exec brings the
+	// app back: the new process's OrbisRelaunchConfirmCameBack tells the guard (logs/menu-guard.txt -> <state>.alive): nothing launched. (b) it brings
+	// nothing (the 180 case): PPSA99203 is launched after the guard. (c) a start with no guard note: nothing to say. Shortened guard (2 s) for the test.
+	{
+		Begin("guard_back", "PPSA99203");
+		loader.Start({});
+		OrbisRelaunchTiming g;
+		g.settle_ms = 100;
+		g.min_exit_ms = 0;
+		g.guard_ms = 2000;
+		g.hard_ms = 4000;
+		const pid_t app = SpawnApp(0.4);
+		CHECK(OrbisRelaunchStart("PPSA99203", "PPSA99203", app, why, g), "guard start: %s", why.c_str());
+		const std::string req = loader.payloads.empty() ? std::string() : RequestIn(loader.payloads[0]);
+		const std::string state = Field(req, "state");
+		CHECK(Field(req, "guard_ms") == "2000" && Field(req, "hard_ms") == "4000", "guard fields in the request: '%s'", req.c_str());
+		CHECK(ReadFile(g_dir + "/menu-guard.txt").compare(0, state.size(), state) == 0, "menu-guard.txt names the state");
+		usleep(900000); // the old process went at 0.4 s; the new one comes up now
+		const std::string said = OrbisRelaunchConfirmCameBack();
+		CHECK(said.find("its guard was told") != std::string::npos, "the new start tells the guard: '%s'", said.c_str());
+		CHECK(!Exists(g_dir + "/menu-guard.txt"), "and removes the note");
+		CHECK(WaitFile(state + ".done", 4.0) && Status(state) == "came-back", "the guard ends: '%s'", Status(state).c_str());
+		CHECK(Launches(g_dir).empty(), "nothing launched when the exec brought the app back");
+		const std::string log = OrbisRelaunchLastLog();
+		CHECK(log.find("guard mode") != std::string::npos && log.find("came-back") != std::string::npos, "the last request's log lines for boot.log: '%s'",
+			log.c_str());
+		CHECK(OrbisRelaunchConfirmCameBack().empty(), "a second start has no guard to tell");
+		loader.Stop();
+	}
+	{
+		Begin("guard_not_back", "PPSA99203");
+		loader.Start({});
+		OrbisRelaunchTiming g;
+		g.settle_ms = 100;
+		g.min_exit_ms = 0;
+		g.guard_ms = 2000;
+		g.hard_ms = 4000;
+		const pid_t app = SpawnApp(0.4);
+		const double t_app = Now();
+		CHECK(OrbisRelaunchStart("PPSA99203", "PPSA99203", app, why, g), "guard start: %s", why.c_str());
+		const std::string state = Field(loader.payloads.empty() ? std::string() : RequestIn(loader.payloads[0]), "state");
+		CHECK(WaitFile(state + ".done", 8.0) && Status(state) == "launched", "nothing came back: the guard launched: '%s'", Status(state).c_str());
+		const auto ls = Launches(g_dir);
+		CHECK(ls.size() == 1 && ls[0].title == "PPSA99203", "PPSA99203 launched once (%zu)", ls.size());
+		if (!ls.empty())
+			CHECK(ls[0].at >= t_app + 0.4 + 2.0 - 0.1, "not before the guard (%.2f s after the app started)", ls[0].at - t_app);
+		const std::string log = OrbisRelaunchLastLog();
+		CHECK(log.find("no new process said it is up") != std::string::npos, "the log says why: '%s'", log.c_str());
+		loader.Stop();
+	}
+	{
+		Begin("guard_stale");
+		if (FILE* f = std::fopen((g_dir + "/menu-guard.txt").c_str(), "w"))
+		{
+			std::fprintf(f, "%s/relaunch-1\n%lld\n", g_dir.c_str(), static_cast<long long>(std::time(nullptr)) - 600);
+			std::fclose(f);
+		}
+		const std::string said = OrbisRelaunchConfirmCameBack();
+		CHECK(said.find("too old") != std::string::npos && !Exists(g_dir + "/relaunch-1.alive"), "a 10-minute-old note tells nothing: '%s'", said.c_str());
+		CHECK(!Exists(g_dir + "/menu-guard.txt"), "and is removed");
+	}
+
 	std::printf(g_fail ? "relaunch test: %d FAILED\n" : "relaunch test: all passed\n", g_fail);
 	return g_fail ? 1 : 0;
 #endif

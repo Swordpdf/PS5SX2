@@ -38,6 +38,11 @@ pin 'orbis_mark_open_shelf(orbis_leave::TargetOf(how, own_tile.c_str()));'
 pin 'fprintf(f, "%lld %lld %lld %s\n",'
 pin 'const bool open_shelf = orbis_take_open_shelf_mark(&s_leave_mark, true);'
 pin 'if (!orbis_leave::NoteIsFor(mark, own.c_str(), orbis_is_tile_start()))'
+# fix180: the exec is guarded (relaunch/relaunch_guard.h), the guard is called off when the process stays, and the next start tells it it came back
+pin 'if (orbis_leave::WantGuard(want) && OrbisRelaunchBuilt())'
+pin 'timing.guard_ms = orbis_leave::kGuardMs;'
+pin 'if (!waiting && s_leave_guard_up)'
+pin 'const std::string back = OrbisRelaunchConfirmCameBack();'
 if grep -qF 'orbis_mark_open_shelf();' "$main"; then
 	echo "FAIL  main-boot.cpp writes an open-shelf note without a title again"
 	missing=1

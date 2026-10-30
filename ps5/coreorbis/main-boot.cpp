@@ -2322,6 +2322,9 @@ static void orbis_leave_note_ms(const char* what, long long since_us)
   orbis_leave_note(text);
 }
 
+// fix180: a guard payload is up for this leave (orbis_leave::WantGuard): called off when the process stays (the exec refused, back to the game).
+static bool s_leave_guard_up = false;
+
 // The relaunch payload, sent before the saves so its start overlaps them (at most 3 s; the picture is frozen anyway). True when it answered.
 static bool orbis_leave_start_relay(const OrbisLeaveFlags& fl)
 {
@@ -2331,6 +2334,29 @@ static bool orbis_leave_start_relay(const OrbisLeaveFlags& fl)
     // 176: the main app leaves by the exec of its own eboot (menufast) or a flag chooses the old way or the close: no payload
     if (orbis_leave::MainAppExec(want))
       printf("[menu] no relaunch payload: the main app leaves by the exec of its own eboot (%s)\n", fl.menufast ? "flag menufast" : "the default");
+    // fix180: but a GUARD payload, which starts the main app if the exec brings nothing back (180: twice the home screen). It returns false all the
+    // same: the way out stays the exec (orbis_leave::Decide is asked with relay_started = false).
+    s_leave_guard_up = false;
+    if (orbis_leave::WantGuard(want) && OrbisRelaunchBuilt())
+    {
+      std::string closing = orbis_leave::kMainTitle;
+      const std::string tile = orbis_own_tile_dir();
+      if (!tile.empty())
+        closing = tile.substr(tile.find_last_of('/') + 1);
+      else if (s_tile_marker_seen && !s_tile_marker_drive.empty())
+        closing.clear();
+      OrbisRelaunchTiming timing;
+      timing.settle_ms = fl.settle_ms;
+      timing.guard_ms = orbis_leave::kGuardMs;
+      timing.hard_ms = orbis_leave::kGuardHardMs;
+      std::string why;
+      const long long t_guard = orbis_steady_us();
+      s_leave_guard_up = OrbisRelaunchStart(closing.c_str(), orbis_leave::kMainTitle, static_cast<int>(getpid()), why, timing);
+      printf("[menu] guard payload (closing title '%s'; it starts %s if the exec brings nothing back %d ms after this process went): %s\n", closing.c_str(),
+        orbis_leave::kMainTitle, timing.guard_ms, s_leave_guard_up ? "up" : why.c_str());
+      fflush(stdout);
+      orbis_leave_note_ms(s_leave_guard_up ? "guard: up" : "guard: none", t_guard);
+    }
     return false;
   }
   if (!OrbisRelaunchBuilt())
@@ -2422,7 +2448,16 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
     exec_rc = orbis_exec_for_menu("/data/homebrew/PPSA99203/eboot.bin");
   }
   orbis_leave_note("exec: eboot returned");
-  return orbis_leave::AfterExecReturn(exec_rc) == orbis_leave::AfterExec::KeepWaiting; // accepted, merely outlived the wait: the notes for the next start stay
+  const bool waiting = orbis_leave::AfterExecReturn(exec_rc) == orbis_leave::AfterExec::KeepWaiting; // accepted, merely outlived the wait: the notes stay
+  if (!waiting && s_leave_guard_up)
+  {
+    // fix180: the exec was refused and this process stays (back to the game): the guard must not start the app when the game ends later
+    OrbisRelaunchCancel();
+    s_leave_guard_up = false;
+    printf("[menu] the exec was refused: the guard payload is called off\n");
+    fflush(stdout);
+  }
+  return waiting;
 }
 
 // vk-285-109: our own eboot again, into the shelf, after a start that failed (the VM never ran, so no memory
@@ -3653,6 +3688,25 @@ int main()
   orbis_log_flag_access("after the jailbreak");
 #endif
   orbis_boot_log_release("after the jailbreak"); // vk-285-113: boot.log's first lines, when /data wasn't there yet
+  // fix180: a guard of the "back to the menu" that re-executed this process is told it came back (it then starts nothing), and the payload's steps of the
+  // last leave go to boot.log, so a session report shows which way out worked (the exec, the guard's launch, the relay).
+  {
+    const std::string back = OrbisRelaunchConfirmCameBack();
+    if (!back.empty())
+      printf("[menu] %s\n", back.c_str());
+    const std::string last = OrbisRelaunchLastLog();
+    if (!last.empty())
+    {
+      size_t at = 0;
+      while (at < last.size())
+      {
+        const size_t eol = last.find('\n', at);
+        printf("[menu] relaunch.log: %s\n", last.substr(at, (eol == std::string::npos ? last.size() : eol) - at).c_str());
+        at = eol == std::string::npos ? last.size() : eol + 1;
+      }
+    }
+    fflush(stdout);
+  }
   // 179: load the PS5SX2 Disc Helper ourselves (PS5SX3-style, 127.0.0.1:9021) so the user need not load it by hand
   // (OrbisHelperAutoload.cpp; the flag file helper_noautoload skips it, and it never replaces a newer or a busy helper).
   { extern void OrbisHelperAutoStart(); OrbisHelperAutoStart(); }

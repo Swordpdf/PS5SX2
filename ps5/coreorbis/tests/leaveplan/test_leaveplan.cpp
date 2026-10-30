@@ -310,6 +310,30 @@ int main()
 		}
 	}
 
+	// fix180 (owner: L1 + R1 + Touch must always end on the shelf): every way out by an exec gets the guard payload; the relay and the plain close do not
+	for (int bits = 0; bits < 128; bits++)
+	{
+		const In in = FromBits(bits);
+		const std::string tag = "bits " + std::to_string(bits);
+		Check(orbis_leave::WantGuard(in) == (!in.flag_menuclose && !orbis_leave::WantRelay(in)), tag + ": WantGuard is 'no relay wanted and no menuclose'");
+		In no_relay = in;
+		no_relay.relay_started = false;
+		const How how = orbis_leave::Decide(no_relay);
+		if (orbis_leave::WantGuard(in))
+			Check(how == How::ExecMain || how == How::ExecOwnTile, tag + ": a guarded leave is an exec (" + Name(how) + ")");
+		if (how == How::ExecMain && !in.flag_menuclose && !orbis_leave::WantRelay(in))
+			Check(orbis_leave::WantGuard(in), tag + ": the main app's own exec is guarded");
+		if (in.flag_menuclose)
+			Check(!orbis_leave::WantGuard(in), tag + ": menuclose (the home screen asked for): no guard");
+	}
+	{
+		In main_default = {};
+		Check(orbis_leave::WantGuard(main_default) && orbis_leave::Decide(main_default) == How::ExecMain,
+			"the 180 case: the main app with no flags leaves by its exec, and the guard is there");
+		Check(orbis_leave::kGuardMs >= 3000 && orbis_leave::kGuardMs <= 15000 && orbis_leave::kGuardHardMs > orbis_leave::kGuardMs,
+			"guard 3..15 s (179: back on the shelf 3.5 s after the press), hard limit above it");
+	}
+
 	std::printf("leaveplan test: %d checks, %s\n", checks, fails ? "FAILED" : "all passed");
 	return fails ? 1 : 0;
 }

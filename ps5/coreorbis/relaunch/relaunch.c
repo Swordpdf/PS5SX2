@@ -13,6 +13,8 @@
 //   [cap_ms=<how long the shell may go on listing the title after its process is gone, default 8000>\n]  (nosig_ms and cap_ms are for the PC test)
 //   [min_exit_ms=<never launch earlier than this long after the app's process was seen gone, default 0 = no such rule>\n]
 //   [retry_ms=<pause between two launch attempts, default 800, 100..2000>\n]  (176: the app always sends settle_ms, min_exit_ms and retry_ms)
+//   [guard_ms=<GUARD mode: the app leaves by its own exec; launch only if no new process says "<state>.alive" this long after the old one went>\n
+//    hard_ms=<with another app process there, wait this long at most>\n]  (fix180; relaunch_guard.h)
 // Files: "<state>.started" is written as soon as the payload's libraries are loaded and sceLncUtilLaunchApp is known (the app waits for it before it commits
 // to leaving; a payload that cannot launch gives no handshake, only a .done), "<state>.done" last ("status <word>\n..."),
 // and the app can create "<state>.cancel" at any moment before the launch to stop it. Every step is appended to relaunch.log beside the state file
@@ -43,6 +45,8 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "relaunch_guard.h" // fix180: the guard mode's decision
 
 #ifndef RELAUNCH_HOST_TEST
 #include <dlfcn.h>
@@ -142,6 +146,44 @@ static int rl_pid_state(int pid)
 	return state;
 }
 
+// fix180: 1 when an app process (eboot.bin) other than `old_pid` runs, 0 when none, -1 when the process table can't be believed. The PS5's kinfo_proc is
+// bigger than the SDK's: the records are stepped by their own ki_structsize (the disc helper's app_processes does the same, console-proven).
+static int rl_other_app(int old_pid)
+{
+	int mib[3] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC};
+	size_t len = 0;
+	if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || len == 0)
+		return -1;
+	len += len / 4 + 8192;
+	char* buf = (char*)malloc(len);
+	if (!buf)
+		return -1;
+	if (sysctl(mib, 3, buf, &len, NULL, 0) != 0)
+	{
+		free(buf);
+		return -1;
+	}
+	int found = 0, total = 0, saw_self = 0;
+	size_t off = 0;
+	while (off + sizeof(int) <= len)
+	{
+		const struct kinfo_proc* kp = (const struct kinfo_proc*)(buf + off);
+		const size_t sz = kp->ki_structsize > 0 ? (size_t)kp->ki_structsize : 0;
+		if (sz < offsetof(struct kinfo_proc, ki_comm) + sizeof(kp->ki_comm) || off + sz > len)
+			break;
+		total++;
+		if (kp->ki_pid == getpid())
+			saw_self = 1;
+		if (kp->ki_pid != old_pid && kp->ki_stat != 5 /* SZOMB */ && strcmp(kp->ki_comm, "eboot.bin") == 0)
+			found = 1;
+		off += sz;
+	}
+	free(buf);
+	if (!saw_self || total < 10)
+		return -1;
+	return found;
+}
+
 // 1 when the console is shutting down, going to rest mode or suspending (SceSystemStateMgrInfo: 100, 300, 500; SceSystemStateMgrStatus bit 0x200000,
 // the way the helper's kp.c reads them). Fail-open: a flag that can't be opened or polled counts as "not shutting down".
 static int rl_shutting_down(void)
@@ -172,6 +214,7 @@ void* rl_lib(const char* name);
 void* rl_sym(void* lib, const char* name);
 int rl_pid_state(int pid);
 int rl_shutting_down(void);
+int rl_other_app(int old_pid);
 #endif
 
 static void rl_load(Lnc* l)
@@ -308,6 +351,8 @@ typedef struct
 	int cap_ms;       // how long after its process went the shell may go on listing the closing app before it is taken as gone anyway
 	int min_exit_ms;  // not before this long after the process was seen gone (0: no such rule)
 	int retry_ms;     // pause between two launch attempts
+	int guard_ms;     // fix180: guard mode (the app leaves by its own exec): 0 = off
+	int hard_ms;      // fix180: guard mode, with another app process there
 } Request;
 
 // " (N ms after the process exit)" for a note, "" when the process was never seen gone.
@@ -391,7 +436,7 @@ int main(void)
 		return 1; // sent without a request: nothing to do
 	Request r;
 	memset(&r, 0, sizeof(r));
-	char pid_text[24], settle_text[24], limit_text[24], nosig_text[24], cap_text[24], min_exit_text[24], retry_text[24];
+	char pid_text[24], settle_text[24], limit_text[24], nosig_text[24], cap_text[24], min_exit_text[24], retry_text[24], guard_text[24], hard_text[24];
 	field(req, "pid", pid_text, sizeof(pid_text));
 	field(req, "wait", r.wait, sizeof(r.wait));
 	field(req, "launch", r.launch, sizeof(r.launch));
@@ -402,6 +447,10 @@ int main(void)
 	field(req, "cap_ms", cap_text, sizeof(cap_text));
 	field(req, "min_exit_ms", min_exit_text, sizeof(min_exit_text));
 	field(req, "retry_ms", retry_text, sizeof(retry_text));
+	field(req, "guard_ms", guard_text, sizeof(guard_text));
+	field(req, "hard_ms", hard_text, sizeof(hard_text));
+	r.guard_ms = rg_clamp_guard(guard_text[0] ? atoi(guard_text) : 0);
+	r.hard_ms = r.guard_ms ? rg_clamp_hard(hard_text[0] ? atoi(hard_text) : 0, r.guard_ms) : 0;
 	r.min_exit_ms = min_exit_text[0] ? atoi(min_exit_text) : 0;
 	if (r.min_exit_ms < 0)
 		r.min_exit_ms = 0;
@@ -448,6 +497,9 @@ int main(void)
 	}
 	note("request: pid %d, closing title '%s', launch %s, settle %d ms, not before %d ms after the process exit, retry every %d ms, limit %d s", r.pid, r.wait,
 		r.launch, r.settle_ms, r.min_exit_ms, r.retry_ms, r.limit_s);
+	if (r.guard_ms)
+		note("guard mode: the app leaves by its own exec; %s is launched only if no new process says it is up %d ms after the old one went (%d ms while another "
+			 "app process is there)", r.launch, r.guard_ms, r.hard_ms);
 
 	rl_load(&g_lnc);
 	note("symbols: launch %p, app_id %p, big_app %p, title_of %p, user_init %p, fg_user %p, initial_user %p", (void*)g_lnc.launch, (void*)g_lnc.app_id,
@@ -485,8 +537,66 @@ int main(void)
 	const int have_signal = use_title || use_big;
 	note("waiting for %s", use_title ? "the title's app id to go" : use_big ? "the big app's id to go" : "the process alone (nothing else tells; a longer settle follows)");
 
-	// Phase 1: until the app is gone (the cancel note first in every round).
 	const long long deadline = now_ms() + (long long)r.limit_s * 1000;
+	// fix180, guard mode: the old process goes by its own exec; a new one that comes up says so ("<state>.alive"); only when none does, the launch below.
+	if (r.guard_ms)
+	{
+		int said = 0;
+		for (;;)
+		{
+			if (cancelled())
+				cancel_exit();
+			if (exists_with(".alive"))
+				finish("came-back", "the app's own exec brought it back: nothing launched");
+			const int ps = rl_pid_state(r.pid);
+			if (ps == 1)
+			{
+				g_gone_at = now_ms();
+				note("guard: the process %d is gone", r.pid);
+				break;
+			}
+			if (ps < 0 && !said)
+			{
+				said = 1;
+				note("guard: the process %d can't be looked at: counted from now", r.pid);
+				g_gone_at = now_ms();
+				break;
+			}
+			if (now_ms() >= deadline)
+				finish("timeout", "guard: the app was still there; nothing started");
+			usleep(100000);
+		}
+		int said_other = 0;
+		for (;;)
+		{
+			if (cancelled())
+				cancel_exit();
+			const int alive = exists_with(".alive");
+			const int other = alive ? 0 : rl_other_app(r.pid);
+			const long long since = now_ms() - g_gone_at;
+			const int step = rg_step(alive, other, since, r.guard_ms, r.hard_ms);
+			if (step == RG_CAME_BACK)
+			{
+				char detail[96];
+				snprintf(detail, sizeof(detail), "the app's own exec brought it back %lld ms after the old process went: nothing launched", since);
+				finish("came-back", detail);
+			}
+			if (step == RG_LAUNCH)
+			{
+				note("guard: no new process said it is up %lld ms after the old one went (another app process: %s): %s is launched", since,
+					other == 1 ? "yes" : other == 0 ? "no" : "can't tell", r.launch);
+				break;
+			}
+			if (other == 1 && !said_other)
+			{
+				said_other = 1;
+				note("guard: another app process is there %lld ms after the old one went: waiting for it to say it is up", since);
+			}
+			usleep(100000);
+		}
+	}
+
+	// Phase 1: until the app is gone (the cancel note first in every round).
 	int said_unknown = 0;
 	for (;;)
 	{

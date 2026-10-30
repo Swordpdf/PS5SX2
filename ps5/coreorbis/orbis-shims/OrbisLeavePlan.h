@@ -187,6 +187,17 @@ constexpr bool WantRelay(const In& in)
 	return !in.flag_menuclose && !in.flag_menuexec && !MainAppExec(in);
 }
 
+// fix180 (owner: "L1 + R1 + Touchpad during a game must ALWAYS return to the PS5SX2 shelf, never to the XMB"): a way out by an exec (the main app's own,
+// menufast or the default; the flag menuexec) is no longer alone. On vk-285-180 the main app's exec was accepted and nothing came back, twice on one
+// console. So the relaunch payload is started in GUARD mode before it (relaunch/relaunch_guard.h): it launches PPSA99203 only if no new process says it
+// is up kGuardMs after the old one went. Not with menuclose (the player asked for the home screen) and not when the relay itself is the way.
+constexpr int kGuardMs = 7000;
+constexpr int kGuardHardMs = 20000;
+constexpr bool WantGuard(const In& in)
+{
+	return !in.flag_menuclose && !WantRelay(in);
+}
+
 // In this order: menuclose, the main app's own exec (menufast / the default), menuexec (the old rule), the relay, and without a relay the tile's own eboot
 // or the main app's. A tile whose folder is gone does NOT exec PPSA99203's eboot from inside the tile (a cross-title exec, what ended at the home screen in
 // 2.10): it closes.

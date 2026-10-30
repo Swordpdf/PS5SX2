@@ -215,6 +215,15 @@ int rl_pid_state(int pid)
 	return close[2] == 'Z' || close[2] == 'X' ? 1 : 0;
 }
 
+// fix180: RELAUNCH_STUB_OTHERAPP = 1 (another app process runs), unknown, else none
+int rl_other_app(int old_pid)
+{
+	(void)old_pid;
+	if (env_is("RELAUNCH_STUB_OTHERAPP", "unknown"))
+		return -1;
+	return env_is("RELAUNCH_STUB_OTHERAPP", "1") ? 1 : 0;
+}
+
 int rl_shutting_down(void)
 {
 	if (env_is("RELAUNCH_STUB_EVF", "fail"))

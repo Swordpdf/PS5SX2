@@ -17,6 +17,10 @@ struct OrbisRelaunchTiming
 	int settle_ms = orbis_leave::kSettleDefaultMs;
 	int min_exit_ms = orbis_leave::kMinExitMs;
 	int retry_ms = orbis_leave::kRetryMs;
+	// fix180: GUARD mode (relaunch/relaunch_guard.h) when > 0: the app leaves by its own exec; the payload launches `launch_title` only when no new process
+	// says it is up (OrbisRelaunchConfirmCameBack) guard_ms after the old one went (hard_ms while another app process is there).
+	int guard_ms = 0;
+	int hard_ms = 0;
 };
 
 // Sends the payload to the ELF loader (127.0.0.1:9021) and waits (at most about 3 s) until it says it is running ("<state>.started"). `closing_title` is
@@ -28,3 +32,12 @@ bool OrbisRelaunchStart(const char* closing_title, const char* launch_title, int
 // Takes the request back (a note the payload checks every 100 ms until it launches): used when the close was refused and the app stays up. Harmless
 // without a request, and more than once.
 void OrbisRelaunchCancel();
+
+// fix180: called once at start, as soon as /data can be written (main-boot.cpp, after the jailbreak): a guard left by the process this one replaces
+// (logs/menu-guard.txt, at most 2 minutes old) is told that the app came back ("<state>.alive"), so it launches nothing. Returns a line for boot.log
+// ("" when there was no guard).
+std::string OrbisRelaunchConfirmCameBack();
+
+// fix180: the last request's lines of logs/relaunch.log (the payload's steps of the previous "back to the menu"), for boot.log: a session report then shows
+// which way out worked. "" when there is none.
+std::string OrbisRelaunchLastLog(size_t max_lines = 24);
