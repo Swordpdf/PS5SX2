@@ -43,6 +43,7 @@ struct OrbisFrontendPaths
 	std::string report_header;         // that download's first lines: build, sources, console
 	std::string serial_cache;          // vk-285-108: cache/chd-serials.txt, the CHD serials found (fe::SetSerialCacheFile)
 	std::string gamedb_file;           // vk-285-113: resources/GameIndex.yaml, the games' names by serial (fe::SetGameDbFile)
+	std::string gamedb_missing;        // gamedb (2026-10-30): that file, when it is missing or unusable (the shelf says so; AppConfig::gamedb_missing)
 	std::string memcards_dir;          // vk-285-113: memcards/, for the settings page's memory card list and creator
 	// 2026-10-05: HD texture packs from archive.org (fe_texpacks.h): the textures folder they go into, where archive.org's
 	// list is kept, and whether the sheet offers them at all (off with the notexpacks flag).

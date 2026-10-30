@@ -948,6 +948,7 @@ void App::InsertDumpEntry(const std::string& serial, const std::string& title, i
 	GameInfo g;
 	g.path = "@disc-dump"; // a sentinel path: this entry is never launched
 	g.serial = serial;
+	g.stem = DiscStem(serial); // gamedb (2026-10-30): the copy's name, so its sheet is the copy's and the disc's
 	g.title = disp;
 	Slot s;
 	CoverImage ph, sp;
@@ -1072,6 +1073,12 @@ void App::PollDiscDump()
 		RemoveDumpEntry();
 }
 
+// gamedb (2026-10-30): the settings file stem of a disc's entries (AppConfig::disc_settings_stem), "" when unknown.
+std::string App::DiscStem(const std::string& serial) const
+{
+	return m_cfg.disc_settings_stem && !serial.empty() ? m_cfg.disc_settings_stem(serial) : std::string();
+}
+
 int App::DrivePos() const
 {
 for (size_t i = 0; i < m_index.size(); i++)
@@ -1085,6 +1092,7 @@ void App::InsertDriveEntry(const std::string& serial, const std::string& title)
 GameInfo g;
 g.path = "@disc-drive"; // a sentinel path: this entry is never launched
 g.serial = serial;
+g.stem = DiscStem(serial); // gamedb (2026-10-30): its sheet writes the file a start from the drive reads
 g.title = title.empty() ? std::string("PS2 disc") : title;
 Slot s;
 CoverImage ph, sp;
@@ -1397,7 +1405,8 @@ void App::Update(double dt, const Input& in)
 			// vk-285-114: Square opens the selected game's options sheet (the settings for all games when there is no game).
 			else if (!m_qr_big && in.square && !m_prev.square && m_sheet_anim < 0.05f)
 			{
-			OpenSheet(m_games.empty() || m_index[static_cast<size_t>(m_selected)] < 0); // 2.11: a disc entry has no sheet of its own: the all-games one
+			// 2.11: a disc entry had no sheet of its own: the all-games one; gamedb (2026-10-30): it has, when it knows its settings file
+			OpenSheet(m_games.empty() || m_games[static_cast<size_t>(m_selected)].stem.empty());
 				m_chord_square_time = m_time; // pr9n: L1 right after makes it the account chord
 				Sound(Sfx::Move, 0.3f);
 			}
@@ -1695,6 +1704,7 @@ void App::Build(FrameDesc& f, const std::string& clock)
 	}
 	BuildTexturePackActivity(ui, margin, (m_cfg.achievements.state ? 350.0f : 290.0f) * k, k, accent); // 2026-10-05
 	BuildBiosLine(ui, W, k); // vk-285-134
+	BuildGameDbLine(ui, W, k); // gamedb (2026-10-30)
 
 	// The settings page's QR tile, bottom right (vk-285-50). The code is dark on a light tile, as
 	// cameras expect; neighbouring dark modules are merged into runs and grown by a pixel so the
@@ -2157,6 +2167,10 @@ namespace
 void App::OpenSheet(bool global)
 {
 	const GameInfo* g = (!global && !m_games.empty()) ? &m_games[static_cast<size_t>(m_selected)] : nullptr;
+	// gamedb (2026-10-30): an entry with no settings file name (a disc whose name isn't known) has no sheet of its own: L1 from the all-games
+	// sheet opened one that wrote settings/.ini, which no start reads (#bugs: a disc game ignored its own settings).
+	if (g && g->stem.empty())
+		g = nullptr;
 	m_sheet_global = g == nullptr;
 	if (m_sheet_global && m_cfg.game_achievements.cancel)
 		m_cfg.game_achievements.cancel();
@@ -2167,6 +2181,7 @@ void App::OpenSheet(bool global)
 	m_sheet.SetFolderRows(!m_cfg.folder_places.empty());                // vk-285-135
 	m_tile_row = HomeTileEligible(g);                                   // 2.12: the Home screen tile row (a game with a plain image file; the flag turns it on)
 	m_sheet.SetHomeTileRow(m_tile_row);
+	m_sheet.SetHideRow(!g || m_index[static_cast<size_t>(m_selected)] >= 0); // gamedb (2026-10-30): not on a disc entry's sheet
 	m_picker.open = false;
 	OptionsPaths paths = m_cfg.options;
 	if (!g || IsElfName(g->file.c_str())) // 2026-10-08: an ELF's Disc image row lists the shelf's disc images; vk-285-139: the Cheat disc row
@@ -3096,6 +3111,20 @@ void App::BuildBiosLine(std::vector<UiVertex>& ui, float W, float k)
 	if (!second.empty())
 		m_fonts->AddText(ui, Fit(*m_fonts, second, dpx, w - 60.0f * k).c_str(), W * 0.5f, y + 116.0f * k, dpx,
 			Rgba(1.0f, 0.86f, 0.62f), 0.2f, Fonts::Center);
+}
+
+// gamedb (2026-10-30, AI-assisted): resources/GameIndex.yaml is missing or unusable: one line under where the BIOS line goes (below it when
+// that is up), so the player knows the folder is incomplete and that the installer repairs it. Games still get their fixes (the eboot's copy).
+void App::BuildGameDbLine(std::vector<UiVertex>& ui, float W, float k)
+{
+	m_gamedb_note_shown = !m_cfg.gamedb_missing.empty();
+	if (!m_gamedb_note_shown)
+		return;
+	char note[400];
+	std::snprintf(note, sizeof(note), Tr(Str::ShelfNoGameDb), m_cfg.gamedb_missing.c_str());
+	const float y = m_bios_missing ? 200.0f : m_bios_open_in_use ? 296.0f : 250.0f; // with the BIOS box up, just above it (under it is the case)
+	const float px = 28.0f * k;
+	m_fonts->AddText(ui, Fit(*m_fonts, note, px, 2000.0f * k).c_str(), W * 0.5f, y * k, px, Rgba(0.95f, 0.78f, 0.52f, 0.85f), 0.2f, Fonts::Center);
 }
 
 void App::BuildTexturePackActivity(std::vector<UiVertex>& ui, float x, float y, float k, uint32_t accent)

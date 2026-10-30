@@ -332,6 +332,30 @@ def t_fresh_install(z112, files112):
     return root
 
 
+def t_repair_resources(z112, files112):
+    """gamedb (2026-10-30): an up-to-date console whose resources/GameIndex.yaml is gone or cut short gets the release again;
+    the user's files stay as they are, and a whole resources folder is fine again afterwards."""
+    root = t_fresh_install(z112, files112)
+    gdb = data(root, 'PCSX2', 'resources', 'GameIndex.yaml')
+    want = sha_bytes(files112['PCSX2/resources/GameIndex.yaml'])
+    mine = data(root, 'PCSX2', 'settings', 'Mine.ini')
+    os.makedirs(os.path.dirname(mine), exist_ok=True)
+    with open(mine, 'w') as f:
+        f.write('[EmuCore/GS]\nupscale_multiplier=3\n')
+    for name, spoil in (('missing', lambda: os.remove(gdb)),
+                        ('folder gone', lambda: shutil.rmtree(data(root, 'PCSX2', 'resources'))),
+                        ('cut short', lambda: open(gdb, 'wb').write(b'SLUS-20047:\n  name: "x"\n'))):
+        spoil()
+        notes, _ = run(root)
+        check(any('resources folder is incomplete' in n for n in notes), '%s: repairing: %s' % (name, notes[-3:]))
+        check(any('vk-285-112 repaired' in n for n in notes), '%s: repaired: %s' % (name, notes[-2:]))
+        check(os.path.isfile(gdb) and sha(gdb) == want, '%s: GameIndex.yaml put back' % name)
+        check(os.path.isfile(data(root, 'PCSX2', 'resources', 'shaders', 'vulkan', 'tfx.glsl')), '%s: shaders there' % name)
+        check(open(mine).read() == '[EmuCore/GS]\nupscale_multiplier=3\n', "%s: the user's settings untouched" % name)
+        notes, _ = run(root)
+        check(any('PS5SX2 is up to date (vk-285-112)' in n for n in notes), '%s: then up to date: %s' % (name, notes[-2:]))
+
+
 def t_user_install(z112, files112):
     root = os.path.join(WORK, 'user')
     shutil.rmtree(root, ignore_errors=True)
@@ -1551,6 +1575,8 @@ def main():
         top, files112 = zip_entries(z112)
         tests = [
             ('fresh install, then up to date', lambda: t_fresh_install(z112, files112)),
+            ('gamedb: up to date but resources/GameIndex.yaml missing or cut: repaired',
+             lambda: t_repair_resources(z112, files112)),
         ]
         state = {}
 

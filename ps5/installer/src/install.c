@@ -783,6 +783,26 @@ static void prune(const char *dir, int dirs, const char *prefix, size_t keep, co
 
 static int read_switch_exists(const char *p) { return fs_exists(p); }
 
+/* gamedb (2026-10-30, AI-assisted): what is wrong with /data/PCSX2/resources, or NULL. The Discord #bugs scan of 2026-10-30: three
+ * testers ran their games without PCSX2's game database ("GameDB: Unable to open GameDB file"; Black, NFS Carbon and Burnout
+ * Revenge each missing exactly the GameIndex fix for what they reported), two with no resources folder at all, two set up from a
+ * store package that carries only the app. The app has its own copy since then; the folder is still put right here: an
+ * up-to-date console whose resources/GameIndex.yaml is missing or plainly not the database (a real one is 2.6 MB) gets the
+ * release installed again, as with the reinstall switch. */
+static const char *resources_problem(void) {
+  char path[PATH_LEN];
+  if (path_join(path, sizeof(path), g_p.pcsx2, "resources/GameIndex.yaml") != 0)
+    return NULL;
+  struct stat st;
+  if (lstat(path, &st) != 0)
+    return "resources/GameIndex.yaml is missing";
+  if (!S_ISREG(st.st_mode))
+    return "resources/GameIndex.yaml is not a file";
+  if (st.st_size < 64 * 1024)
+    return "resources/GameIndex.yaml is cut short";
+  return NULL;
+}
+
 /* ---------------- the install ---------------- */
 
 static int do_install(const gh_release *rel, const char *have_tag, int *changed_out, int *kept_out);
@@ -831,14 +851,24 @@ int install_run(void) {
   char have[80] = "";
   const int have_ok = app_installed_tag(have, sizeof(have)) == 0;
   const int force = read_switch_exists(g_p.reinstall);
+  int repair = 0;
   if (have_ok && !force) {
     const int cmp = tag_compare(have, rel.tag);
-    if (cmp == 0) {
+    const char *broken = cmp >= 0 ? resources_problem() : NULL;
+    if (cmp == 0 && broken) {
+      /* gamedb: the same build again, for its resources folder (never an older one: cmp == 1 keeps the newer app, which carries
+       * its own game database) */
+      log_line("install: %s: installing %s again to repair the resources folder", broken, rel.tag);
+      repair = 1;
+    } else if (cmp == 0) {
       notify("PS5SX2 is up to date (%s)", rel.tag);
       fs_unlock(lockfd);
       return INSTALL_NOTHING;
     }
     if (cmp == 1) {
+      if (broken)
+        log_line("install: %s; the installed build is newer than the release, so it is left as it is (it carries its own copy)",
+                 broken);
       notify("Your PS5SX2 (%s) is newer than the latest release (%s): nothing to install", have, rel.tag);
       fs_unlock(lockfd);
       return INSTALL_NOTHING;
@@ -846,7 +876,10 @@ int install_run(void) {
   }
   if (force)
     log_line("install: 'reinstall' switch present");
-  notify("New build %s (installed: %s)", rel.tag, have_ok ? have : "none found");
+  if (repair)
+    notify("PS5SX2 %s: its resources folder is incomplete (game database missing): repairing", rel.tag);
+  else
+    notify("New build %s (installed: %s)", rel.tag, have_ok ? have : "none found");
 
   int changed = 0, kept = 0;
   const int rc = do_install(&rel, have_ok ? have : "", &changed, &kept);
@@ -856,7 +889,9 @@ int install_run(void) {
       snprintf(used, sizeof(used), "%s.used", g_p.reinstall);
       rename(g_p.reinstall, used);
     }
-    if (kept)
+    if (repair)
+      notify("PS5SX2 %s repaired (%d files put back). BIOS, games, saves and settings untouched.", rel.tag, changed);
+    else if (kept)
       notify("PS5SX2 %s installed (%d files updated). %d settings/patch file(s) of yours were kept as they are. "
              "BIOS, games and saves untouched.",
              rel.tag, changed, kept);

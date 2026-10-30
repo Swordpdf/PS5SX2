@@ -154,6 +154,7 @@ const char* const kKeys[kCount] = {
 	"bios.open_failed",
 	"notify.no_bios_choice",
 	"notify.open_bios_cant_start",
+	"shelf.no_gamedb",
 };
 
 const char* const kEnglish[kCount] = {
@@ -297,6 +298,7 @@ const char* const kEnglish[kCount] = {
 	"The open-source BIOS couldn't be set up (see boot.log).",
 	"PS5SX2: no PS2 BIOS found, so the game didn't start. The menu offers the open-source BIOS, or put your own in %s.",
 	"PS5SX2: OpenPS2BIOS (experimental) can't start PS1 discs, audio CDs or DVD videos. Put your own PS2 BIOS in %s to play this one.",
+	"Game database missing (%s): this app's own copy is used. The PS5SX2 Installer repairs it.",
 };
 
 const char* const kSpanish[kCount] = {
