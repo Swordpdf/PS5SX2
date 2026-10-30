@@ -87,8 +87,9 @@ int main()
 	static_assert(orbis_leave::Decide(In{}) == How::ExecMain, "the main app without a relay and without flags execs itself (as before)");
 	static_assert(orbis_leave::AfterExecReturn(0) == AfterExec::KeepWaiting, "constexpr");
 	// The 176 default. Flipping it is a decision of the owner, not a tidy-up: change this line with it (everything below follows the constant).
-	// The owner chose the instant exec for the main app (2026-10-16, in chat).
-	static_assert(orbis_leave::kMainAppExecByDefault, "the main app leaves by the old exec unless menurelaunch is there (the owner's choice)");
+	// The owner chose the instant exec for the main app (2026-10-16, in chat); fix181: the relay, after the owner's "always the shelf" and 181's logs (the exec
+	// never came back in time).
+	static_assert(!orbis_leave::kMainAppExecByDefault, "the main app leaves by the relay unless menufast is there (fix181)");
 	const bool by_default = orbis_leave::kMainAppExecByDefault;
 	static_assert(orbis_leave::kSettleDefaultMs == 1000 && orbis_leave::kSettleMaxMs == 5000, "the settle's default and limit");
 	static_assert(orbis_leave::kMinExitMs == 1600 && orbis_leave::kRetryMs == 400, "the payload's earliest launch after the exit, and the pause between refused launches");
@@ -328,8 +329,12 @@ int main()
 	}
 	{
 		In main_default = {};
-		Check(orbis_leave::WantGuard(main_default) && orbis_leave::Decide(main_default) == How::ExecMain,
-			"the 180 case: the main app with no flags leaves by its exec, and the guard is there");
+		Check(orbis_leave::WantRelay(main_default) && !orbis_leave::WantGuard(main_default), "fix181: the main app with no flags wants the relay");
+		main_default.relay_started = true;
+		Check(orbis_leave::Decide(main_default) == How::Relaunch, "fix181: and leaves by it when it is up");
+		In fast = {};
+		fast.flag_menufast = true;
+		Check(orbis_leave::WantGuard(fast) && orbis_leave::Decide(fast) == How::ExecMain, "menufast: the exec, guarded");
 		Check(orbis_leave::kGuardMs >= 3000 && orbis_leave::kGuardMs <= 15000 && orbis_leave::kGuardHardMs > orbis_leave::kGuardMs,
 			"guard 3..15 s (179: back on the shelf 3.5 s after the press), hard limit above it");
 	}

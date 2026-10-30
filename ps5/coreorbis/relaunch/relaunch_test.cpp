@@ -633,6 +633,15 @@ int main()
 		CHECK(said.find("too old") != std::string::npos && !Exists(g_dir + "/relaunch-1.alive"), "a 10-minute-old note tells nothing: '%s'", said.c_str());
 		CHECK(!Exists(g_dir + "/menu-guard.txt"), "and is removed");
 	}
+	{
+		// fix181: no loader (the connect refused): no guard note is left behind for the next start
+		Begin("guard_noloader", "PPSA99203");
+		OrbisRelaunchTiming g;
+		g.guard_ms = 2000;
+		const pid_t app = SpawnApp(0.3);
+		CHECK(!OrbisRelaunchStart("PPSA99203", "PPSA99203", app, why, g), "no loader: false (%s)", why.c_str());
+		CHECK(!Exists(g_dir + "/menu-guard.txt"), "and no menu-guard.txt");
+	}
 
 	std::printf(g_fail ? "relaunch test: %d FAILED\n" : "relaunch test: all passed\n", g_fail);
 	return g_fail ? 1 : 0;

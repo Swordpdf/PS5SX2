@@ -28,7 +28,14 @@ namespace orbis_leave
 // 176: the one place that says whether the main app leaves by the old exec (instant, no home screen) when neither flag is there. true = the old exec (the
 // owner's choice); false = the relaunch payload (a flash of the home screen, the 175 way). The flags menufast (exec) and menurelaunch (payload) decide by
 // hand whatever this says.
-constexpr bool kMainAppExecByDefault = true;
+// fix181 (owner, 2026-10-30: "L1 + R1 + Touchpad must ALWAYS return to the PS5SX2 shelf"): FALSE now. On vk-285-180/181 the exec never came back in time:
+// 181's reports: of the main app's exits whose next start is in a report (3, one console, the guard up), the old process went 0.34 s after the exec and
+// NO new process came within 7 s in any (one after 6.6 s, the guard then waited; two were started by the guard at 8.0-8.1 s, the shelf 9.8 s after the
+// press; without
+// the guard, 180, nothing came at all). The relay from a game tile on the same build: PPSA99203 running 2.3 s after the exit, the shelf 3.5 s after the
+// press, every time. So the main app leaves by the relay too (a moment of the home screen, then the shelf), and the exec is the fall back when the
+// payload can't be sent (and the flag menufast, which keeps the guard).
+constexpr bool kMainAppExecByDefault = false;
 
 // 176: the payload's timing. The settle is how long it waits after the shell has forgotten the closing title (175 had a fixed 1500 ms; the flag menusettle
 // sets it, 0..kSettleMaxMs). kMinExitMs: it never launches earlier than this long after the closing PROCESS exited, whatever the settle is: ShadowMount+
