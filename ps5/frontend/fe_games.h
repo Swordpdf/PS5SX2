@@ -56,8 +56,15 @@ std::string ReadSerial(const std::string& image_path);
 // read before: no open), else empty.
 std::string ReadSerial(const GameInfo& g, std::string* what = nullptr);
 // chdscan: what the cache files know of the image (no image is opened): its serial, or that it has none (`serial` empty, `what` as
-// ReadSerial's). False: it hasn't been read yet.
+// ReadSerial's). False: it hasn't been read yet. chd2: true too for an image given up on before (cache/bad-images.txt).
 bool KnownSerial(const GameInfo& g, std::string& serial, std::string* what = nullptr);
+// chd2 (AI-assisted): ReadSerial reads an image file on a thread of its own and waits at most this long (6 s unless set); an image that
+// takes longer is listed without a serial, named in bad-images.txt beside the serials' file and not read again at later starts. A read
+// still going after 1 s is named in reading-image.txt, so the next start skips it when the app ended during it. After 3 reads given
+// up on (still running), no more images are read in this run. The "[scan]" lines of these are flushed to the log at once.
+void SetSerialReadLimit(double seconds);
+// chd2: the reads given up on that are still running.
+int SerialReadsStuck();
 
 // Read the BOOT2 executable for the RA hash. Supports the shelf image formats. (AI-assisted)
 bool ReadAchievementExecutable(const std::string& path, std::string& name, std::vector<uint8_t>& bytes);

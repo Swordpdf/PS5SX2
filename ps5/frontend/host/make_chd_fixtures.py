@@ -8,6 +8,9 @@
 #   make_chd_fixtures.py <out.chd> dvd|cd <logical MB> <hunk bytes> <boot ELF, e.g. SLUS_203.70> [--iso <out.iso>] [--elf-lba N] [--no-volume]
 #
 # --elf-lba: the boot ELF is a file at sector N (6000 bytes, elf_bytes()), far into the image (a read past the first hunks).
+# chd2: damaged images that made a read never end. --meta-loop: a DVD image whose metadata chain points back at itself (libchdr's
+# metadata_find_entry, asked for a CD's track, goes round it for ever). --self-loop: the hunk of sector 16 is a copy of itself (libchdr's
+# hunk_read_into_memory follows it for ever).
 #
 # Copyright (C) 2026 swordpdf
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -310,6 +313,12 @@ def main():
     else:
         codecs = [b"lzma", b"zlib", b"huff", b"flac"]
         meta = b""
+        if "--meta-loop" in sys.argv:  # a "DVD " entry whose next entry is itself
+            meta = struct.pack(">II Q", int.from_bytes(b"DVD ", "big"), 1 << 24, 124)
+    if "--self-loop" in sys.argv:
+        h16 = 16 * unit // hunkbytes
+        entries[h16] = (SELF, 0, 0, h16)
+        payloads[h16] = None
     metaoffset = 124 if meta else 0
     firstoffs = 124 + len(meta)
     mapdata, rawmap, lengthbits, selfbits = compress_map(entries, hunkbytes, firstoffs)

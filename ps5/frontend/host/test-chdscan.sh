@@ -3,6 +3,8 @@
 # black screen before the shelf, "only with CHD games - ISO is much faster").
 #   1. chdscan_test.cpp, with the real libchdr (built here) and CHD images made by make_chd_fixtures.py (sparse files: a few MB on disk):
 #      what a serial costs (bytes read, against libchdr's own open and an ISO), far reads, the serial cache with images that have no serial;
+#      chd2: a big folder (1,000 CHDs) with images whose read never ends (a drive that doesn't answer, libchdr's endless loops), damaged
+#      ones: each read is given up on after a time, remembered, the scan goes on;
 #   2. fe_host (lavapipe or SwiftShader for the GPU): the shelf comes up while the scan runs, says how far it got, and gets its games after.
 # Pictures go to $FE_SHOTS when it is set.
 #
@@ -42,6 +44,8 @@ if [[ ! -f $fx/$stamp ]]; then
   python3 "$gen" "$fx/far2k.chd" dvd 4200 2048 SLUS_203.72 --elf-lba 1500000
   python3 "$gen" "$fx/farcd.chd" cd 700 19584 SLUS_203.73 --elf-lba 200000
   python3 "$gen" "$fx/novolume.chd" cd 500 19584 SLUS_000.00 --no-volume
+  python3 "$gen" "$fx/metaloop.chd" dvd 300 2048 SLUS_203.75 --meta-loop   # chd2: libchdr loops for ever on it
+  python3 "$gen" "$fx/selfloop.chd" dvd 300 2048 SLUS_203.76 --self-loop
   touch "$fx/$stamp"
 fi
 

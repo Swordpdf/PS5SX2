@@ -2059,14 +2059,37 @@ private:
 	void Run()
 	{
 		const OrbisFrontendPaths& paths = m_paths;
-		int on_usb = 0, on_nfs = 0;
+		int on_usb = 0, on_nfs = 0, left = 0, skipped = 0;
+		double last_line = 0;
 		for (GameInfo& g : m_games)
 		{
 			std::string what;
 			if (!KnownSerial(g, g.serial, &what))
 			{
-				g.serial = ReadSerial(g, &what); // 2.02: through the serial cache, keyed by what ScanGames already has
-				m_read.fetch_add(1, std::memory_order_relaxed);
+				// chd2 (AI-assisted; the PS5 Pro tester's ~1,800 CHDs on a USB hard drive, 2.20: "counting up the games until it stuck when it
+				// reached game 778"): each read has a time limit (ReadSerial, fe_games.h), and where the scan is goes to the log, flushed: at
+				// most one line a second here, and fe_games' own "[scan]" line for a read that takes over a second. After kScanBudget s the
+				// rest are listed by their file names and read at the next start, so the shelf gets its games whatever the drive does.
+				const int n = m_read.load(std::memory_order_relaxed);
+				if (Now() - m_t0 > kScanBudget)
+				{
+					if (left++ == 0)
+						std::printf("[scan] %d/%d: %.0f s spent reading new images: the other %d are listed by their file names now and read at "
+									"the next start\n", n, m_total, kScanBudget, m_total - n);
+					m_read.fetch_add(1, std::memory_order_relaxed);
+				}
+				else
+				{
+					if (n == 0 || Now() - last_line >= 1.0)
+					{
+						last_line = Now();
+						std::printf("[scan] %d/%d %s (+%.1f s)\n", n + 1, m_total, g.path.c_str(), Now() - m_t0);
+						std::fflush(stdout);
+					}
+					g.serial = ReadSerial(g, &what); // 2.02: through the serial cache, keyed by what ScanGames already has
+					skipped += what.rfind("not read", 0) == 0 ? 1 : 0;
+					m_read.fetch_add(1, std::memory_order_relaxed);
+				}
 			}
 			// vk-285-113: a CHD (or an ISO) named after its file shows the game's name from the game database.
 			const std::string file_title = g.title;
@@ -2094,9 +2117,14 @@ private:
 		SortGames(m_games); // vk-285-113: by the titles the game database may have changed
 		std::printf("[frontend] %zu disc image(s), %d on USB, %d on NFS shares, scanned in %.0f ms (%d image(s) read, the rest from the cache files)\n",
 			m_games.size(), on_usb, on_nfs, (Now() - m_t0) * 1000.0, m_read.load());
+		if (left > 0 || skipped > 0) // chd2
+			std::printf("[scan] %d image(s) left for the next start (time), %d not read (given up on: cache/bad-images.txt), %d read(s) still "
+						"stuck\n", left, skipped, SerialReadsStuck());
 		std::fflush(stdout);
 		m_done.store(true, std::memory_order_release);
 	}
+
+	static constexpr double kScanBudget = 300.0; // chd2: seconds of reading new images before the shelf gets its games anyway
 
 	const OrbisFrontendPaths& m_paths;
 	const double m_t0;

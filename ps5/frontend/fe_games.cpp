@@ -10,13 +10,17 @@
 #include "zlib.h"         // vk-285-113: CSO images (ps5/third_party/zlib, inflate only)
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <ctime>
 #include <fcntl.h>
+#include <memory>
 #include <mutex>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <unordered_map>
@@ -402,7 +406,9 @@ public:
 				default:
 					return false; // a parent's hunks (Init leaves out the CHDs that have one), or a type that doesn't exist
 			}
-			if (Overflow() || e.length > 0xffffff || (e.type == kSelf && e.offset >= h))
+			if (e.type == kSelf && e.offset >= h)
+				bad_self = true; // chd2: libchdr would follow it round and round (hunk_read_into_memory calls itself for a copy)
+			if (Overflow() || e.length > 0xffffff || bad_self)
 				return false;
 			entries.push_back(e);
 		}
@@ -463,6 +469,7 @@ public:
 	bool compressed = false;
 	uint64_t first_offset = 0;
 	uint8_t parent_bits = 0;
+	bool bad_self = false; // chd2: a hunk that is a copy of itself or of a later one (no CHD made by chdman has one)
 	std::vector<Entry> entries;
 
 private:
@@ -602,13 +609,37 @@ public:
 		// one with a parent, a map this can't read) is opened by libchdr as it is.
 		m_file.fd = open(path.c_str(), O_RDONLY);
 		struct stat st = {};
-		if (m_file.fd >= 0 && fstat(m_file.fd, &st) == 0 && ReadAt(m_file.fd, 0, m_file.header, sizeof(m_file.header)) &&
-			m_map.Init(m_file.fd, m_file.header, static_cast<uint64_t>(st.st_size)))
+		const bool head = m_file.fd >= 0 && fstat(m_file.fd, &st) == 0 && ReadAt(m_file.fd, 0, m_file.header, sizeof(m_file.header));
+		// chd2: a v5 header no CHD has (hunks over 16 MB, over 64 GB of data): libchdr would allocate by it (a map of hundreds of MB, a
+		// hunk buffer of gigabytes). Damaged, not opened.
+		if (head && std::memcmp(m_file.header, "MComprHD", 8) == 0 && chdv5::Be(m_file.header + 12, 4) == 5 &&
+			(chdv5::Be(m_file.header + 56, 4) > (16u << 20) || chdv5::Be(m_file.header + 32, 8) > (64ull << 30)))
+		{
+			char why[160];
+			std::snprintf(why, sizeof(why), "libchdr can't open it: invalid data (its header says %llu-byte hunks, %llu MB of data)",
+				static_cast<unsigned long long>(chdv5::Be(m_file.header + 56, 4)),
+				static_cast<unsigned long long>(chdv5::Be(m_file.header + 32, 8) >> 20));
+			m_what = why;
+			m_error = CHDERR_INVALID_DATA;
+			close(m_file.fd);
+			m_file.fd = -1;
+			return false;
+		}
+		if (head && m_map.Init(m_file.fd, m_file.header, static_cast<uint64_t>(st.st_size)))
 		{
 			m_file_size = static_cast<uint64_t>(st.st_size);
 			const uint32_t unit = static_cast<uint32_t>(chdv5::Be(m_file.header + 60, 4));
 			const uint64_t first = (48ull * unit + m_map.hunk_bytes - 1) / m_map.hunk_bytes;
 			m_prefix = OpenPrefix(static_cast<uint32_t>(std::min<uint64_t>(first, m_map.hunk_count)));
+			if (!m_prefix && m_map.bad_self)
+			{
+				// chd2: not handed to libchdr as it is: a read of that hunk would never end
+				m_what = "libchdr can't open it: invalid data (its map has a hunk that is a copy of itself or of a later one)";
+				m_error = CHDERR_INVALID_DATA;
+				close(m_file.fd);
+				m_file.fd = -1;
+				return false;
+			}
 		}
 		if (!m_prefix)
 		{
@@ -1171,8 +1202,8 @@ std::string ImageSerial(const std::string& path, std::string* what = nullptr, bo
 }
 
 // vk-285-108 (the CHDs), 2.02 (every format): the cache file first, else the image, and a serial found is kept. chdscan: and an image
-// found to have none (no-serial.txt).
-std::string KeyedSerial(const std::string& path, const std::string& key, std::string* what = nullptr)
+// found to have none (no-serial.txt). chd2: this is the read itself, on whatever thread calls it; KeyedSerial below runs it with a limit.
+std::string KeyedSerialNow(const std::string& path, const std::string& key, std::string* what = nullptr)
 {
 	std::string serial;
 	if (CachedSerial(key, serial) || CachedNone(key, what))
@@ -1207,7 +1238,279 @@ std::string KeyedSerial(const std::string& path, const std::string& key, std::st
 	}
 	return serial;
 }
+
+// chd2 (AI-assisted; the PS5 Pro tester with ~1,800 CHDs on a USB hard drive, 2.20: "It was counting up the games until it stuck when it
+// reached game 778"): one image's read never ended, and the shelf waited for it forever. Nothing in a read can be interrupted (a USB
+// drive's read that doesn't come back, a loop in libchdr on damaged data: a metadata chain that points back at itself, a hunk that is a
+// copy of itself), so each image is read on a thread of its own, and the caller waits at most s_read_limit_s for it. A read that takes
+// longer is left running and given up on: the image is listed without a serial and named in bad-images.txt beside the serials' file
+// (its path, size and mtime), and later starts don't read it again (until it changes, or the file is deleted). A read still going after a
+// second is named in reading-image.txt (cleared when it ends), so an app closed during it (the tester's 20 minutes) has that image put
+// in bad-images.txt at the next start. Once kMaxStuck reads have been given up on and are still running (the drive itself may not
+// answer), no more images are read in this run: they are listed without a serial and read at the next start.
+const char kBadHeader[] = "# PS5SX2: images whose reading never finished (skipped at each start; delete this file to read them again)";
+constexpr int kMaxStuck = 3;
+double s_read_limit_s = 6.0;
+bool s_bad_loaded = false;
+std::unordered_map<std::string, std::string> s_bad; // "<path>\t<size>\t<mtime>" -> why
+std::vector<std::string> s_reading;                 // the keys of the reads that have taken over a second and are still going
+bool s_reading_taken = false;                       // reading-image.txt was looked at (once a run: a later SetSerialCacheFile doesn't)
+std::atomic<int> s_stuck{0};                        // reads given up on that are still running
+
+double MonoSeconds()
+{
+	timespec ts = {};
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) * 1e-9;
+}
+
+std::string CacheDirFileLocked(const char* name)
+{
+	const size_t slash = s_serial_file.rfind('/');
+	return slash == std::string::npos ? std::string() : s_serial_file.substr(0, slash) + "/" + name;
+}
+
+void StoreBadLocked(const std::string& key, std::string why)
+{
+	for (char& c : why)
+		if (c == '\t' || c == '\n' || c == '\r')
+			c = ' ';
+	s_bad[key] = why;
+	const std::string file = CacheDirFileLocked("bad-images.txt");
+	if (file.empty())
+		return;
+	mkdir(file.substr(0, file.rfind('/')).c_str(), 0777);
+	struct stat st = {};
+	const bool fresh = stat(file.c_str(), &st) != 0 || st.st_size == 0;
+	if (FILE* f = std::fopen(file.c_str(), "ab"))
+	{
+		if (fresh)
+			std::fprintf(f, "%s\n", kBadHeader);
+		const std::string line = key + "\t" + why + "\n";
+		std::fwrite(line.data(), 1, line.size(), f);
+		std::fclose(f);
+	}
+}
+
+void WriteReadingLocked()
+{
+	const std::string file = CacheDirFileLocked("reading-image.txt");
+	if (file.empty())
+		return;
+	if (s_reading.empty())
+	{
+		unlink(file.c_str());
+		return;
+	}
+	mkdir(file.substr(0, file.rfind('/')).c_str(), 0777);
+	if (FILE* f = std::fopen(file.c_str(), "wb"))
+	{
+		for (const std::string& k : s_reading)
+			std::fprintf(f, "%s\n", k.c_str());
+		std::fclose(f);
+	}
+}
+
+void LoadBadLocked()
+{
+	if (s_bad_loaded || s_serial_file.empty())
+		return;
+	s_bad_loaded = true;
+	if (FILE* f = std::fopen(CacheDirFileLocked("bad-images.txt").c_str(), "rb"))
+	{
+		char line[1024];
+		while (std::fgets(line, sizeof(line), f))
+		{
+			std::string l = line;
+			while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
+				l.pop_back();
+			if (l.empty() || l[0] == '#')
+				continue;
+			const size_t tab = l.rfind('\t');
+			if (tab != std::string::npos && tab > 0)
+				s_bad[l.substr(0, tab)] = l.substr(tab + 1);
+		}
+		std::fclose(f);
+	}
+	if (s_reading_taken)
+		return;
+	s_reading_taken = true;
+	const std::string reading = CacheDirFileLocked("reading-image.txt");
+	if (FILE* f = std::fopen(reading.c_str(), "rb"))
+	{
+		char line[1024];
+		while (std::fgets(line, sizeof(line), f))
+		{
+			std::string key = line;
+			while (!key.empty() && (key.back() == '\n' || key.back() == '\r'))
+				key.pop_back();
+			if (key.empty() || s_bad.count(key) || s_serials.count(key) || s_none.count(key))
+				continue;
+			std::printf("[scan] %s: the last run ended while this image was being read (over a second): skipped from now on "
+						"(cache/bad-images.txt; delete it to read it again)\n", key.substr(0, key.find('\t')).c_str());
+			StoreBadLocked(key, "the app ended while it was being read");
+		}
+		std::fclose(f);
+		unlink(reading.c_str());
+	}
+}
+
+// chd2: the image was given up on before (bad-images.txt): `what` says so.
+bool CachedBad(const std::string& key, std::string* what)
+{
+	if (key.empty())
+		return false;
+	std::lock_guard<std::mutex> lock(s_serial_mutex);
+	LoadSerialsLocked();
+	LoadNoneLocked();
+	LoadBadLocked();
+	const auto it = s_bad.find(key);
+	if (it == s_bad.end())
+		return false;
+	if (what)
+		*what = "not read: " + it->second + " (cache/bad-images.txt)";
+	return true;
+}
+
+struct LimitedRead
+{
+	std::mutex mutex;
+	bool done = false, abandoned = false;
+	std::string path, key, serial, what;
+	double started = 0;
+};
+
+void* LimitedReadMain(void* arg)
+{
+	std::shared_ptr<LimitedRead>* holder = static_cast<std::shared_ptr<LimitedRead>*>(arg);
+	const std::shared_ptr<LimitedRead> job = *holder;
+	delete holder;
+	std::string what;
+	const std::string serial = KeyedSerialNow(job->path, job->key, &what);
+	std::lock_guard<std::mutex> lock(job->mutex);
+	job->serial = serial;
+	job->what = what;
+	job->done = true;
+	if (job->abandoned)
+	{
+		s_stuck.fetch_sub(1);
+		std::printf("[scan] %s: the read given up on ended after %.1f s (%s)\n", job->path.c_str(), MonoSeconds() - job->started,
+			serial.empty() ? "no serial" : serial.c_str());
+		std::fflush(stdout);
+	}
+	return nullptr;
+}
+
+void ReadingMark(const std::string& key, bool on)
+{
+	std::lock_guard<std::mutex> lock(s_serial_mutex);
+	const auto it = std::find(s_reading.begin(), s_reading.end(), key);
+	if (on && it == s_reading.end())
+		s_reading.push_back(key);
+	else if (!on && it != s_reading.end())
+		s_reading.erase(it);
+	else
+		return;
+	WriteReadingLocked();
+}
+
+// The serial of an image file, from the cache files or read with the time limit above.
+std::string KeyedSerial(const std::string& path, const std::string& key, std::string* what = nullptr)
+{
+	std::string serial;
+	if (CachedSerial(key, serial) || CachedNone(key, what) || CachedBad(key, what))
+		return serial;
+	if (key.empty()) // not a file (a disc drive's node): read here, as before; the drive's own waits apply
+		return KeyedSerialNow(path, key, what);
+	if (s_stuck.load() >= kMaxStuck)
+	{
+		if (what)
+			*what = "not read in this run: " + std::to_string(kMaxStuck) + " reads of other images never ended (the drive may not answer)";
+		return serial;
+	}
+	auto job = std::make_shared<LimitedRead>();
+	job->path = path;
+	job->key = key;
+	job->started = MonoSeconds();
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, 1024 * 1024); // libchdr's codecs, as the shelf scan's thread
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	pthread_t thread;
+	auto* holder = new std::shared_ptr<LimitedRead>(job);
+	const bool started = pthread_create(&thread, &attr, &LimitedReadMain, holder) == 0;
+	pthread_attr_destroy(&attr);
+	if (!started)
+	{
+		delete holder;
+		return KeyedSerialNow(path, key, what);
+	}
+	bool marked = false, mark_written = false;
+	for (;;)
+	{
+		{
+			std::lock_guard<std::mutex> lock(job->mutex);
+			const double took = MonoSeconds() - job->started;
+			if (job->done)
+			{
+				if (what)
+					*what = job->what;
+				serial = job->serial;
+				if (marked)
+				{
+					std::printf("[scan] %s: read in %.1f s\n", path.c_str(), took);
+					std::fflush(stdout);
+				}
+				break;
+			}
+			if (took >= s_read_limit_s)
+			{
+				job->abandoned = true;
+				s_stuck.fetch_add(1);
+				char limit[32];
+				std::snprintf(limit, sizeof(limit), "%g", s_read_limit_s);
+				const std::string why = std::string("reading it gave no answer in ") + limit + " s";
+				std::printf("[scan] %s: %s: skipped, and skipped at the next starts too (cache/bad-images.txt; delete it to read it "
+							"again); %d read(s) given up on are still running\n", path.c_str(), why.c_str(), s_stuck.load());
+				std::fflush(stdout);
+				{
+					std::lock_guard<std::mutex> cache_lock(s_serial_mutex);
+					LoadBadLocked();
+					StoreBadLocked(key, why);
+				}
+				if (what)
+					*what = "not read: " + why + " (cache/bad-images.txt)";
+				break;
+			}
+			if (!marked && took >= 1.0)
+			{
+				marked = true;
+				std::printf("[scan] %s: no answer after 1 s yet (waiting up to %.0f s)\n", path.c_str(), s_read_limit_s);
+				std::fflush(stdout);
+			}
+		}
+		if (marked && !mark_written)
+		{
+			ReadingMark(key, true);
+			mark_written = true;
+		}
+		usleep(2000);
+	}
+	if (mark_written)
+		ReadingMark(key, false);
+	return serial;
+}
 } // namespace
+
+void SetSerialReadLimit(double seconds)
+{
+	s_read_limit_s = seconds > 0 ? seconds : 6.0;
+}
+
+int SerialReadsStuck()
+{
+	return s_stuck.load();
+}
 
 std::string DescribeImage(const std::string& image_path)
 {
@@ -1242,6 +1545,10 @@ void SetSerialCacheFile(const std::string& path)
 	s_none_loaded = false; // chdscan
 	s_none_current = false;
 	s_none.clear();
+	s_bad_loaded = false; // chd2
+	s_bad.clear();
+	if (path.empty())
+		s_reading_taken = false; // (the host tests' fresh start; the app never sets none)
 }
 
 std::string ReadSerial(const std::string& image_path)
@@ -1262,7 +1569,7 @@ bool KnownSerial(const GameInfo& g, std::string& serial, std::string* what)
 	const std::string key = g.mtime == 0 ? SerialKey(g.path)
 										 : MakeSerialKey(g.path, static_cast<long long>(g.bytes), static_cast<long long>(g.mtime));
 	serial.clear();
-	return CachedSerial(key, serial) || CachedNone(key, what);
+	return CachedSerial(key, serial) || CachedNone(key, what) || CachedBad(key, what); // chd2: or given up on before
 }
 
 // Read ISO9660 files without touching the emulator's global CDVD state. (AI-assisted)
@@ -1751,7 +2058,9 @@ void ScanDir(const std::string& dir, std::vector<GameInfo>& games, std::vector<s
 		std::string cached_serial;
 		if ((HasExtension(file.c_str(), ".bin") || HasExtension(file.c_str(), ".img")) &&
 			// 2.02: one with a serial in the cache was a data disc already (no open: on an NFS share each costs ~30 ms)
-			!CachedSerial(MakeSerialKey(g.path, static_cast<long long>(st.st_size), static_cast<long long>(st.st_mtime)), cached_serial))
+			!CachedSerial(MakeSerialKey(g.path, static_cast<long long>(st.st_size), static_cast<long long>(st.st_mtime)), cached_serial) &&
+			// chd2: nor one whose reading never finished (bad-images.txt): listed without being opened again
+			!CachedBad(MakeSerialKey(g.path, static_cast<long long>(st.st_size), static_cast<long long>(st.st_mtime)), nullptr))
 		{
 			if (st.st_size < (16LL << 20))
 				continue;
