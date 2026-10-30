@@ -78,7 +78,16 @@ static void ohci_die(OHCIState* ohci)
 {
 	//OHCIPCIState *dev = container_of(ohci, OHCIPCIState, state);
 
+#ifdef ORBIS_VULKAN
+	// PS5 port (killzone-online, 2026-10-30, AI-assisted): Killzone logs this once at each switch to its online LOADER.ELF (builds 180 and
+	// 181: the IOP is rebooted under the game's USB driver and a list address no longer reads); the game plays on. Logged a few times only,
+	// so a game that keeps restarting a dead controller can't fill the logs on /data (the title's write budget).
+	static unsigned s_dies = 0;
+	if (++s_dies <= 4 || (s_dies & (s_dies - 1)) == 0)
+		Console.Warning("ohci_die: DMA error (%u so far; the emulated USB controller stops, the game goes on)", s_dies);
+#else
 	Console.Warning("ohci_die: DMA error\n");
+#endif
 
 	ohci_set_interrupt(ohci, OHCI_INTR_UE);
 	ohci_bus_stop(ohci);
@@ -1025,8 +1034,21 @@ static int ohci_service_ed_list(OHCIState* ohci, u32 head, int completion)
 			continue;
 		}
 
+#ifdef ORBIS_VULKAN
+		// PS5 port (killzone-online, 2026-10-30, AI-assisted): at most this many transfer descriptors of one endpoint a pass. A list a game
+		// leaves corrupt (a TD whose next is itself, memory reused after an IOP reboot) kept this loop going on the emulation's thread
+		// forever; past the limit the controller dies (ohci_die stops it) instead of spinning.
+		u32 td_cnt = 0;
+#endif
 		while ((ed.head & OHCI_DPTR_MASK) != ed.tail)
 		{
+#ifdef ORBIS_VULKAN
+			if (++td_cnt > 4096)
+			{
+				ohci_die(ohci);
+				return 0;
+			}
+#endif
 			/*trace_usb_ohci_ed_pkt(cur, (ed.head & OHCI_ED_H) != 0,
                     (ed.head & OHCI_ED_C) != 0, ed.head & OHCI_DPTR_MASK,
                     ed.tail & OHCI_DPTR_MASK, ed.next & OHCI_DPTR_MASK);

@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <bit>
 #include <thread>
+#include <chrono>
+#include <sys/select.h> // killzone-online (2026-10-30): the bounded ICMP send wait
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
@@ -624,14 +626,32 @@ namespace Sessions
 				endpoint.sin_addr = std::bit_cast<in_addr>(parDestIP);
 
 				int ret = -1;
+#ifdef ORBIS_VULKAN
+				// PS5 port (killzone-online, 2026-10-30, AI-assisted): as the TCP send (OrbisDev9Send.h), no endless send loop on the emulation's
+				// thread while the socket is full: 20 ms at most, waiting in select, then the ping is dropped (the PS2 sends another).
+				const auto icmp_start = std::chrono::steady_clock::now();
+#endif
 				while (ret == -1)
 				{
 					ret = sendto(icmpSocket, buffer.get(), icmp.GetLength(), 0, reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint));
 					if (ret == -1)
 					{
 						const int err = errno;
+#ifdef ORBIS_VULKAN
+						if ((err == EAGAIN || err == EWOULDBLOCK) && std::chrono::steady_clock::now() - icmp_start >= std::chrono::milliseconds(20))
+							return true;
+						if (err == EAGAIN || err == EWOULDBLOCK)
+						{
+							fd_set writeSet;
+							FD_ZERO(&writeSet);
+							FD_SET(icmpSocket, &writeSet);
+							timeval wait{0, 2000};
+							select(icmpSocket + 1, nullptr, &writeSet, nullptr, &wait);
+						}
+#else
 						if (err == EAGAIN || err == EWOULDBLOCK)
 							std::this_thread::yield();
+#endif
 						else
 						{
 							Console.Error("DEV9: ICMP: Send error %d", errno);
