@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 180 (AI-assisted): the sheet for all games' PS5SX2 group in fe_host (fe_update.h), over a stand-in GitHub and installer (--updates):
 #   - System update: Cross looks; a newer release is offered and Cross twice starts the installer, then the shelf asks to close (3 s later);
-#     a single Cross does not; the same release, an older one, no network, an HTTP error and an installer that can't start each say so;
+#     a single Cross does not; installer-dl: an app without PS5SX2Installer.elf fetches it from the release first ("Downloading the installer..."); the same release, an older one, no network, an HTTP error and an installer that can't start each say so;
 #   - Session logs: Cross and Right switch the installer's no-log-upload file.
 # The group sits at the bottom of the sheet for all games, above the reset row: from the bottom, up once is Session logs, twice System update.
 #
@@ -43,6 +43,11 @@ run no-network --updates fail "${to_update[@]}" "press cross" "wait 1" "expect u
 run http-error --updates error "${to_update[@]}" "press cross" "wait 1" "expect updstate=5"
 run no-loader --updates vk-285-181 --updates-start 3 "${to_update[@]}" "press cross" "wait 1" "press cross" "wait 0.2" "press cross" "wait 0.3" \
   "expect updstate=9" "expect updstarted=0" "shot update-noloader" "wait 3.5" "expect updquit=0"
+# installer-dl: no PS5SX2Installer.elf beside the eboot (a tester copied only eboot.bin): Cross twice fetches it from the release ("Downloading the
+# installer...", UpdateStatus::State 10), puts it in place and starts it as usual
+run no-installer --updates vk-285-181 --updates-no-installer "${to_update[@]}" "press cross" "wait 1" "press cross" "wait 0.2" "press cross" \
+  "wait 0.3" "expect updstate=10" "expect updinstaller=0" "shot update-downloading" "sleep 2" "expect updstate=8" "expect updstarted=1" \
+  "expect updinstaller=1"
 run logs --updates vk-285-181 "${to_logs[@]}" "expect logupload=1" "shot logs-on" "press cross" "wait 0.3" "expect logupload=0" "shot logs-off" \
   "press right" "wait 0.3" "expect logupload=1" "press left" "wait 0.3" "expect logupload=0"
 [[ -f $work/logs/installer/no-log-upload ]] || { echo "FAILED: logs (no-log-upload not written)"; failed=1; }

@@ -156,6 +156,7 @@ const char* const kKeys[kCount] = {
 	"notify.open_bios_cant_start",
 	"shelf.scanning",
 	"shelf.no_gamedb",
+	"update.downloading_installer",
 };
 
 const char* const kEnglish[kCount] = {
@@ -301,6 +302,7 @@ const char* const kEnglish[kCount] = {
 	"PS5SX2: OpenPS2BIOS (experimental) can't start PS1 discs, audio CDs or DVD videos. Put your own PS2 BIOS in %s to play this one.",
 	"Looking at new games  %d / %d",
 	"Game database missing (%s): this app's own copy is used. The PS5SX2 Installer repairs it.",
+	"Downloading the installer...",
 };
 
 const char* const kSpanish[kCount] = {

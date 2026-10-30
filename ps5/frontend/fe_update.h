@@ -29,6 +29,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace fe
 {
@@ -36,6 +37,11 @@ namespace fe
 constexpr const char* kUpdateApiUrl = "https://api.github.com/repos/Swordpdf/PS5SX2/releases/latest";
 constexpr const char* kUpdateDownloadPrefix = "https://github.com/Swordpdf/PS5SX2/releases/download/";
 constexpr uint64_t kUpdateMaxZipBytes = 512ull << 20; // the installer's MAX_ZIP_BYTES
+// installer-dl (AI-assisted; a tester who copied only eboot.bin: "it said it did not have the elf file"): System update fetches the installer from
+// the same release when the app has none (OrbisInstallerStart.cpp FindInstaller: /app0, then the app's folder), and puts it in the app's folder.
+constexpr const char* kInstallerAssetName = "PS5SX2Installer.elf";
+constexpr const char* kInstallerDest = "/data/homebrew/PPSA99203/PS5SX2Installer.elf";
+constexpr uint64_t kInstallerMaxBytes = 64ull << 20; // what OrbisInstallerStart.cpp reads of one
 
 struct ReleaseInfo
 {
@@ -46,7 +52,15 @@ struct ReleaseInfo
 	uint64_t size = 0;
 	std::string sha256;     // lowercase hex
 	std::string published_at;
+	// installer-dl: the release's PS5SX2Installer.elf (uploaded, a plausible size, this repository's download address); empty when it has none.
+	// installer_sha256: GitHub's digest of it, lowercase hex, or empty when GitHub gave none (then only its size is checked).
+	std::string installer_url;
+	uint64_t installer_size = 0;
+	std::string installer_sha256;
 };
+
+// installer-dl: SHA-256 of `n` bytes, lowercase hex.
+std::string Sha256Hex(const uint8_t* data, size_t n);
 
 // GitHub's answer for the latest release, checked as the installer checks it; false with `error` (English, for boot.log
 // and the row) when it is not a release the installer would install.
@@ -70,6 +84,7 @@ struct UpdateStatus
 		Starting,    // the installer is being sent
 		Started,     // the installer runs: the app closes now
 		StartFailed, // the installer couldn't be started (`error`)
+		DownloadingInstaller, // installer-dl: the app has no PS5SX2Installer.elf: it is being fetched from the release, then started
 	};
 	State state = State::Idle;
 	ReleaseInfo latest;
@@ -110,6 +125,13 @@ struct UpdatePlatform
 	std::function<void(const std::string& line)> log;
 	std::function<void()> quit;
 	std::function<void()> thread_start; // first thing on the worker
+	// installer-dl: whether the app has an installer to send (unset: it has); GET a file over HTTPS into `out` (at most `max_bytes`): the HTTP
+	// status, or < 0 with `error`; write a whole file (`error` on failure); rename one over another.
+	std::function<bool()> installer_present;
+	std::function<int(const std::string& url, uint64_t max_bytes, std::vector<uint8_t>& out, std::string& error)> get_file;
+	std::function<bool(const std::string& path, const std::vector<uint8_t>& data, std::string& error)> write_file;
+	std::function<bool(const std::string& from, const std::string& to)> rename_file;
+	std::string installer_dest; // where the fetched installer goes (empty: kInstallerDest)
 };
 
 class Updater
@@ -136,6 +158,11 @@ public:
 
 private:
 	void Log(const std::string& line) const;
+	// installer-dl: the release's installer into kInstallerDest (`release`: what the last look found; looked again when it holds none). False
+	// with `error` (English, for the row).
+	bool FetchInstaller(ReleaseInfo release, std::string& error);
+	// Sends the installer and sets the state from what came of it (Started / StartFailed); true when it started.
+	bool StartInstaller(const std::string& expect);
 
 	UpdatePlatform m_platform;
 	std::string m_tag, m_work, m_api, m_prefix;

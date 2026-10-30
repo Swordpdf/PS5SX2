@@ -132,6 +132,13 @@ void OrbisLoggerAutoStart(const char* build_tag)
 	Log("logger: %s %s: %s", r == StartResult::Started ? "sent" : "could not send", elf.c_str(), detail.c_str());
 }
 
+bool OrbisInstallerPresent()
+{
+	const std::string elf = FindInstaller();
+	Log("update: installer %s", elf.empty() ? "not found in /app0, /data/homebrew/PPSA99203 or /data/PCSX2" : elf.c_str());
+	return !elf.empty();
+}
+
 orbis_installer::StartResult OrbisStartUpdateInstaller(const std::string& build_tag, const std::string& expect_tag, std::string& detail)
 {
 	using namespace orbis_installer;

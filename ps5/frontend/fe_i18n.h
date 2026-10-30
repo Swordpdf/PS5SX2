@@ -168,6 +168,7 @@ enum class Str : int
 	ShelfScanning, // chdscan (AI-assisted): "Looking at new games  %d / %d": the shelf while the images not seen before are read (English only for now)
 	// gamedb (2026-10-30): "Game database missing (%s): this app's own copy is used. The PS5SX2 Installer repairs it." (%s: the file)
 	ShelfNoGameDb,
+	UpdateDownloadingInstaller, // installer-dl (AI-assisted): "Downloading the installer...": System update fetches PS5SX2Installer.elf (English only for now)
 	Count
 };
 

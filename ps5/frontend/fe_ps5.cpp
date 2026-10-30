@@ -2481,6 +2481,43 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		up.start_installer = [tag](const std::string& expect, std::string& detail) {
 			return static_cast<int>(OrbisStartUpdateInstaller(tag, expect, detail));
 		};
+		// installer-dl (owner, 2026-10-30): no PS5SX2Installer.elf beside the eboot: System update fetches it from the release (fe_update.h)
+		up.installer_present = [] { return OrbisInstallerPresent(); };
+		up.get_file = [](const std::string& url, uint64_t max_bytes, std::vector<uint8_t>& out, std::string& error) {
+			out.clear();
+			const int st = g_updhttp.Get(url, false, 0, 0, [&out, max_bytes](const void* d, size_t n) {
+				if (out.size() + n > max_bytes)
+					return false;
+				const uint8_t* b = static_cast<const uint8_t*>(d);
+				out.insert(out.end(), b, b + n);
+				return true;
+			});
+			if (st < 0)
+				error = st == HttpsClient::kConnect ? "no connection: is the console online?" : st == HttpsClient::kAborted ? "stopped" :
+					"the transfer broke";
+			return st;
+		};
+		up.write_file = [](const std::string& path, const std::vector<uint8_t>& data, std::string& error) {
+			const size_t slash = path.rfind('/');
+			if (slash != std::string::npos)
+				mkdir(path.substr(0, slash).c_str(), 0777);
+			FILE* f = std::fopen(path.c_str(), "wb");
+			if (!f)
+			{
+				error = "can't create " + path + ": errno " + std::to_string(errno);
+				return false;
+			}
+			const bool ok = std::fwrite(data.data(), 1, data.size(), f) == data.size();
+			const bool closed = std::fclose(f) == 0;
+			if (!ok || !closed)
+			{
+				error = "can't write " + path + ": errno " + std::to_string(errno);
+				unlink(path.c_str());
+				return false;
+			}
+			return true;
+		};
+		up.rename_file = [](const std::string& from, const std::string& to) { return rename(from.c_str(), to.c_str()) == 0; };
 		up.exists = [](const std::string& path) {
 			struct stat st;
 			return stat(path.c_str(), &st) == 0;

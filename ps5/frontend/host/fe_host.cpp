@@ -68,6 +68,22 @@ using namespace fe;
 
 namespace
 {
+// installer-dl: the stand-in release's PS5SX2Installer.elf (--updates-no-installer)
+std::vector<uint8_t> HostInstallerElf()
+{
+	std::vector<uint8_t> b(8000, 0x5a);
+	b[0] = 0x7f;
+	b[1] = 'E';
+	b[2] = 'L';
+	b[3] = 'F';
+	return b;
+}
+std::string HostInstallerSha()
+{
+	const std::vector<uint8_t> b = HostInstallerElf();
+	return Sha256Hex(b.data(), b.size());
+}
+
 bool ReadAll(const std::string& path, std::vector<uint8_t>& out)
 {
 	std::ifstream f(path, std::ios::binary);
@@ -722,6 +738,7 @@ int main(int argc, char** argv)
 	// as <tag>: no answer / HTTP 500) and a stand-in installer (--updates-start <rc>: what starting it answers, 0 started).
 	std::string updates;
 	int updates_start = 0;
+	bool updates_no_installer = false;
 	int record_fps = 30;
 	for (int i = 1; i < argc; i++)
 	{
@@ -783,6 +800,8 @@ int main(int argc, char** argv)
 			updates = next();
 		else if (a == "--updates-start")
 			updates_start = std::atoi(next().c_str());
+		else if (a == "--updates-no-installer") // installer-dl: the app has no installer; the stand-in release has one, fetched in 0.6 s
+			updates_no_installer = true;
 		else if (a == "--record-audio")
 			record_audio = next();
 		else if (a == "--record-fps")
@@ -1109,7 +1128,10 @@ int main(int argc, char** argv)
 			const std::string name = "PS5SX2-" + tag + ".zip";
 			body = "{\"tag_name\":\"" + tag + "\",\"name\":\"PS5SX2 9.99\",\"draft\":false,\"assets\":[{\"name\":\"" + name +
 				"\",\"state\":\"uploaded\",\"size\":41000000,\"digest\":\"sha256:" + std::string(64, 'a') +
-				"\",\"browser_download_url\":\"" + kUpdateDownloadPrefix + tag + "/" + name + "\"}]}";
+				"\",\"browser_download_url\":\"" + kUpdateDownloadPrefix + tag + "/" + name + "\"}" +
+				// installer-dl: and its installer (HostInstallerElf: 8000 bytes)
+				",{\"name\":\"PS5SX2Installer.elf\",\"state\":\"uploaded\",\"size\":8000,\"digest\":\"sha256:" + HostInstallerSha() +
+				"\",\"browser_download_url\":\"" + kUpdateDownloadPrefix + tag + "/PS5SX2Installer.elf\"}]}";
 			return 200;
 		};
 		up.start_installer = [&upd_started, updates_start](const std::string& expect, std::string& detail) {
@@ -1129,6 +1151,26 @@ int main(int argc, char** argv)
 		};
 		up.log = [](const std::string& line) { std::printf("[update] %s\n", line.c_str()); };
 		up.quit = [&upd_quit] { upd_quit++; };
+		// installer-dl: the installer goes to <data>/installer/PS5SX2Installer.elf
+		up.installer_dest = data + "/installer/PS5SX2Installer.elf";
+		up.installer_present = [updates_no_installer, dest = up.installer_dest] { return !updates_no_installer || access(dest.c_str(), F_OK) == 0; };
+		up.get_file = [](const std::string&, uint64_t, std::vector<uint8_t>& out, std::string&) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(600));
+			out = HostInstallerElf();
+			return 200;
+		};
+		up.write_file = [](const std::string& path, const std::vector<uint8_t>& bytes, std::string& error) {
+			FILE* f = std::fopen(path.c_str(), "wb");
+			if (!f)
+			{
+				error = "can't create " + path;
+				return false;
+			}
+			std::fwrite(bytes.data(), 1, bytes.size(), f);
+			std::fclose(f);
+			return true;
+		};
+		up.rename_file = [](const std::string& from, const std::string& to) { return std::rename(from.c_str(), to.c_str()) == 0; };
 		updater = std::make_unique<Updater>(up, build_tag, data + "/installer");
 		acfg.updates = updater->Service();
 	}
@@ -1289,6 +1331,7 @@ int main(int argc, char** argv)
 				                key == "updstate" ? (updater ? static_cast<int>(updater->Status().state) : -1) : // 180: fe_update.h UpdateStatus::State
 				                key == "updstarted" ? upd_started : // 180: installers started
 				                key == "updquit" ? upd_quit :       // 180: the app asked to close
+				                key == "updinstaller" ? (access((data + "/installer/PS5SX2Installer.elf").c_str(), F_OK) == 0 ? 1 : 0) : // installer-dl: fetched
 				                key == "logupload" ? (updater ? (updater->LogUpload() ? 1 : 0) : -1) : // 180: session logs on
 				                key == "tilephase" ? app.TilePhase() : // 2.12: the Home screen tile row's phase (fe_gametile.h; -1: no row on the sheet)
 				                key == "tilerow"   ? app.TileRowShown() : // 2.12: the sheet has the row

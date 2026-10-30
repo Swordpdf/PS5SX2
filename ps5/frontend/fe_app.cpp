@@ -2682,7 +2682,8 @@ void App::UpdateRowPress(const OptionsSheet::Row& row, double now)
 			std::fflush(stdout);
 			if (m_cfg.updates.install())
 			{
-				status(Tr(Str::UpdateStarted));
+				// installer-dl: no installer in the app: it is fetched first, and the row says so until it starts
+				status(Tr(m_cfg.updates.status().state == S::DownloadingInstaller ? Str::UpdateDownloadingInstaller : Str::UpdateStarted));
 				Sound(Sfx::Launch, 0.0f);
 			}
 			else
@@ -2694,6 +2695,7 @@ void App::UpdateRowPress(const OptionsSheet::Row& row, double now)
 		case S::Checking:
 		case S::Starting:
 		case S::Started:
+		case S::DownloadingInstaller:
 			Sound(Sfx::Edge, 0.3f);
 			return;
 		default:
@@ -2727,6 +2729,7 @@ std::string App::UpdateRowValue(const OptionsSheet::Row& row) const
 		case S::Starting: return Tr(Str::UpdateStarting);
 		case S::Started: return Tr(Str::UpdateStarted);
 		case S::StartFailed: return armed ? std::string(Tr(Str::UpdatePressAgain)) : Say(Str::UpdateStartFailed, s.error);
+		case S::DownloadingInstaller: return Tr(Str::UpdateDownloadingInstaller);
 	}
 	return {};
 }
@@ -2746,7 +2749,8 @@ std::string App::UpdateRowHelp(const OptionsSheet::Row& row) const
 			return s.latest.tag.empty() ? std::string(Tr(Str::UpdateHelpInterrupted)) : Say(Str::UpdateHelpAvailable, ReleaseName(s.latest));
 		case S::Interrupted: return Tr(Str::UpdateHelpInterrupted);
 		case S::Starting:
-		case S::Started: return Tr(Str::UpdateHelpStarted);
+		case S::Started:
+		case S::DownloadingInstaller: return Tr(Str::UpdateHelpStarted);
 		default: return Tr(Str::UpdateHelp);
 	}
 }

@@ -474,7 +474,108 @@ bool ParseLatestRelease(const std::string& json, const std::string& download_pre
 	out.asset_url = *url;
 	out.size = static_cast<uint64_t>(size);
 	out.sha256 = sha;
+	// installer-dl: the release's PS5SX2Installer.elf, when it has a usable one (not having one doesn't refuse the release: the app may ship its own)
+	if (assets && assets->type == JValue::Type::Array)
+		for (const JValue& a : assets->items)
+		{
+			const std::string* iname = a.Get("name") ? a.Get("name")->Str() : nullptr;
+			const std::string* istate = a.Get("state") ? a.Get("state")->Str() : nullptr;
+			const std::string* iurl = a.Get("browser_download_url") ? a.Get("browser_download_url")->Str() : nullptr;
+			const std::string* idigest = a.Get("digest") ? a.Get("digest")->Str() : nullptr;
+			long long isize = 0;
+			if (!iname || *iname != kInstallerAssetName || (istate && *istate != "uploaded"))
+				continue;
+			if (!a.Get("size") || !a.Get("size")->Int(isize) || isize <= 4096 || static_cast<unsigned long long>(isize) > kInstallerMaxBytes)
+				continue;
+			if (!iurl || *iurl != download_prefix + out.tag + "/" + kInstallerAssetName)
+				continue;
+			std::string isha;
+			if (idigest)
+			{
+				bool ok = idigest->size() == 7 + 64 && idigest->compare(0, 7, "sha256:") == 0;
+				isha = ok ? idigest->substr(7) : std::string();
+				for (char& c : isha)
+				{
+					ok = ok && std::isxdigit(static_cast<unsigned char>(c));
+					c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+				}
+				if (!ok)
+					continue; // a digest that isn't a SHA-256: not trusted
+			}
+			out.installer_url = *iurl;
+			out.installer_size = static_cast<uint64_t>(isize);
+			out.installer_sha256 = isha;
+			break;
+		}
 	return true;
+}
+
+// installer-dl: FIPS 180-4 SHA-256 (the installer checks the zip itself, in ps5/installer; this one is for the installer the app fetches).
+std::string Sha256Hex(const uint8_t* data, size_t n)
+{
+	static const uint32_t k[64] = {0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+		0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+		0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351,
+		0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+		0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3,
+		0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+	uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+	auto rotr = [](uint32_t x, int r) { return (x >> r) | (x << (32 - r)); };
+	auto block = [&](const uint8_t* b) {
+		uint32_t w[64];
+		for (int i = 0; i < 16; i++)
+			w[i] = (static_cast<uint32_t>(b[i * 4]) << 24) | (static_cast<uint32_t>(b[i * 4 + 1]) << 16) | (static_cast<uint32_t>(b[i * 4 + 2]) << 8) |
+				   b[i * 4 + 3];
+		for (int i = 16; i < 64; i++)
+		{
+			const uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+			const uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+			w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+		}
+		uint32_t a = h[0], bb = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+		for (int i = 0; i < 64; i++)
+		{
+			const uint32_t t1 = hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + k[i] + w[i];
+			const uint32_t t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & bb) ^ (a & c) ^ (bb & c));
+			hh = g;
+			g = f;
+			f = e;
+			e = d + t1;
+			d = c;
+			c = bb;
+			bb = a;
+			a = t1 + t2;
+		}
+		h[0] += a;
+		h[1] += bb;
+		h[2] += c;
+		h[3] += d;
+		h[4] += e;
+		h[5] += f;
+		h[6] += g;
+		h[7] += hh;
+	};
+	size_t i = 0;
+	for (; i + 64 <= n; i += 64)
+		block(data + i);
+	uint8_t tail[128] = {};
+	const size_t rest = n - i;
+	if (rest)
+		std::memcpy(tail, data + i, rest);
+	tail[rest] = 0x80;
+	const size_t len = rest + 9 <= 64 ? 64 : 128;
+	const uint64_t bits = static_cast<uint64_t>(n) * 8;
+	for (int j = 0; j < 8; j++)
+		tail[len - 1 - j] = static_cast<uint8_t>(bits >> (8 * j));
+	block(tail);
+	if (len == 128)
+		block(tail + 64);
+	static const char* const hex = "0123456789abcdef";
+	std::string out;
+	for (const uint32_t v : h)
+		for (int sh = 28; sh >= 0; sh -= 4)
+			out += hex[(v >> sh) & 0xf];
+	return out;
 }
 
 int CompareBuildTags(const std::string& a, const std::string& b)
@@ -506,6 +607,7 @@ const char* UpdateStateName(UpdateStatus::State s)
 		case S::Starting: return "starting the installer";
 		case S::Started: return "the installer runs";
 		case S::StartFailed: return "the installer didn't start";
+		case S::DownloadingInstaller: return "downloading the installer";
 	}
 	return "?";
 }
@@ -630,13 +732,55 @@ bool Updater::Install()
 {
 	using S = UpdateStatus::State;
 	std::string expect;
+	ReleaseInfo release;
+	const bool have = !m_platform.installer_present || m_platform.installer_present();
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
 		if (m_running || (m_status.state != S::Available && m_status.state != S::Interrupted && m_status.state != S::StartFailed))
 			return false;
 		expect = m_status.latest.tag;
-		m_status.state = S::Starting;
+		release = m_status.latest;
+		m_status.state = have ? S::Starting : S::DownloadingInstaller;
+		m_status.error.clear();
+		if (!have)
+			m_running = true;
 	}
+	if (have)
+		return StartInstaller(expect);
+	// installer-dl (owner, 2026-10-30; a tester who copied only eboot.bin: "it said it did not have the elf file"): no PS5SX2Installer.elf next to the
+	// eboot: fetched from the release on the worker, put in the app's folder, then started as usual. The row says "Downloading the installer...".
+	Log("update: no PS5SX2Installer.elf in /app0 or the app's folder: it is fetched from the release first");
+	if (m_thread.joinable())
+		m_thread.join();
+	m_thread = std::thread([this, expect, release]() {
+		if (m_platform.thread_start)
+			m_platform.thread_start();
+		std::string error;
+		if (FetchInstaller(release, error))
+		{
+			{
+				std::lock_guard<std::mutex> lock(m_mutex);
+				m_status.state = S::Starting;
+			}
+			StartInstaller(expect);
+		}
+		else
+		{
+			Log("update: the installer couldn't be fetched: " + error);
+			std::lock_guard<std::mutex> lock(m_mutex);
+			m_status.state = S::StartFailed;
+			m_status.error = error;
+		}
+		std::lock_guard<std::mutex> lock(m_mutex);
+		m_running = false;
+		m_cv.notify_all();
+	});
+	return true;
+}
+
+bool Updater::StartInstaller(const std::string& expect)
+{
+	using S = UpdateStatus::State;
 	std::string detail;
 	const int r = m_platform.start_installer ? m_platform.start_installer(expect, detail) : 1;
 	Log("update: the installer " + std::string(r == 0 ? "started" : "didn't start") + " for " + (expect.empty() ? "the latest" : expect) + ": " + detail);
@@ -651,6 +795,88 @@ bool Updater::Install()
 	m_status.error = r == 1 ? "this PS5SX2 has no PS5SX2Installer.elf" : r == 2 ? "PS5SX2Installer.elf is not one this PS5SX2 can start" :
 		r == 3 ? "no ELF loader answered on port 9021" : "the ELF loader stopped taking it";
 	return false;
+}
+
+bool Updater::FetchInstaller(ReleaseInfo release, std::string& error)
+{
+	if (release.installer_url.empty() && release.tag.empty())
+	{
+		// a cut-off install offered before any look: the release is looked at now
+		Log("installer: the release isn't known yet: looking at it");
+		const UpdateStatus st = Look(false);
+		if (st.latest.tag.empty())
+		{
+			error = "couldn't look at the release for its installer" + (st.error.empty() ? std::string() : ": " + st.error);
+			return false;
+		}
+		release = st.latest;
+	}
+	if (release.installer_url.empty())
+	{
+		error = "release " + release.tag + " has no PS5SX2Installer.elf to download";
+		return false;
+	}
+	if (!m_platform.get_file || !m_platform.write_file || !m_platform.rename_file)
+	{
+		error = "this PS5SX2 can't download files";
+		return false;
+	}
+	Log("installer: downloading " + release.installer_url + " (" + std::to_string(release.installer_size) + " bytes, SHA-256 " +
+		(release.installer_sha256.empty() ? std::string("not given by GitHub: only the size is checked") : release.installer_sha256) + ")");
+	const auto t0 = std::chrono::steady_clock::now();
+	std::vector<uint8_t> data;
+	std::string fetch_error;
+	const int http = m_platform.get_file(release.installer_url, kInstallerMaxBytes, data, fetch_error);
+	const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+	if (http < 0)
+	{
+		error = "couldn't download the installer" + (fetch_error.empty() ? std::string() : " (" + fetch_error + ")");
+		return false;
+	}
+	if (http != 200)
+	{
+		error = "GitHub answered HTTP " + std::to_string(http) + " for the installer";
+		return false;
+	}
+	char took[64];
+	std::snprintf(took, sizeof(took), "%.1f s", secs);
+	Log("installer: " + std::to_string(data.size()) + " bytes in " + took);
+	if (data.size() != release.installer_size)
+	{
+		error = "the installer downloaded is " + std::to_string(data.size()) + " bytes, the release says " + std::to_string(release.installer_size);
+		return false;
+	}
+	if (!release.installer_sha256.empty())
+	{
+		const std::string got = Sha256Hex(data.data(), data.size());
+		if (got != release.installer_sha256)
+		{
+			error = "the installer downloaded doesn't match GitHub's SHA-256";
+			Log("installer: SHA-256 " + got + ", GitHub's " + release.installer_sha256);
+			return false;
+		}
+		Log("installer: SHA-256 matches GitHub's");
+	}
+	if (data.size() < 4 || std::memcmp(data.data(), "\x7f" "ELF", 4) != 0)
+	{
+		error = "the file downloaded is not an ELF";
+		return false;
+	}
+	const std::string dest = m_platform.installer_dest.empty() ? std::string(kInstallerDest) : m_platform.installer_dest;
+	const std::string part = dest + ".part";
+	std::string write_error;
+	if (!m_platform.write_file(part, data, write_error))
+	{
+		error = "couldn't save the installer (" + write_error + ")";
+		return false;
+	}
+	if (!m_platform.rename_file(part, dest))
+	{
+		error = "couldn't put the installer in place as " + dest;
+		return false;
+	}
+	Log("installer: saved as " + dest + "; it is started as usual");
+	return true;
 }
 
 bool Updater::LogUpload() const

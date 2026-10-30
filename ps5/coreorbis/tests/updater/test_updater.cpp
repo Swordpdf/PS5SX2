@@ -1,5 +1,5 @@
 // PS5SX2 (vk-285-180, AI-assisted): PC test of the in-app updater's decisions (frontend/fe_update.h: GitHub's release answer, the
-// build tags, the row's states with a fake platform) and of the installer's launch block as the app fills it
+// build tags, the row's states with a fake platform; installer-dl: the installer fetched when the app has none) and of the installer's launch block as the app fills it
 // (orbis-shims/OrbisInstallerLaunch.h), checked against the installer's own struct (ps5/installer/src/launch.h).
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -339,6 +339,218 @@ static void TestUpdater()
 	}
 }
 
+
+// ---- installer-dl: System update fetches PS5SX2Installer.elf when the app has none ----
+
+static std::vector<uint8_t> FakeElf(size_t n)
+{
+	std::vector<uint8_t> b(n);
+	for (size_t i = 0; i < n; i++)
+		b[i] = static_cast<uint8_t>(i * 13 + 7);
+	b[0] = 0x7f;
+	b[1] = 'E';
+	b[2] = 'L';
+	b[3] = 'F';
+	return b;
+}
+
+static std::string ReleaseWithInstaller(const std::string& tag, size_t elf_size, const std::string& elf_digest, const std::string& elf_url = "")
+{
+	const std::string zip = "PS5SX2-" + tag + ".zip";
+	return Release(tag, Asset(zip, 41000000, "sha256:" + kSha, kPrefix + tag + "/" + zip) + "," +
+		Asset("PS5SX2Installer.elf", static_cast<long long>(elf_size), elf_digest, elf_url.empty() ? kPrefix + tag + "/PS5SX2Installer.elf" : elf_url),
+		false, "PS5SX2 2.21");
+}
+
+static void TestInstallerDownload()
+{
+	using S = fe::UpdateStatus::State;
+	// SHA-256 (FIPS 180-4 examples; one block, two blocks, a million bytes)
+	CHECK(fe::Sha256Hex(nullptr, 0) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 of nothing");
+	CHECK(fe::Sha256Hex(reinterpret_cast<const uint8_t*>("abc"), 3) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc");
+	const std::string two = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+	CHECK(fe::Sha256Hex(reinterpret_cast<const uint8_t*>(two.data()), two.size()) == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+		"sha256 of 56 bytes (two blocks)");
+	const std::string million(1000000, 'a');
+	CHECK(fe::Sha256Hex(reinterpret_cast<const uint8_t*>(million.data()), million.size()) ==
+			  "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+		"sha256 of a million a's");
+
+	const std::vector<uint8_t> elf = FakeElf(300000);
+	const std::string sha = fe::Sha256Hex(elf.data(), elf.size());
+	const std::string tag = "vk-285-183";
+	const std::string url = kPrefix + tag + "/PS5SX2Installer.elf";
+	{
+		fe::ReleaseInfo r;
+		std::string e;
+		CHECK(fe::ParseLatestRelease(ReleaseWithInstaller(tag, elf.size(), "sha256:" + sha), kPrefix, r, e) && r.installer_url == url &&
+				  r.installer_size == elf.size() && r.installer_sha256 == sha && r.asset_name == "PS5SX2-" + tag + ".zip",
+			"the release's installer asset: " + e);
+		CHECK(fe::ParseLatestRelease(ReleaseWithInstaller(tag, elf.size(), ""), kPrefix, r, e) && r.installer_url == url && r.installer_sha256.empty(),
+			"an installer without a digest: its size only");
+		CHECK(fe::ParseLatestRelease(ReleaseWithInstaller(tag, elf.size(), "md5:" + sha), kPrefix, r, e) && r.installer_url.empty(),
+			"an installer with a digest that isn't SHA-256: not used (the release still is)");
+		CHECK(fe::ParseLatestRelease(ReleaseWithInstaller(tag, elf.size(), "sha256:" + sha, "https://evil.example/PS5SX2Installer.elf"), kPrefix, r, e) &&
+				  r.installer_url.empty(),
+			"an installer at another address: not used");
+		CHECK(fe::ParseLatestRelease(ReleaseWithInstaller(tag, 100, "sha256:" + sha), kPrefix, r, e) && r.installer_url.empty(), "a 100-byte installer: not used");
+		CHECK(fe::ParseLatestRelease(Good(tag), kPrefix, r, e) && r.installer_url.empty(), "a release without one");
+	}
+
+	struct Disk
+	{
+		std::mutex m;
+		std::map<std::string, std::vector<uint8_t>> files;
+		std::vector<std::string> renames;
+		int downloads = 0;
+		int http = 200;
+		std::vector<uint8_t> served;
+		std::mutex* gate = nullptr;
+	};
+	const std::string dest = "/data/homebrew/PPSA99203/PS5SX2Installer.elf";
+	auto platform = [&](Fake& f, Disk& d, bool present) {
+		fe::UpdatePlatform p = MakePlatform(f);
+		p.installer_present = [present, &d, dest] {
+			std::lock_guard<std::mutex> l(d.m);
+			return present || d.files.count(dest) > 0;
+		};
+		p.get_file = [&d](const std::string& u, uint64_t max_bytes, std::vector<uint8_t>& out, std::string& error) {
+			if (d.gate)
+				std::lock_guard<std::mutex> g(*d.gate);
+			std::lock_guard<std::mutex> l(d.m);
+			d.downloads++;
+			if (u.compare(0, 8, "https://") != 0 || max_bytes < d.served.size())
+			{
+				error = "bad request";
+				return -1;
+			}
+			out = d.served;
+			return d.http;
+		};
+		p.write_file = [&d](const std::string& path, const std::vector<uint8_t>& data, std::string&) {
+			std::lock_guard<std::mutex> l(d.m);
+			d.files[path] = data;
+			return true;
+		};
+		p.rename_file = [&d](const std::string& from, const std::string& to) {
+			std::lock_guard<std::mutex> l(d.m);
+			auto it = d.files.find(from);
+			if (it == d.files.end())
+				return false;
+			d.files[to] = it->second;
+			d.files.erase(it);
+			d.renames.push_back(from + " -> " + to);
+			return true;
+		};
+		return p;
+	};
+	auto settle = [](fe::Updater& u) {
+		for (int i = 0; i < 500; i++)
+		{
+			const fe::UpdateStatus s = u.Status();
+			if (s.state != S::Checking && s.state != S::DownloadingInstaller && s.state != S::Starting)
+				return s;
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		return u.Status();
+	};
+	auto logged = [](Fake& f, const std::string& what) {
+		std::lock_guard<std::mutex> l(f.m);
+		for (const std::string& line : f.logs)
+			if (line.find(what) != std::string::npos)
+				return true;
+		return false;
+	};
+	{
+		// no installer beside the eboot: fetched (size and SHA-256 checked), saved through a .part file, then started as usual
+		Fake f;
+		Disk d;
+		d.served = elf;
+		std::mutex gate;
+		d.gate = &gate;
+		f.body = ReleaseWithInstaller(tag, elf.size(), "sha256:" + sha);
+		fe::Updater u(platform(f, d, false), "vk-285-182", "/data/PS5SX2-Installer");
+		u.Check(false);
+		CHECK(WaitDone(u).state == S::Available, "available");
+		gate.lock();
+		CHECK(u.Install(), "Cross twice with no installer: true (the download runs)");
+		CHECK(u.Status().state == S::DownloadingInstaller, "the row: downloading the installer");
+		CHECK(!u.Install() && !u.Check(false), "nothing else while it downloads");
+		gate.unlock();
+		const fe::UpdateStatus s = settle(u);
+		CHECK(s.state == S::Started && f.started.size() == 1 && f.started[0] == tag, "then the installer starts for the release shown: " + s.error);
+		CHECK(d.downloads == 1 && d.files.count(dest) == 1 && d.files[dest] == elf && d.files.count(dest + ".part") == 0, "saved in the app's folder");
+		CHECK(d.renames.size() == 1 && d.renames[0] == dest + ".part -> " + dest, "through a .part file and a rename");
+		CHECK(logged(f, "no PS5SX2Installer.elf in /app0") && logged(f, "installer: downloading " + url) && logged(f, "SHA-256 matches") &&
+				  logged(f, "saved as " + dest),
+			"each step in the log");
+		u.Stop(1000);
+	}
+	{
+		// with an installer: no download, as before
+		Fake f;
+		Disk d;
+		d.served = elf;
+		f.body = ReleaseWithInstaller(tag, elf.size(), "sha256:" + sha);
+		fe::Updater u(platform(f, d, true), "vk-285-182", "/data/PS5SX2-Installer");
+		u.Check(false);
+		WaitDone(u);
+		CHECK(u.Install() && u.Status().state == S::Started && d.downloads == 0 && f.started.size() == 1, "an installer there: started, nothing downloaded");
+		u.Stop(1000);
+	}
+	struct Bad
+	{
+		std::string why, body;
+		std::vector<uint8_t> served;
+		int http;
+		std::string error;
+	};
+	std::vector<uint8_t> flipped = elf;
+	flipped[5000] ^= 1;
+	std::vector<uint8_t> not_elf = elf;
+	not_elf[0] = 'M';
+	const Bad bad[] = {
+		{"a SHA-256 that doesn't match", ReleaseWithInstaller(tag, elf.size(), "sha256:" + sha), flipped, 200, "doesn't match GitHub's SHA-256"},
+		{"a short download", ReleaseWithInstaller(tag, elf.size(), "sha256:" + sha), std::vector<uint8_t>(elf.begin(), elf.begin() + 1000), 200,
+			"is 1000 bytes, the release says 300000"},
+		{"HTTP 404", ReleaseWithInstaller(tag, elf.size(), "sha256:" + sha), elf, 404, "HTTP 404 for the installer"},
+		{"no network", ReleaseWithInstaller(tag, elf.size(), "sha256:" + sha), elf, -1, "couldn't download the installer"},
+		{"not an ELF (no digest to catch it)", ReleaseWithInstaller(tag, elf.size(), ""), not_elf, 200, "not an ELF"},
+		{"a release without an installer", Good(tag), elf, 200, "has no PS5SX2Installer.elf to download"},
+	};
+	for (const Bad& b : bad)
+	{
+		Fake f;
+		Disk d;
+		d.served = b.served;
+		d.http = b.http;
+		f.body = b.body;
+		fe::Updater u(platform(f, d, false), "vk-285-182", "/data/PS5SX2-Installer");
+		u.Check(false);
+		WaitDone(u);
+		CHECK(u.Install(), b.why + ": the download is tried");
+		const fe::UpdateStatus s = settle(u);
+		CHECK(s.state == S::StartFailed && s.error.find(b.error) != std::string::npos && f.started.empty() && d.files.count(dest) == 0,
+			b.why + ": refused, nothing saved or started (" + s.error + ")");
+		u.Stop(1000);
+	}
+	{
+		// a cut-off install, no look yet: the release is looked at for its installer, then fetched and started (for the latest)
+		Fake f;
+		Disk d;
+		d.served = elf;
+		f.files.insert("/data/PS5SX2-Installer/journal.txt");
+		f.body = ReleaseWithInstaller(tag, elf.size(), "sha256:" + sha);
+		fe::Updater u(platform(f, d, false), "vk-285-182", "/data/PS5SX2-Installer");
+		CHECK(u.Status().state == S::Interrupted, "interrupted");
+		CHECK(u.Install(), "Cross: the installer is fetched");
+		const fe::UpdateStatus s = settle(u);
+		CHECK(s.state == S::Started && f.gets == 1 && d.downloads == 1 && f.started.size() == 1 && f.started[0].empty(),
+			"looked, fetched, started for the latest: " + s.error);
+		u.Stop(1000);
+	}
+}
+
 // ---- the launch block ----
 
 static std::vector<uint8_t> FakeInstaller(int blocks, bool filled = false)
@@ -450,6 +662,7 @@ int main()
 	TestTags();
 	TestJudge();
 	TestUpdater();
+	TestInstallerDownload();
 	TestLaunchBlock();
 	TestLoggerDecision();
 	std::printf("%d passed, %d failed\n", g_pass, g_fail);

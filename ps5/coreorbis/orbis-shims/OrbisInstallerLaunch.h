@@ -157,3 +157,6 @@ enum class StartResult
 void OrbisLoggerAutoStart(const char* build_tag);
 // From the shelf's System update row: the installer for an update of this app (build_tag) to the release the shelf showed.
 orbis_installer::StartResult OrbisStartUpdateInstaller(const std::string& build_tag, const std::string& expect_tag, std::string& detail);
+// installer-dl (AI-assisted): whether there is an installer to send (/app0, the app's folder, /data/PCSX2): System update fetches one from the
+// release when there is none (fe_update.cpp Updater::FetchInstaller, into /data/homebrew/PPSA99203/PS5SX2Installer.elf).
+bool OrbisInstallerPresent();
