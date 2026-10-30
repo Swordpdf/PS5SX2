@@ -10,7 +10,7 @@
   "conceptId": "99203",
   "contentBadgeType": 1,
   "contentId": "UP9000-PPSA99203_00-PCSX2ORBIS00001",
-  "contentVersion": "02.150.000",
+  "contentVersion": "02.200.000",
   "downloadDataSize": 256,
   "gameIntent": {
     "permittedIntents": [
@@ -25,7 +25,7 @@
       "titleName": "PS5SX2"
     }
   },
-  "masterVersion": "02.15",
+  "masterVersion": "02.20",
   "pubtools": {
     "creationDate": "2026-09-05 00:00:00",
     "loudnessSnd0": "-28.00",
