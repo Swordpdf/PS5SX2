@@ -30,6 +30,11 @@ int plat_app_running(void);
  * line in $PS5SX2_ROOT/launched.txt. */
 int plat_launch_app(char *why, size_t why_size);
 
+/* fix181: 1 while the console is shutting down, going to rest mode or suspending (SceSystemStateMgrInfo 100/300/500, or SceSystemStateMgrStatus bit
+ * 0x200000, read as ShadowMount+, the helper's kp.c and the relaunch payload read them), 0 otherwise or when it can't be read. On the host: the file
+ * named by $PS5SX2_TEST_SHUTDOWN_FILE exists. */
+int plat_shutting_down(void);
+
 /* Host tests only: extra CA file (PEM) and URL overrides; NULL on the PS5. */
 const char *plat_test_env(const char *name);
 

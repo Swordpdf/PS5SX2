@@ -98,6 +98,11 @@ int plat_launch_app(char *why, size_t why_size) {
   return 0;
 }
 
+int plat_shutting_down(void) {
+  const char *f = getenv("PS5SX2_TEST_SHUTDOWN_FILE");
+  return f && *f && access(f, F_OK) == 0 ? 1 : 0;
+}
+
 const char *plat_test_env(const char *name) {
   const char *v = getenv(name);
   return (v && *v) ? v : NULL;

@@ -1057,6 +1057,54 @@ def t_logger_short_and_relaunch(files112, z112):
     drop('logger2')
 
 
+def t_logger_shutdown(files112, z112):
+    # fix181: a session that ends while the console shuts down is not read, written or sent then; it is once the console is up again
+    root = os.path.join(WORK, 'logger4')
+    shutil.rmtree(root, ignore_errors=True)
+    mk_user(root, files112, small=True)
+    publish('vk-285-112', z112)
+    run(root)
+    shutil.rmtree(os.path.join(WORK, 'relay'), ignore_errors=True)
+    pc = data(root, 'PCSX2')
+    logs = os.path.join(pc, 'logs')
+    os.makedirs(logs, exist_ok=True)
+    flag = os.path.join(WORK, 'shutting-down')
+    env = dict(os.environ)
+    env.update({'PS5SX2_ROOT': root, 'PS5SX2_TEST_CA_FILE': os.path.join(WORK, 'ca.pem'),
+                'PS5SX2_TEST_ALLOW_HOST': 'localhost', 'PS5SX2_TEST_RELAY_URL': 'https://localhost:%d/v1/logs' % PORT,
+                'PS5SX2_TEST_SHUTDOWN_FILE': flag, 'ASAN_OPTIONS': 'detect_leaks=0:abort_on_error=1'})
+    g = subprocess.Popen(['sleep', '120'])
+    with open(os.path.join(logs, 'boot.log'), 'w') as f:
+        f.write('[boot] start\n[boot] pid=%d\nSHUTDOWN-SESSION\n' % g.pid)
+    with open(os.path.join(logs, 'settings.log'), 'a') as f:
+        f.write('2026-09-28 22:00:00  app start: vk-285-112 (pid %d)\n' % g.pid)
+        f.write('2026-09-28 22:00:01  game start: SHUTDOWN-SESSION.iso | its settings: x | all games\n')
+    with open(os.path.join(pc, 'pid.txt'), 'w') as f:
+        f.write(str(g.pid))
+    logger = subprocess.Popen([BIN], env=env, stderr=open(os.path.join(WORK, 'logger4.stderr'), 'w'))
+    try:
+        time.sleep(3)
+        open(flag, 'w').close()  # the console starts shutting down; the app closes with it
+        g.kill()
+        g.wait()
+        time.sleep(12)
+        outbox = data(root, 'PS5SX2-Installer', 'outbox')
+        check(not os.path.isdir(outbox) or not os.listdir(outbox), 'nothing written to outbox/ while shutting down')
+        check(not os.path.isdir(os.path.join(WORK, 'relay')) or not os.listdir(os.path.join(WORK, 'relay')), 'nothing sent while shutting down')
+        os.remove(flag)  # up again (on the console: the next boot)
+        wait_reports(1)
+        h, body = report(0)
+        check('SHUTDOWN-SESSION' in body, 'reported once the console is up')
+        open(data(root, 'PS5SX2-Installer', 'no-log-upload'), 'w').close()
+        logger.wait(timeout=20)
+    finally:
+        if logger.poll() is None:
+            logger.kill()
+    log = open(data(root, 'PS5SX2-Installer', 'installer.log')).read() if os.path.exists(data(root, 'PS5SX2-Installer', 'installer.log')) else ''
+    check('shutting down or going to rest mode' in log, 'installer.log says why')
+    drop('logger4')
+
+
 def t_logger_release_layout(files112, z112):
     """A console set up from a release zip has no logs/ folder, so PS5SX2 keeps its logs in /data/PCSX2 itself
     (OrbisLogPath). 1.0 and 1.1 only looked in logs/: their reports from testers had no logs, build "unknown" and
@@ -1587,6 +1635,7 @@ def main():
             ('a link in the work folder is refused', lambda: t_links_in_work(env113())),
             ('pid.txt from before the boot is ignored', lambda: t_stale_pid(env113())),
             ('logger: short session, relaunch between checks', lambda: t_logger_short_and_relaunch(files112, z112)),
+            ('logger fix181: nothing read, written or sent while the console shuts down', lambda: t_logger_shutdown(files112, z112)),
             ('logger: release layout (no logs/ folder), logs/ made later, no settings.log line',
              lambda: t_logger_release_layout(files112, z112)),
             ('logger 1.3: shelf-only sessions not sent, problems and games are; no notifications',
