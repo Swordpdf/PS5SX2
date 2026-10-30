@@ -2152,12 +2152,15 @@ static std::string orbis_menu_exec_path()
 
 // The note for the next start: the shelf opens, though the tile's marker (or the bootdisc flag) would start the disc again.
 // 176: "<time> <wall clock ms now> <wall clock ms of the press>" (orbis-shims/OrbisLeavePlan.h ShelfMark): the start that follows tells how long ago both were.
-static void orbis_mark_open_shelf()
+// fix180: and the title the leave starts (orbis_leave::TargetOf), so that only that title's start takes it (orbis_take_open_shelf_mark): a tile pressed after
+// a leave of the main app (whose own exec may not bring it back) starts its game instead of the shelf.
+static void orbis_mark_open_shelf(const char* target)
 {
   if (FILE* f = fopen(OrbisLogPath("open-shelf.txt").c_str(), "wb"))
   {
     const long long now_ms = orbis_wall_ms();
-    fprintf(f, "%lld %lld %lld\n", static_cast<long long>(time(nullptr)), now_ms, now_ms - (orbis_steady_us() - orbis_leave_base_us()) / 1000);
+    fprintf(f, "%lld %lld %lld %s\n", static_cast<long long>(time(nullptr)), now_ms, now_ms - (orbis_steady_us() - orbis_leave_base_us()) / 1000,
+      target && target[0] ? target : orbis_leave::kMainTitle);
     fclose(f);
   }
 }
@@ -2165,8 +2168,26 @@ static void orbis_mark_open_shelf()
 // The note this start took (zeros when it took none or it was an older file without the times), for orbis_leave_press_age_ms().
 static orbis_leave::ShelfMark s_leave_mark;
 
+// fix180: this process's title for the note (orbis_leave::NoteIsFor): PPSA99203 for the main app, the tile's folder name for a disc or game tile ("" when
+// its folder was not found; a game tile then goes by the tile= line of its marker). Asked after the jailbreak (orbis_own_tile_dir looks in /data/homebrew).
+static bool orbis_is_tile_start()
+{
+  return s_tile_marker_seen && !s_tile_marker_drive.empty() && s_tile_marker_drive != "reload";
+}
+static std::string orbis_own_title()
+{
+  if (!orbis_is_tile_start())
+    return orbis_leave::kMainTitle;
+  const std::string tile = orbis_own_tile_dir();
+  if (!tile.empty())
+    return tile.substr(tile.find_last_of('/') + 1);
+  return s_tile_is_game ? s_tile_game_id : std::string();
+}
+
 // Read and removed by the start that follows; true when it was left in the last three minutes. `out` (main() only) gets the note's numbers.
-static bool orbis_take_open_shelf_mark(orbis_leave::ShelfMark* out = nullptr)
+// fix180: with `for_this_start` (main() only), true only when the note is also addressed to this process (orbis_leave::NoteIsFor); a fresh note for another
+// title is said in boot.log and removed all the same (the leave it was written for is over: this start is the user's).
+static bool orbis_take_open_shelf_mark(orbis_leave::ShelfMark* out = nullptr, bool for_this_start = false)
 {
   const std::string path = OrbisLogPath("open-shelf.txt");
   bool fresh = false;
@@ -2179,6 +2200,19 @@ static bool orbis_take_open_shelf_mark(orbis_leave::ShelfMark* out = nullptr)
     if (orbis_leave::ParseShelfMark(text, mark))
     {
       fresh = mark.sec > 0 && time(nullptr) - mark.sec >= 0 && time(nullptr) - mark.sec < 180;
+      if (fresh && for_this_start)
+      {
+        const std::string own = orbis_own_title();
+        if (!orbis_leave::NoteIsFor(mark, own.c_str(), orbis_is_tile_start()))
+        {
+          printf("[boot] a \"back to the menu\" note of %lld s ago is for %s, not for this start (%s): not taken, %s\n",
+            static_cast<long long>(time(nullptr) - mark.sec), mark.target[0] ? mark.target : "the main app (a note without a title)",
+            own.empty() ? "a tile whose folder was not found" : own.c_str(),
+            s_tile_is_game ? "the game tile starts its game" : orbis_is_tile_start() ? "the disc tile starts its disc" : "the start goes on as usual");
+          fflush(stdout);
+          fresh = false;
+        }
+      }
       if (fresh && out)
         *out = mark;
     }
@@ -2334,6 +2368,8 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
   in.relay_started = relay;
   in.tile_dir_found = tile_found;
   How how = orbis_leave::Decide(in);
+  const std::string own_tile = tile_found ? tile.substr(tile.find_last_of('/') + 1) : std::string(); // fix180: the note's title for the tile's own eboot
+  orbis_mark_open_shelf(orbis_leave::TargetOf(how, own_tile.c_str()));
   printf("[menu] leaving by %s (payload %d, disc tile %d, its eboot found %d, flags menuexec %d menuclose %d menufast %d menurelaunch %d, main app exec by default %d)\n",
     kHow[static_cast<int>(how)], relay, is_tile, tile_found, fl.menuexec, fl.menuclose, fl.menufast, fl.menurelaunch, orbis_leave::kMainAppExecByDefault);
   orbis_leave_note(kHow[static_cast<int>(how)]);
@@ -2370,6 +2406,8 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
   }
   // The old way (a disc tile's own eboot, then the app's; the main app's): "It doesn't come back when it works; allow for one that returns first and ends the process later."
   const std::string path = orbis_menu_exec_path();
+  // fix180: the note names the title this eboot is (the tile's own, else the main app's)
+  orbis_mark_open_shelf(tile_found && path == tile + "/eboot.bin" ? own_tile.c_str() : orbis_leave::kMainTitle);
   printf("[menu] re-executing %s\n", path.c_str());
   orbis_leave_note("exec: eboot issued");
   fflush(stdout);
@@ -2380,6 +2418,7 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
   {
     printf("[menu] the tile's own eboot didn't take: PPSA99203's is tried\n"); // 2.11
     fflush(stdout);
+    orbis_mark_open_shelf(orbis_leave::kMainTitle); // fix180
     exec_rc = orbis_exec_for_menu("/data/homebrew/PPSA99203/eboot.bin");
   }
   orbis_leave_note("exec: eboot returned");
@@ -2398,7 +2437,7 @@ static void orbis_restart_to_menu()
   const bool relay = orbis_leave_start_relay(fl); // 2.11: the relaunch payload, or the old exec
   orbis_leave_note_ms(relay ? "relay: up" : "relay: none", t_relay);
   orbis_mark_relaunch(); // vk-285-144
-  orbis_mark_open_shelf(); // 2.11
+  // 2.11: open-shelf.txt (fix180: written by orbis_leave_process, with the title its way starts)
   const bool waiting = orbis_leave_process(relay, fl);
   if (!waiting)
     orbis_take_open_shelf_mark(); // still here: the note is not for a later start
@@ -2436,7 +2475,7 @@ static void orbis_back_to_menu()
   // disc speed restore hook (disc work)
   cdvdQuiesce(400); // 2.11 (disc lag round): a game from a disc drive: no new drive read from here on (and none half done when the process goes); nothing is sent to the drive and no lock taken
   orbis_mark_relaunch(); // vk-285-144
-  orbis_mark_open_shelf(); // 2.11: the shelf opens next, not the tile's disc again
+  // 2.11: the shelf opens next, not the tile's disc again (open-shelf.txt; fix180: written by orbis_leave_process, with the title its way starts)
   // It doesn't come back when it works; allow for one that returns first and ends the process later.
   const bool waiting = orbis_leave_process(relay, fl);
   if (!waiting)
@@ -3861,7 +3900,7 @@ int main()
   // Nothing is copied from here. The file is read, not deleted: it belongs to the tile.
   // 2.11: a start that follows "back to the menu" (L1 + R1 + touchpad, or a game that failed to start): the shelf opens. Neither the tile's
   // marker nor the bootdisc flag starts the disc in the drive again then. Taken once, and only when it is fresh.
-  const bool open_shelf = orbis_take_open_shelf_mark(&s_leave_mark);
+  const bool open_shelf = orbis_take_open_shelf_mark(&s_leave_mark, true); // fix180: only a note addressed to this title (a tile press after a leave of the main app starts its game)
   if (open_shelf)
   {
     printf("[boot] opened by \"back to the menu\": the shelf opens, the disc in the drive isn't started again%s\n",

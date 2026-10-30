@@ -4,7 +4,7 @@
 // second exec and never a cancelled payload.
 // 176: the main app's own gate (flags menufast / menurelaunch, kMainAppExecByDefault): with neither flag every answer is the 175 one, menufast only changes
 // the main app, WantRelay says exactly when the payload is worth starting. And the payload's timing (SettleMs for the flag menusettle) and the note for
-// the next start (ParseShelfMark).
+// the next start (ParseShelfMark). fix180: the note's title (TargetOf) and which start takes it (NoteIsFor).
 //   ps5/coreorbis/tests/leaveplan/test-leaveplan.sh
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -251,9 +251,63 @@ int main()
 		Check(!orbis_leave::ParseShelfMark("abc", mark), "garbage is no note");
 		Check(!orbis_leave::ParseShelfMark(nullptr, mark), "no text is no note");
 		char written[96];
-		std::snprintf(written, sizeof(written), "%lld %lld %lld\n", 1760000123LL, 1760000123456LL, 1760000120001LL); // main-boot.cpp's format string
-		Check(orbis_leave::ParseShelfMark(written, mark) && mark.sec == 1760000123LL && mark.mark_ms == 1760000123456LL && mark.press_ms == 1760000120001LL,
+		std::snprintf(written, sizeof(written), "%lld %lld %lld %s\n", 1760000123LL, 1760000123456LL, 1760000120001LL, "PPSA99238"); // main-boot.cpp's format string
+		Check(orbis_leave::ParseShelfMark(written, mark) && mark.sec == 1760000123LL && mark.mark_ms == 1760000123456LL && mark.press_ms == 1760000120001LL &&
+		          std::string(mark.target) == "PPSA99238",
 			"what the app writes is read back");
+	}
+
+	// fix180: the note's title (the fourth field) and who takes it. Tester on 180: a disc tile pressed 43 s after "back to the menu" in the main app (whose
+	// own exec did not bring it back) took the main app's note and opened the shelf on the disc's cover; closed and pressed again, it started the disc.
+	{
+		using orbis_leave::NoteIsFor;
+		orbis_leave::ShelfMark mark;
+		Check(orbis_leave::ParseShelfMark("1 2 3 PPSA99203\n", mark) && std::string(mark.target) == "PPSA99203", "the title is read");
+		Check(orbis_leave::ParseShelfMark("1 2 3\n", mark) && mark.target[0] == '\0', "a 176..180 note: no title");
+		Check(orbis_leave::ParseShelfMark("1 2 3 PPSA99203 more\n", mark) && std::string(mark.target) == "PPSA99203", "what follows the title is left out");
+		Check(orbis_leave::ParseShelfMark("1 2 3 PPSA/9203", mark) && mark.target[0] == '\0' && mark.press_ms == 3, "a title with other characters is left out");
+		Check(orbis_leave::ParseShelfMark("1 2 3 ABCDEFGHIJKLMNOPQRSTUVWXYZ", mark) && mark.target[0] == '\0', "a title too long is left out");
+		Check(orbis_leave::ParseShelfMark("1 2 x PPSA99203", mark) && mark.target[0] == '\0' && mark.press_ms == 0, "no title without the press time");
+		Check(orbis_leave::ParseShelfMark("1 2 3 PPSA99251_0\r\n", mark) && std::string(mark.target) == "PPSA99251_0", "'_' and a CR line end");
+
+		orbis_leave::ParseShelfMark("1 2 3 PPSA99203", mark);
+		Check(NoteIsFor(mark, "PPSA99203", false), "the main app's note: the main app takes it");
+		Check(!NoteIsFor(mark, "PPSA99238", true), "the main app's note: a disc tile does not (the tester's case)");
+		Check(!NoteIsFor(mark, "PPSA99251", true), "the main app's note: a game tile does not");
+		Check(!NoteIsFor(mark, "", true), "the main app's note: a tile whose folder was not found does not");
+		orbis_leave::ParseShelfMark("1 2 3 PPSA99238", mark);
+		Check(NoteIsFor(mark, "PPSA99238", true), "a tile's own exec: that tile takes it");
+		Check(!NoteIsFor(mark, "PPSA99237", true), "a tile's own exec: another tile does not");
+		Check(!NoteIsFor(mark, "PPSA99203", false), "a tile's own exec: the main app does not");
+		Check(!NoteIsFor(mark, "", true), "a tile's own exec: a tile that does not know its folder does not");
+		orbis_leave::ParseShelfMark("1 2 3", mark);
+		Check(NoteIsFor(mark, "PPSA99203", false), "a note without a title (2.11..180): the main app takes it, as before");
+		Check(!NoteIsFor(mark, "PPSA99238", true), "a note without a title: a tile press starts its game");
+		Check(!NoteIsFor(mark, nullptr, true), "no own title: not taken");
+
+		using orbis_leave::TargetOf;
+		Check(std::string(TargetOf(How::Relaunch, "PPSA99238")) == "PPSA99203", "the relay starts the main app");
+		Check(std::string(TargetOf(How::ExecMain, "")) == "PPSA99203", "the main app's exec starts the main app");
+		Check(std::string(TargetOf(How::ExecOwnTile, "PPSA99238")) == "PPSA99238", "a tile's own exec starts that tile");
+		Check(std::string(TargetOf(How::ExecOwnTile, "")) == "PPSA99203", "a tile's exec without its folder name: the main app's title");
+		Check(std::string(TargetOf(How::ExitOnly, "PPSA99238")) == "PPSA99203", "the plain close: a note as before (the main app's)");
+		// every way out, from every start: the note it writes is taken by the title that way starts, and by no tile it does not start
+		for (int bits = 0; bits < 128; bits++)
+		{
+			const In in = FromBits(bits);
+			const How how = orbis_leave::Decide(in);
+			const char* own_tile = in.is_tile && in.tile_dir_found ? "PPSA99231" : "";
+			char line[64];
+			std::snprintf(line, sizeof(line), "1 2 3 %s\n", TargetOf(how, own_tile));
+			orbis_leave::ShelfMark m;
+			orbis_leave::ParseShelfMark(line, m);
+			const bool main_takes = NoteIsFor(m, "PPSA99203", false);
+			const bool own_takes = NoteIsFor(m, "PPSA99231", true);
+			const bool other_takes = NoteIsFor(m, "PPSA99252", true);
+			Check(!other_takes, std::string("bits ") + std::to_string(bits) + ": a tile the leave does not start never takes the note");
+			Check(how == How::ExecOwnTile ? (own_takes && !main_takes) : (main_takes && !own_takes),
+				std::string("bits ") + std::to_string(bits) + " (" + Name(how) + "): only the title it starts takes the note");
+		}
 	}
 
 	std::printf("leaveplan test: %d checks, %s\n", checks, fails ? "FAILED" : "all passed");
