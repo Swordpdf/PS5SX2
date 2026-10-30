@@ -58,6 +58,8 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "debug_overlay.h"
 #include "OrbisPaths.h" // vk-285-33: the /data/PCSX2 folder layout
 #include "OrbisGameDb.h" // gamedb (2026-10-30): GameIndex.yaml in the eboot, for a console without resources/
+#include "OrbisDev9Send.h" // killzone-online (2026-10-30): the ticker's stall line names a DEV9 send that waits
+#include "OrbisStall.h"    // killzone-online (2026-10-30): the stall line itself
 #include "OrbisDriver.h" // vk-285-115: ps5vk or RADV
 #include "SIO/Pad/Pad.h"
 #include "SIO/Pad/PadDualshock2.h"
@@ -5372,6 +5374,31 @@ int main()
                  static_cast<int>(EmuConfig.GS.HWDownloadMode));
       }
 #endif
+      {
+        // killzone-online (2026-10-30, AI-assisted): the emulation stopped (the EE's cycle count still while the VM runs). Killzone online froze
+        // ~34 s and nothing in the logs said where; now boot.log says it while it lasts (after 2 s, then every 5 s) and settings.log once it
+        // ends, with the EE's and IOP's pc and a DEV9 TCP send that waits (OrbisDev9Send.h), if any.
+        static OrbisStallWatch s_stall;
+        const long long dev9_since = g_orbis_dev9_send_since_us.load(std::memory_order_acquire);
+        OrbisStallSample smp;
+        smp.running = VMManager::GetState() == VMState::Running;
+        smp.ee_cycle = cpuRegs.cycle;
+        smp.ee_pc = cpuRegs.pc;
+        smp.iop_pc = psxRegs.pc;
+        smp.dev9_wait_ms = dev9_since ? (OrbisDev9NowUs() - dev9_since) / 1000 : -1;
+        smp.dev9_port = g_orbis_dev9_send_port.load(std::memory_order_relaxed);
+        smp.dev9_kept = g_orbis_dev9_kept.load(std::memory_order_relaxed);
+        smp.dev9_wait_max_ms = g_orbis_dev9_wait_max_us.exchange(0, std::memory_order_relaxed) / 1000;
+        std::string boot_line, event_line;
+        s_stall.Second(smp, &boot_line, &event_line);
+        if (!boot_line.empty())
+          printf("%s\n", boot_line.c_str());
+        if (!event_line.empty())
+        {
+          printf("[stall] %s\n", event_line.c_str());
+          OrbisDeferredEvent(event_line.c_str());
+        }
+      }
       printf("[boot] t+%ds state=%d eepc=%08x eecy=%llu ioppc=%08x iopcy=%llu rec=%d/%d\n", i + 1,
         (int)VMManager::GetState(), cpuRegs.pc, (unsigned long long)cpuRegs.cycle,
         psxRegs.pc, (unsigned long long)psxRegs.cycle,

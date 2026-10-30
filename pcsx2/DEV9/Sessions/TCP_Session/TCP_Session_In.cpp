@@ -14,14 +14,54 @@
 
 #include "TCP_Session.h"
 
+#ifdef ORBIS_VULKAN
+#include "OrbisDev9Send.h" // killzone-online (2026-10-30)
+#endif
+
 using namespace PacketReader;
 using namespace PacketReader::IP;
 using namespace PacketReader::IP::TCP;
 
 namespace Sessions
 {
+#ifdef ORBIS_VULKAN
+	bool TCP_Session::FlushPendingLocked(std::chrono::microseconds budget, int* err)
+	{
+		const OrbisDev9SendResult r = OrbisDev9Send(
+			[this](const u8* data, int size) {
+				const int ret = send(client, reinterpret_cast<const char*>(data), size, 0);
+				return ret == SOCKET_ERROR ? -errno : ret;
+			},
+			[this](std::chrono::microseconds wait) {
+				fd_set writeSet;
+				FD_ZERO(&writeSet);
+				FD_SET(client, &writeSet);
+				timeval tv{0, static_cast<suseconds_t>(wait.count())};
+				select(client + 1, nullptr, &writeSet, nullptr, &tv);
+			},
+			pendingSend, nullptr, 0, budget, destPort);
+		*err = r.error;
+		return r.error == 0;
+	}
+#endif
+
 	std::optional<ReceivedPayload> TCP_Session::Recv()
 	{
+#ifdef ORBIS_VULKAN
+		// killzone-online (2026-10-30): the receive thread passes on what the server had no room for when the PS2 sent it (no wait here).
+		if (state == TCP_State::Connected)
+		{
+			std::unique_lock<std::mutex> lock(pendingSentry, std::try_to_lock);
+			int err = 0;
+			if (lock.owns_lock() && !pendingSend.empty() && !FlushPendingLocked(std::chrono::microseconds(0), &err))
+			{
+				lock.unlock();
+				CloseByRemoteRST();
+				Console.Error("DEV9: TCP: Send error: %d (data kept for later)", err);
+				return std::nullopt;
+			}
+		}
+#endif
 		std::optional<ReceivedPayload> ret = PopRecvBuff();
 		if (ret.has_value())
 			return ret;
