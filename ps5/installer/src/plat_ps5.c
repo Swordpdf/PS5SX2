@@ -49,6 +49,11 @@ _Static_assert(sizeof(notify_request_t) == 0xC30, "notification request must be 
 _Static_assert(offsetof(notify_request_t, message) == 0x2D, "message at 0x2D");
 
 int sceKernelSendNotificationRequest(int32_t device, void *request, size_t size, int32_t blocking);
+/* fix181: the system state event flags (as relaunch/relaunch.c reads them) */
+typedef intptr_t plat_evf_t;
+int sceKernelOpenEventFlag(plat_evf_t *ef, const char *name);
+int sceKernelPollEventFlag(plat_evf_t ef, uint64_t bit_pattern, unsigned int wait_mode, uint64_t *result_pattern);
+int sceKernelCloseEventFlag(plat_evf_t ef);
 
 const char *plat_root(void) { return ""; }
 
@@ -150,6 +155,26 @@ static void load_lnc(void) {
     if (init)
       (void)init(NULL); /* (already initialized in a process that used it before: harmless) */
   }
+}
+
+int plat_shutting_down(void) {
+  int quiet = 0;
+  plat_evf_t info = -1, status = -1;
+  if (sceKernelOpenEventFlag(&info, "SceSystemStateMgrInfo") >= 0) {
+    uint64_t pat = 0;
+    if (sceKernelPollEventFlag(info, UINT64_MAX, 2u /* OR */, &pat) == 0) {
+      const unsigned st = (unsigned)(pat & 0xffffu);
+      quiet = st == 100u || st == 300u || st == 500u;
+    }
+    sceKernelCloseEventFlag(info);
+  }
+  if (sceKernelOpenEventFlag(&status, "SceSystemStateMgrStatus") >= 0) {
+    uint64_t pat = 0;
+    if (sceKernelPollEventFlag(status, UINT64_MAX, 2u /* OR */, &pat) == 0 && (pat & 0x0000000000200000ULL))
+      quiet = 1;
+    sceKernelCloseEventFlag(status);
+  }
+  return quiet;
 }
 
 int plat_app_running(void) {

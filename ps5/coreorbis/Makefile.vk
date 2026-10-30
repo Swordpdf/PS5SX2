@@ -620,3 +620,10 @@ clean:
 	rm -rf $(OBJDIR) objects.txt
 
 .PHONY: all clean
+
+# fix181 (AI-assisted): OPENBIOS_EMBED=0 leaves OpenPS2BIOS (4 MB) out of the eboot; the package then needs PPSA99203/openps2bios/OpenPS2BIOS-0.5.bin and
+# LICENSE (fe_ps5.cpp reads them on first use). For the console test of the slow "back to the menu" exec (180's eboot is 4.4 MB bigger than 179's).
+OPENBIOS_EMBED ?= 1
+ifeq ($(OPENBIOS_EMBED),0)
+$(OBJDIR)/frontend/fe_ps5.o: CXXFLAGS += -DFE_OPEN_BIOS_FILE
+endif
