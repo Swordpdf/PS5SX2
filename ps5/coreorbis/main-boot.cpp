@@ -2395,14 +2395,27 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
   in.relay_started = relay;
   in.tile_dir_found = tile_found;
   How how = orbis_leave::Decide(in);
+  // fix181: the switches a tester sets to find what slows the main app's own exec down since 179 (177: the new process 0.98 s after the exit, median of
+  // 291 exits on 92 consoles; 179: 3.1-4.4 s; 180/181: 3.5 s to never). Each is a file in /data/PCSX2/flags; with menufast the main app leaves by its
+  // exec (the guard behind it), so each try shows in the next start's "back to the menu: this start is N ms ... after the exit" line.
+  printf("[menu] exec bisect switches: menufast %d | helper_noautoload %d logger_noautoload %d noupdatecheck %d menu_keepoutput %d nodiscdump %d "
+    "disc_lockeject %d disc_nopread64 %d\n", orbis_flag("menufast"), orbis_flag("helper_noautoload"), orbis_flag("logger_noautoload"),
+    orbis_flag("noupdatecheck"), orbis_flag("menu_keepoutput"), orbis_flag("nodiscdump"), orbis_flag("disc_lockeject"), orbis_flag("disc_nopread64"));
   const std::string own_tile = tile_found ? tile.substr(tile.find_last_of('/') + 1) : std::string(); // fix180: the note's title for the tile's own eboot
   orbis_mark_open_shelf(orbis_leave::TargetOf(how, own_tile.c_str()));
   printf("[menu] leaving by %s (payload %d, disc tile %d, its eboot found %d, flags menuexec %d menuclose %d menufast %d menurelaunch %d, main app exec by default %d)\n",
     kHow[static_cast<int>(how)], relay, is_tile, tile_found, fl.menuexec, fl.menuclose, fl.menufast, fl.menurelaunch, orbis_leave::kMainAppExecByDefault);
   orbis_leave_note(kHow[static_cast<int>(how)]);
   const long long t_output = orbis_steady_us();
-  orbis_output_default(); // before the exit, never after: frame generation's 120 Hz output (and the PAL modes) go back to the default first
-  orbis_leave_note_ms("output default restored", t_output); // 176: with frame generation's 120 Hz this is an HDMI mode change
+  // fix181 (bisect of the exec regression, owner: "introduced in like 2.00"; 2.00 added this call before the exec): flag menu_keepoutput skips it (the next
+  // start puts a 120 Hz output back itself, OrbisVideoOutBootCheck)
+  if (!orbis_flag("menu_keepoutput"))
+  {
+    orbis_output_default(); // before the exit, never after: frame generation's 120 Hz output (and the PAL modes) go back to the default first
+    orbis_leave_note_ms("output default restored", t_output); // 176: with frame generation's 120 Hz this is an HDMI mode change
+  }
+  else
+    orbis_leave_note("output default NOT restored (flag menu_keepoutput)");
   orbis_log_drain();      // the lines above reach boot.log before the process can end
   fflush(stdout);
   fflush(stderr);
@@ -3695,6 +3708,24 @@ int main()
     const std::string back = OrbisRelaunchConfirmCameBack();
     if (!back.empty())
       printf("[menu] %s\n", back.c_str());
+    // fix181: logs/leave.txt's last leave (from its "begin:" line): how far the old process came and how long each step took
+    if (FILE* lf = fopen(OrbisLogPath("leave.txt").c_str(), "rb"))
+    {
+      std::vector<std::string> leave;
+      char lbuf[400];
+      while (fgets(lbuf, sizeof(lbuf), lf))
+      {
+        std::string l = lbuf;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
+          l.pop_back();
+        if (l.find(" begin:") != std::string::npos)
+          leave.clear();
+        leave.push_back(l);
+      }
+      fclose(lf);
+      for (size_t i = leave.size() > 20 ? leave.size() - 20 : 0; i < leave.size(); i++)
+        printf("[menu] leave.txt: %s\n", leave[i].c_str());
+    }
     const std::string last = OrbisRelaunchLastLog();
     if (!last.empty())
     {
