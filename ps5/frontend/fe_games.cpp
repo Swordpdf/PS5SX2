@@ -150,6 +150,436 @@ private:
 	uint32_t m_offset = 0;
 };
 
+// chdscan (AI-assisted; a tester with many CHDs on a USB hard drive: the black screen before the shelf was long with CHDs, short with
+// ISOs). libchdr's chd_open decodes a v5 CHD's whole hunk map before the first read: a 4.2 GB DVD image with 2048-byte hunks reads
+// 5.8 MB and takes ~110 ms on a PC for its serial, where an ISO reads 4 KB (host/test-chdscan.sh). The serial needs only the hunks of
+// the first sectors, so the map is decoded as far as those (ChdMapPrefix) and libchdr is handed a CHD that ends there (ChdPrefixFile):
+// the real header with a shorter logical size, a map of those hunks only, written afresh, and the real file for everything else (the
+// metadata, the hunks). The map holds every hunk's type before the first hunk's length, so the types are still read through: about a
+// tenth of the map. A read past the prefix opens it again, twice as long (or to the end).
+namespace chdv5
+{
+enum : uint8_t
+{
+	kType0 = 0, // the header's four codecs: 0 to 3
+	kNone = 4,
+	kSelf = 5,
+	kParent = 6,
+	kRleSmall = 7,
+	kRleLarge = 8,
+	kSelf0 = 9,
+	kSelf1 = 10,
+};
+constexpr size_t kHeaderBytes = 124;
+
+uint64_t Be(const uint8_t* p, int n)
+{
+	uint64_t v = 0;
+	for (int i = 0; i < n; i++)
+		v = (v << 8) | p[i];
+	return v;
+}
+
+void PutBe(uint8_t* p, uint64_t v, int n)
+{
+	for (int i = n - 1; i >= 0; i--, v >>= 8)
+		p[i] = static_cast<uint8_t>(v);
+}
+
+// libchdr's crc16 (CRC-CCITT, start 0xffff), which checks the map
+uint16_t Crc16(const uint8_t* p, size_t n)
+{
+	static uint16_t table[256];
+	static bool made = false;
+	if (!made)
+	{
+		for (int i = 0; i < 256; i++)
+		{
+			uint32_t c = static_cast<uint32_t>(i) << 8;
+			for (int b = 0; b < 8; b++)
+				c = (c & 0x8000) ? (c << 1) ^ 0x1021 : c << 1;
+			table[i] = static_cast<uint16_t>(c);
+		}
+		made = true;
+	}
+	uint16_t crc = 0xffff;
+	while (n--)
+		crc = static_cast<uint16_t>((crc << 8) ^ table[(crc >> 8) ^ *p++]);
+	return crc;
+}
+
+class BitWriter
+{
+public:
+	void Put(uint32_t v, int bits)
+	{
+		for (int i = bits - 1; i >= 0; i--)
+		{
+			m_acc = static_cast<uint8_t>((m_acc << 1) | ((v >> i) & 1));
+			if (++m_n == 8)
+			{
+				out.push_back(m_acc);
+				m_acc = 0;
+				m_n = 0;
+			}
+		}
+	}
+	void Flush()
+	{
+		if (m_n)
+			out.push_back(static_cast<uint8_t>(m_acc << (8 - m_n)));
+		m_acc = 0;
+		m_n = 0;
+	}
+	std::vector<uint8_t> out;
+
+private:
+	uint8_t m_acc = 0;
+	int m_n = 0;
+};
+
+// A v5 CHD's compressed map, decoded as far as it is needed (libchdr's decompress_v5_map, the same steps).
+class MapPrefix
+{
+public:
+	struct Entry
+	{
+		uint8_t type; // kType0..3, kNone or kSelf
+		uint32_t length;
+		uint64_t offset; // in the file; for kSelf the hunk it copies
+		uint16_t crc;
+	};
+
+	// The 124-byte header. False when this isn't a v5 CHD with a compressed map and no parent, or the map can't be read (libchdr then
+	// opens the image as it is, and says what is wrong with it).
+	bool Init(int fd, const uint8_t* header, uint64_t file_size)
+	{
+		m_fd = fd;
+		if (std::memcmp(header, "MComprHD", 8) != 0 || Be(header + 8, 4) != kHeaderBytes || Be(header + 12, 4) != 5)
+			return false;
+		static const uint8_t kNoParent[20] = {};
+		if (std::memcmp(header + 104, kNoParent, sizeof(kNoParent)) != 0)
+			return false;
+		logical = Be(header + 32, 8);
+		m_map_offset = Be(header + 40, 8);
+		hunk_bytes = static_cast<uint32_t>(Be(header + 56, 4));
+		if (hunk_bytes == 0 || Be(header + 60, 4) == 0)
+			return false;
+		const uint64_t hunks = (logical + hunk_bytes - 1) / hunk_bytes;
+		if (hunks == 0 || hunks > 0xffffffffull / 12)
+			return false;
+		hunk_count = static_cast<uint32_t>(hunks);
+		compressed = Be(header + 16, 4) != 0;
+		if (!compressed)
+			return true; // a raw map: 4 bytes a hunk, which libchdr reads only as far as the shorter logical size
+		uint8_t mh[16];
+		if (!ReadAt(fd, m_map_offset, mh, sizeof(mh)))
+			return false;
+		m_map_bytes = static_cast<uint32_t>(Be(mh, 4));
+		m_cur_offset = Be(mh + 4, 6);
+		first_offset = m_cur_offset;
+		m_length_bits = mh[12];
+		m_self_bits = mh[13];
+		parent_bits = mh[14];
+		if (m_map_offset + m_map_bytes < m_map_offset || m_map_offset + m_map_bytes >= file_size || m_length_bits > 32 || m_self_bits > 32)
+			return false;
+		// The Huffman tree of the types (16 codes of at most 8 bits; 4 bits a length, 1 an escape) and its canonical codes.
+		uint8_t len[16] = {};
+		for (int cur = 0; cur < 16;)
+		{
+			uint32_t v = Read(4);
+			if (v != 1)
+				len[cur++] = static_cast<uint8_t>(v);
+			else if ((v = Read(4)) == 1)
+				len[cur++] = 1;
+			else
+			{
+				const uint32_t rep = Read(4) + 3;
+				if (rep + cur > 16)
+					return false;
+				for (uint32_t i = 0; i < rep; i++)
+					len[cur++] = static_cast<uint8_t>(v);
+			}
+		}
+		uint32_t histo[33] = {}, start[33] = {};
+		for (uint8_t l : len)
+		{
+			if (l > 8)
+				return false;
+			histo[l]++;
+		}
+		uint32_t cur_start = 0;
+		for (int l = 32; l > 0; l--)
+		{
+			const uint32_t next = (cur_start + histo[l]) >> 1;
+			if (l != 1 && next * 2 != cur_start + histo[l])
+				return false;
+			start[l] = cur_start;
+			cur_start = next;
+		}
+		std::memset(m_lookup, 0xff, sizeof(m_lookup));
+		for (int s = 0; s < 16; s++)
+		{
+			if (!len[s])
+				continue;
+			const uint32_t code = start[len[s]]++;
+			const uint32_t first = code << (8 - len[s]), count = 1u << (8 - len[s]);
+			for (uint32_t i = 0; i < count && first + i < 256; i++)
+				m_lookup[first + i] = static_cast<uint16_t>((len[s] << 8) | s);
+		}
+		// Every hunk's type (runs of one as RLE codes); the per-hunk fields follow.
+		m_types.resize(hunk_count);
+		int rep = 0;
+		uint8_t last = 0;
+		for (uint32_t h = 0; h < hunk_count; h++)
+		{
+			if (rep > 0)
+			{
+				m_types[h] = last;
+				rep--;
+				continue;
+			}
+			if (Overflow())
+				return false;
+			const int v = Symbol();
+			if (v < 0)
+				return false;
+			if (v == kRleSmall || v == kRleLarge)
+			{
+				const int a = Symbol(), b = v == kRleLarge ? Symbol() : 0;
+				if (a < 0 || b < 0)
+					return false;
+				m_types[h] = last;
+				rep = v == kRleSmall ? 2 + a : 2 + 16 + (a << 4) + b;
+			}
+			else
+				m_types[h] = last = static_cast<uint8_t>(v);
+		}
+		return !Overflow();
+	}
+
+	// The entries of hunks [0, count).
+	bool DecodeTo(uint32_t count)
+	{
+		if (!compressed)
+			return count <= hunk_count;
+		while (entries.size() < count)
+		{
+			const uint32_t h = static_cast<uint32_t>(entries.size());
+			if (h >= hunk_count)
+				return false;
+			Entry e = {};
+			switch (m_types[h])
+			{
+				case kType0:
+				case kType0 + 1:
+				case kType0 + 2:
+				case kType0 + 3:
+					e.type = m_types[h];
+					e.offset = m_cur_offset;
+					e.length = Read(m_length_bits);
+					e.crc = static_cast<uint16_t>(Read(16));
+					m_cur_offset += e.length;
+					break;
+				case kNone:
+					e.type = kNone;
+					e.offset = m_cur_offset;
+					e.length = hunk_bytes;
+					e.crc = static_cast<uint16_t>(Read(16));
+					m_cur_offset += e.length;
+					break;
+				case kSelf:
+					e.type = kSelf;
+					e.offset = m_last_self = Read(m_self_bits);
+					break;
+				case kSelf1:
+					m_last_self++;
+					[[fallthrough]];
+				case kSelf0:
+					e.type = kSelf;
+					e.offset = m_last_self;
+					break;
+				default:
+					return false; // a parent's hunks (Init leaves out the CHDs that have one), or a type that doesn't exist
+			}
+			if (Overflow() || e.length > 0xffffff || (e.type == kSelf && e.offset >= h))
+				return false;
+			entries.push_back(e);
+		}
+		return true;
+	}
+
+	// The map of hunks [0, count) as libchdr reads one: its 16-byte header, then a tree of 16 four-bit codes (code n is type n), the
+	// types, the fields. Its CRC is of the entries libchdr makes from it.
+	std::vector<uint8_t> Encode(uint32_t count) const
+	{
+		uint64_t max_self = 0;
+		for (uint32_t h = 0; h < count; h++)
+			if (entries[h].type == kSelf)
+				max_self = std::max<uint64_t>(max_self, entries[h].offset);
+		int self_bits = 1;
+		while (self_bits < 32 && (max_self >> self_bits) != 0)
+			self_bits++;
+		BitWriter w;
+		for (int i = 0; i < 16; i++)
+			w.Put(4, 4);
+		for (uint32_t h = 0; h < count; h++)
+			w.Put(entries[h].type, 4);
+		std::vector<uint8_t> raw(static_cast<size_t>(count) * 12);
+		for (uint32_t h = 0; h < count; h++)
+		{
+			const Entry& e = entries[h];
+			uint8_t* r = &raw[static_cast<size_t>(h) * 12];
+			r[0] = e.type;
+			if (e.type == kSelf)
+				w.Put(static_cast<uint32_t>(e.offset), self_bits);
+			else
+			{
+				if (e.type != kNone)
+					w.Put(e.length, m_length_bits);
+				w.Put(e.crc, 16);
+				PutBe(r + 1, e.length, 3);
+				PutBe(r + 10, e.crc, 2);
+			}
+			PutBe(r + 4, e.offset, 6);
+		}
+		w.Flush();
+		std::vector<uint8_t> map(16);
+		PutBe(&map[0], w.out.size(), 4);
+		PutBe(&map[4], first_offset, 6);
+		PutBe(&map[10], Crc16(raw.data(), raw.size()), 2);
+		map[12] = m_length_bits;
+		map[13] = static_cast<uint8_t>(self_bits);
+		map[14] = parent_bits;
+		map.insert(map.end(), w.out.begin(), w.out.end());
+		return map;
+	}
+
+	uint64_t MapOffset() const { return m_map_offset; }
+	uint64_t MapBytesRead() const { return m_buf.size(); }
+
+	uint64_t logical = 0;
+	uint32_t hunk_bytes = 0, hunk_count = 0;
+	bool compressed = false;
+	uint64_t first_offset = 0;
+	uint8_t parent_bits = 0;
+	std::vector<Entry> entries;
+
+private:
+	// The map's bits, read from the file as the decoding gets to them (16 KB, then half as much again as was read, at most 256 KB at a
+	// time: a CD's whole map is ~110 KB, a DVD's types ~400 KB); past its end they read as zeros (as libchdr's).
+	uint32_t Peek(int bits)
+	{
+		if (bits == 0)
+			return 0;
+		const uint64_t byte = m_bit >> 3;
+		const uint64_t want = std::min<uint64_t>(m_map_bytes, byte + 5);
+		if (m_buf.size() < want)
+		{
+			const size_t have = m_buf.size();
+			const uint64_t step = std::min<uint64_t>(256 * 1024, std::max<uint64_t>(16 * 1024, have / 2));
+			const size_t to = static_cast<size_t>(std::min<uint64_t>(m_map_bytes, std::max<uint64_t>(want, have + step)));
+			m_buf.resize(to);
+			if (!ReadAt(m_fd, m_map_offset + 16 + have, m_buf.data() + have, to - have))
+			{
+				m_buf.resize(have);
+				m_failed = true;
+			}
+		}
+		uint64_t v = 0;
+		for (int i = 0; i < 5; i++)
+			v = (v << 8) | (byte + i < m_buf.size() ? m_buf[static_cast<size_t>(byte + i)] : 0);
+		return static_cast<uint32_t>((v >> (40 - bits - (m_bit & 7))) & ((1ull << bits) - 1));
+	}
+	uint32_t Read(int bits)
+	{
+		const uint32_t v = Peek(bits);
+		m_bit += static_cast<uint64_t>(bits);
+		return v;
+	}
+	int Symbol()
+	{
+		const uint16_t e = m_lookup[Peek(8)];
+		if (e == 0xffff)
+			return -1;
+		m_bit += e >> 8;
+		return e & 0xff;
+	}
+	bool Overflow() const { return m_failed || m_bit > static_cast<uint64_t>(m_map_bytes) * 8; }
+
+	int m_fd = -1;
+	uint64_t m_map_offset = 0;
+	uint32_t m_map_bytes = 0;
+	uint8_t m_length_bits = 0, m_self_bits = 0;
+	uint64_t m_cur_offset = 0, m_last_self = 0;
+	uint64_t m_bit = 0;
+	bool m_failed = false;
+	uint16_t m_lookup[256];
+	std::vector<uint8_t> m_buf; // the compressed map's bytes read so far
+	std::vector<uint8_t> m_types; // every hunk's type, as the map's first part gives it
+};
+
+// What libchdr reads through: the header and the map made for the prefix, else the image file (pread). chd_close's fclose leaves
+// the descriptor alone (ChdSectors closes it).
+struct PrefixFile
+{
+	core_file cf = {};
+	int fd = -1;
+	uint64_t size = 0, pos = 0;
+	uint8_t header[kHeaderBytes] = {};
+	uint64_t map_at = 0;
+	std::vector<uint8_t> map;
+
+	static PrefixFile* Of(core_file* f) { return static_cast<PrefixFile*>(f->argp); }
+	static uint64_t Size(core_file* f) { return Of(f)->size; }
+	static int Close(core_file*) { return 0; }
+	static int Seek(core_file* f, int64_t offset, int whence)
+	{
+		PrefixFile* p = Of(f);
+		const int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(p->pos) : static_cast<int64_t>(p->size);
+		if (base + offset < 0)
+			return -1;
+		p->pos = static_cast<uint64_t>(base + offset);
+		return 0;
+	}
+	static size_t Read(void* buf, size_t size, size_t count, core_file* f)
+	{
+		PrefixFile* p = Of(f);
+		if (size == 0)
+			return 0;
+		uint8_t* out = static_cast<uint8_t*>(buf);
+		size_t left = size * count, done = 0;
+		while (left)
+		{
+			size_t n = left;
+			if (p->pos < kHeaderBytes)
+			{
+				n = std::min<size_t>(n, static_cast<size_t>(kHeaderBytes - p->pos));
+				std::memcpy(out + done, p->header + p->pos, n);
+			}
+			else if (p->pos >= p->map_at && p->pos < p->map_at + p->map.size())
+			{
+				n = std::min<size_t>(n, static_cast<size_t>(p->map_at + p->map.size() - p->pos));
+				std::memcpy(out + done, p->map.data() + (p->pos - p->map_at), n);
+			}
+			else
+			{
+				if (p->pos < p->map_at)
+					n = std::min<size_t>(n, static_cast<size_t>(p->map_at - p->pos));
+				const ssize_t got = pread(p->fd, out + done, n, static_cast<off_t>(p->pos));
+				if (got <= 0)
+					break;
+				n = static_cast<size_t>(got);
+			}
+			p->pos += n;
+			done += n;
+			left -= n;
+		}
+		return done / size;
+	}
+};
+} // namespace chdv5
+
 // vk-285-108: a CHD through libchdr. A DVD image (chdman createdvd) holds 2048-byte units; a CD image
 // (createcd) 2448-byte frames (2352 of sector, 96 of subcode). In a frame the data starts 24 bytes in for a
 // raw mode 2 track (the PS2's CDs from a .cue/.bin), 16 for raw mode 1, and at 0 for a track chdman got as
@@ -162,16 +592,37 @@ public:
 	{
 		if (m_chd)
 			chd_close(m_chd);
+		if (m_file.fd >= 0)
+			close(m_file.fd);
 	}
 
 	bool Open(const std::string& path)
 	{
-		const chd_error err = chd_open(path.c_str(), CHD_OPEN_READ, nullptr, &m_chd);
-		if (err != CHDERR_NONE)
+		// chdscan: libchdr gets the image's first hunks only (chdv5::MapPrefix), enough for the first 48 sectors; any other CHD (v3/v4,
+		// one with a parent, a map this can't read) is opened by libchdr as it is.
+		m_file.fd = open(path.c_str(), O_RDONLY);
+		struct stat st = {};
+		if (m_file.fd >= 0 && fstat(m_file.fd, &st) == 0 && ReadAt(m_file.fd, 0, m_file.header, sizeof(m_file.header)) &&
+			m_map.Init(m_file.fd, m_file.header, static_cast<uint64_t>(st.st_size)))
 		{
-			m_chd = nullptr; // a CHD that needs its parent reads as no serial (PCSX2 finds the parent itself)
-			m_what = std::string("libchdr can't open it: ") + chd_error_string(err);
-			return false;
+			m_file_size = static_cast<uint64_t>(st.st_size);
+			const uint32_t unit = static_cast<uint32_t>(chdv5::Be(m_file.header + 60, 4));
+			const uint64_t first = (48ull * unit + m_map.hunk_bytes - 1) / m_map.hunk_bytes;
+			m_prefix = OpenPrefix(static_cast<uint32_t>(std::min<uint64_t>(first, m_map.hunk_count)));
+		}
+		if (!m_prefix)
+		{
+			if (m_file.fd >= 0)
+				close(m_file.fd);
+			m_file.fd = -1;
+			const chd_error err = chd_open(path.c_str(), CHD_OPEN_READ, nullptr, &m_chd);
+			if (err != CHDERR_NONE)
+			{
+				m_chd = nullptr; // a CHD that needs its parent reads as no serial (PCSX2 finds the parent itself)
+				m_what = std::string("libchdr can't open it: ") + chd_error_string(err);
+				m_error = err;
+				return false;
+			}
 		}
 		const chd_header* const h = chd_get_header(m_chd);
 		if (!h || h->hunkbytes == 0 || h->unitbytes == 0)
@@ -205,8 +656,8 @@ public:
 		}
 		char what[512];
 		std::snprintf(what, sizeof(what), "v%u, %u-byte units, %u-byte hunks, %llu MB of data, codecs %s%s%s", h->version,
-			h->unitbytes, h->hunkbytes, static_cast<unsigned long long>(h->logicalbytes >> 20), codecs[0] ? codecs : "none",
-			m_track.empty() ? "" : ", track ", m_track.c_str());
+			h->unitbytes, h->hunkbytes, static_cast<unsigned long long>((m_prefix ? m_map.logical : h->logicalbytes) >> 20),
+			codecs[0] ? codecs : "none", m_track.empty() ? "" : ", track ", m_track.c_str());
 		m_what = what;
 		if (m_unit != 2352 && m_unit != 2448)
 			return true; // 2048-byte sectors back to back
@@ -240,6 +691,8 @@ public:
 
 	// What the image is, for the log (vk-285-109): the header, the codecs, the first track, the data offset.
 	const std::string& What() const { return m_what; }
+	// chdscan: Open failed for a reason that may be gone next time (the file not there or not read, memory), not for what is in it.
+	bool Transient() const { return m_error == CHDERR_FILE_NOT_FOUND || m_error == CHDERR_READ_ERROR || m_error == CHDERR_OUT_OF_MEMORY; }
 
 	bool Read(uint32_t lba, void* buf, size_t len) override
 	{
@@ -266,6 +719,17 @@ public:
 			const size_t in = static_cast<size_t>(pos % m_hunk_bytes);
 			if (hunk > 0xffffffffull)
 				return false;
+			if (m_prefix && hunk >= m_prefix && hunk < m_map.hunk_count)
+			{
+				// chdscan: past the prefix: libchdr again, with twice as many hunks (or as many as this read needs)
+				const uint32_t want = static_cast<uint32_t>(std::min<uint64_t>(m_map.hunk_count, std::max<uint64_t>(hunk + 1, 2ull * m_prefix)));
+				chd_close(m_chd);
+				m_chd = nullptr;
+				m_cached = ~0ull;
+				m_prefix = OpenPrefix(want);
+				if (!m_prefix)
+					return false;
+			}
 			if (hunk != m_cached)
 			{
 				if (chd_read(m_chd, static_cast<uint32_t>(hunk), m_buf.data()) != CHDERR_NONE)
@@ -282,6 +746,34 @@ public:
 	}
 
 private:
+	// libchdr opens the image's first `count` hunks: the header says the image ends there, and the map holds only those. 0 when it can't.
+	uint32_t OpenPrefix(uint32_t count)
+	{
+		if (count == 0 || !m_map.DecodeTo(m_map.compressed ? count : 0))
+			return 0;
+		chdv5::PutBe(m_file.header + 32, static_cast<uint64_t>(count) * m_map.hunk_bytes, 8);
+		m_file.map_at = m_map.MapOffset();
+		m_file.map = m_map.compressed ? m_map.Encode(count) : std::vector<uint8_t>();
+		// (a map written afresh for most of a big image's hunks can be longer than the original: libchdr wants it inside the file)
+		m_file.size = std::max<uint64_t>(m_file_size, m_file.map_at + m_file.map.size() + 1);
+		m_file.pos = 0;
+		m_file.cf.argp = &m_file;
+		m_file.cf.fsize = chdv5::PrefixFile::Size;
+		m_file.cf.fread = chdv5::PrefixFile::Read;
+		m_file.cf.fclose = chdv5::PrefixFile::Close;
+		m_file.cf.fseek = chdv5::PrefixFile::Seek;
+		if (chd_open_core_file(&m_file.cf, CHD_OPEN_READ, nullptr, &m_chd) != CHDERR_NONE)
+		{
+			m_chd = nullptr;
+			return 0;
+		}
+		return count;
+	}
+
+	chdv5::MapPrefix m_map;
+	chdv5::PrefixFile m_file;
+	uint32_t m_prefix = 0; // the hunks libchdr has (0: it opened the whole image itself)
+	uint64_t m_file_size = 0;
 	chd_file* m_chd = nullptr;
 	uint32_t m_unit = 0;
 	uint32_t m_hunk_bytes = 0;
@@ -290,6 +782,7 @@ private:
 	std::vector<uint8_t> m_buf;
 	std::string m_track; // the first track's metadata (CD images)
 	std::string m_what;
+	chd_error m_error = CHDERR_NONE;
 };
 
 // vk-285-113: a CSO (zlib blocks) or ZSO (LZ4 blocks) image. A 24-byte header ("CISO" or "ZISO", header size,
@@ -480,6 +973,73 @@ std::string s_serial_file;
 bool s_serial_loaded = false;
 std::unordered_map<std::string, std::string> s_serials; // "<path>\t<size>\t<mtime>" -> serial
 
+// chdscan (AI-assisted): an image with no serial was read again at every start, as only the serials found were kept: one console's
+// 445 CHDs of other systems' games (PS1, a GD-ROM's) cost 35 s before the shelf at each start (two reports, 2026-10-27 and 28). Those
+// are kept too, in no-serial.txt beside the serials' file: "<path>\t<size>\t<mtime>\t<what>" (`what`: DescribeImage's text, empty for an
+// image that isn't a CHD), under a first line naming the reader that found nothing, so that a reader that reads more looks again.
+// An image that couldn't be opened or read (a drive gone, a read error) isn't kept.
+const char kNoSerialHeader[] = "# PS5SX2: images without a PS2 serial (reader 1)";
+bool s_none_loaded = false;
+bool s_none_current = false; // the file's first line is kNoSerialHeader: lines are added to it, else it is begun afresh
+std::unordered_map<std::string, std::string> s_none; // "<path>\t<size>\t<mtime>" -> what
+
+std::string NoSerialFileLocked()
+{
+	const size_t slash = s_serial_file.rfind('/');
+	return slash == std::string::npos ? std::string() : s_serial_file.substr(0, slash) + "/no-serial.txt";
+}
+
+void LoadNoneLocked()
+{
+	if (s_none_loaded || s_serial_file.empty())
+		return;
+	s_none_loaded = true;
+	FILE* f = std::fopen(NoSerialFileLocked().c_str(), "rb");
+	if (!f)
+		return;
+	char line[1024];
+	bool first = true;
+	while (std::fgets(line, sizeof(line), f))
+	{
+		std::string l = line;
+		while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
+			l.pop_back();
+		if (first)
+		{
+			first = false;
+			s_none_current = l == kNoSerialHeader;
+			if (!s_none_current)
+				break; // another reader's: none of it is used
+			continue;
+		}
+		const size_t tab = l.rfind('\t');
+		if (tab != std::string::npos && tab > 0)
+			s_none[l.substr(0, tab)] = l.substr(tab + 1);
+	}
+	std::fclose(f);
+}
+
+void StoreNoneLocked(const std::string& key, std::string what)
+{
+	for (char& c : what)
+		if (c == '\t' || c == '\n' || c == '\r')
+			c = ' ';
+	s_none[key] = what;
+	const std::string file = NoSerialFileLocked();
+	if (file.empty())
+		return;
+	mkdir(file.substr(0, file.rfind('/')).c_str(), 0777);
+	FILE* f = std::fopen(file.c_str(), s_none_current ? "ab" : "wb");
+	if (!f)
+		return;
+	if (!s_none_current)
+		std::fprintf(f, "%s\n", kNoSerialHeader);
+	s_none_current = true;
+	const std::string line = key + "\t" + what + "\n";
+	std::fwrite(line.data(), 1, line.size(), f);
+	std::fclose(f);
+}
+
 std::string MakeSerialKey(const std::string& path, long long size, long long mtime)
 {
 	return path + "\t" + std::to_string(size) + "\t" + std::to_string(mtime);
@@ -515,6 +1075,21 @@ void LoadSerialsLocked()
 	std::fclose(f);
 }
 
+// chdscan: the image was read before and has no serial (`what`: DescribeImage's text then).
+bool CachedNone(const std::string& key, std::string* what)
+{
+	if (key.empty())
+		return false;
+	std::lock_guard<std::mutex> lock(s_serial_mutex);
+	LoadNoneLocked();
+	const auto it = s_none.find(key);
+	if (it == s_none.end())
+		return false;
+	if (what)
+		*what = it->second;
+	return true;
+}
+
 // 2.02: a serial the cache file has for this key (only found serials are kept).
 bool CachedSerial(const std::string& key, std::string& serial)
 {
@@ -529,37 +1104,90 @@ bool CachedSerial(const std::string& key, std::string& serial)
 	return true;
 }
 
-// The serial read from the image itself: a .chd through libchdr, a .cso/.zso decompressed (vk-285-113), anything else
-// as an ISO 9660 image (2026-10-08: a raw .bin/.img's sector layout detected).
-std::string ImageSerial(const std::string& path)
+// chdscan: a reader that remembers whether a read failed (no serial then says nothing about the image).
+class WatchedSectors final : public SectorReader
 {
+public:
+	explicit WatchedSectors(SectorReader& r)
+		: m_r(r)
+	{
+	}
+	bool Read(uint32_t lba, void* buf, size_t len) override
+	{
+		const bool ok = m_r.Read(lba, buf, len);
+		failed = failed || !ok;
+		return ok;
+	}
+	bool failed = false;
+
+private:
+	SectorReader& m_r;
+};
+
+// The serial read from the image itself: a .chd through libchdr, a .cso/.zso decompressed (vk-285-113), anything else
+// as an ISO 9660 image (2026-10-08: a raw .bin/.img's sector layout detected). chdscan: `what`: a CHD's DescribeImage text when it
+// has no serial (libchdr's open is not made twice); `conclusive`: false when no serial came because the image couldn't be opened or
+// read (it is looked at again next time).
+std::string ImageSerial(const std::string& path, std::string* what = nullptr, bool* conclusive = nullptr)
+{
+	bool sure = false;
+	std::string serial;
 	if (HasExtension(path.c_str(), ".chd"))
 	{
 		ChdSectors disc;
-		return disc.Open(path) ? SerialFromDisc(disc) : std::string();
+		if (disc.Open(path))
+		{
+			WatchedSectors w(disc);
+			serial = SerialFromDisc(w);
+			sure = !w.failed;
+		}
+		else
+			sure = !disc.Transient();
+		if (serial.empty() && what)
+			*what = disc.What();
 	}
-	if (HasExtension(path.c_str(), ".cso") || HasExtension(path.c_str(), ".zso"))
+	else if (HasExtension(path.c_str(), ".cso") || HasExtension(path.c_str(), ".zso"))
 	{
 		CsoSectors disc; // vk-285-113
-		return disc.Open(path) ? SerialFromDisc(disc) : std::string();
+		if (disc.Open(path))
+		{
+			WatchedSectors w(disc);
+			serial = SerialFromDisc(w);
+			sure = !w.failed;
+		}
 	}
-	const int fd = open(path.c_str(), O_RDONLY);
-	if (fd < 0)
-		return {};
-	IsoSectors disc(fd);
-	disc.Detect();
-	const std::string serial = SerialFromDisc(disc);
-	close(fd);
+	else if (const int fd = open(path.c_str(), O_RDONLY); fd >= 0)
+	{
+		IsoSectors disc(fd);
+		disc.Detect();
+		WatchedSectors w(disc);
+		serial = SerialFromDisc(w);
+		sure = !w.failed;
+		close(fd);
+	}
+	if (conclusive)
+		*conclusive = sure || !serial.empty();
 	return serial;
 }
 
-// vk-285-108 (the CHDs), 2.02 (every format): the cache file first, else the image, and a serial found is kept.
-std::string KeyedSerial(const std::string& path, const std::string& key)
+// vk-285-108 (the CHDs), 2.02 (every format): the cache file first, else the image, and a serial found is kept. chdscan: and an image
+// found to have none (no-serial.txt).
+std::string KeyedSerial(const std::string& path, const std::string& key, std::string* what = nullptr)
 {
 	std::string serial;
-	if (CachedSerial(key, serial))
+	if (CachedSerial(key, serial) || CachedNone(key, what))
 		return serial;
-	serial = ImageSerial(path);
+	bool conclusive = false;
+	std::string described;
+	serial = ImageSerial(path, &described, &conclusive);
+	if (what)
+		*what = described;
+	if (serial.empty() && conclusive && !key.empty())
+	{
+		std::lock_guard<std::mutex> lock(s_serial_mutex);
+		LoadNoneLocked(); // (the file's first line decides whether this line is added to it)
+		StoreNoneLocked(key, described);
+	}
 	if (!serial.empty() && !key.empty())
 	{
 		std::lock_guard<std::mutex> lock(s_serial_mutex);
@@ -611,6 +1239,9 @@ void SetSerialCacheFile(const std::string& path)
 	s_serial_file = path;
 	s_serial_loaded = false;
 	s_serials.clear();
+	s_none_loaded = false; // chdscan
+	s_none_current = false;
+	s_none.clear();
 }
 
 std::string ReadSerial(const std::string& image_path)
@@ -619,11 +1250,19 @@ std::string ReadSerial(const std::string& image_path)
 	return KeyedSerial(image_path, SerialKey(image_path));
 }
 
-std::string ReadSerial(const GameInfo& g)
+std::string ReadSerial(const GameInfo& g, std::string* what)
 {
 	if (g.mtime == 0)
-		return ReadSerial(g.path);
-	return KeyedSerial(g.path, MakeSerialKey(g.path, static_cast<long long>(g.bytes), static_cast<long long>(g.mtime)));
+		return KeyedSerial(g.path, SerialKey(g.path), what);
+	return KeyedSerial(g.path, MakeSerialKey(g.path, static_cast<long long>(g.bytes), static_cast<long long>(g.mtime)), what);
+}
+
+bool KnownSerial(const GameInfo& g, std::string& serial, std::string* what)
+{
+	const std::string key = g.mtime == 0 ? SerialKey(g.path)
+										 : MakeSerialKey(g.path, static_cast<long long>(g.bytes), static_cast<long long>(g.mtime));
+	serial.clear();
+	return CachedSerial(key, serial) || CachedNone(key, what);
 }
 
 // Read ISO9660 files without touching the emulator's global CDVD state. (AI-assisted)

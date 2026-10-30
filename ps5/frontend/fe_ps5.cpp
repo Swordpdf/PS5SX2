@@ -1759,11 +1759,36 @@ int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budge
 	const double t0 = Now();
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
 	SetGameDbFile(paths.gamedb_file);       // vk-285-113
+	SetShareRoots(paths.share_roots);       // chdscan: OnNetworkShare below
 	std::vector<GameInfo> games = ScanGames(ScanRoots(paths), paths.scan_subfolders); // test build 1: USB drives, when visible here
+	// chdscan (AI-assisted): this all runs before the shelf, on a black screen. A PS5 Pro tester's 390 games on a USB drive: 30.4 s of
+	// cover downloads before the shelf at each start until the covers were all there (77 and 96 a start; 2026-10-30), and a first start
+	// read every new image here. The shelf fetches the covers of games on USB drives and NFS shares itself, in the background
+	// (CoverConfig::download_usb_only; downloads after the jailbreak work since 2026-10-10: 23 of 25 in the reports looked at), so those
+	// are left to it (flags/prefetchusb: fetched here too, as before), and the images not read before are read here for at most 2 s (the
+	// shelf reads the rest while it shows how far it got).
+	const bool usb_here = OrbisFlag("prefetchusb");
+	int left_to_shelf = 0, unread = 0;
 	for (GameInfo& g : games)
-		g.serial = ReadSerial(g); // 2.02: through the serial cache, keyed by what ScanGames already has
+	{
+		if (!usb_here && (OnUsb(g.path) || OnNetworkShare(g.path)))
+		{
+			left_to_shelf++;
+			continue;
+		}
+		std::string known;
+		if (KnownSerial(g, known))
+			g.serial = known;
+		else if (Now() - t0 < 2.0)
+			g.serial = ReadSerial(g); // 2.02: through the serial cache, keyed by what ScanGames already has
+		else
+			unread++;
+	}
 	// Test build 1: the USB games seen after the jailbreak last time (the drives may not be visible here).
-	const int listed = AddUsbListGames(paths.usb_list, games, RootsSignature(paths));
+	const int listed = usb_here ? AddUsbListGames(paths.usb_list, games, RootsSignature(paths)) : 0;
+	if (left_to_shelf > 0 || unread > 0)
+		std::printf("[frontend] prefetch: %d game(s) on USB drives or NFS shares left to the shelf's own downloads, %d image(s) not read in "
+					"time (the shelf reads them)\n", left_to_shelf, unread);
 	CoverConfig cc;
 	cc.manual_dir = paths.covers_dir;
 	cc.cache_dir = paths.cache_dir;
@@ -1897,6 +1922,129 @@ static void SetShelfUp(bool up)
 		}
 		}
 
+// chdscan (AI-assisted): the shelf's game list made ready: each image's serial (the cache files, else the image), its title from the game
+// database, its badges, whether it can be read; logged as before; sorted. On a thread of its own when images not seen before are to be
+// read (Start with `unread` > 0), so the shelf can come up meanwhile (AppConfig::scan_progress, App::SetGames). The destructor waits for it.
+class ShelfScan
+{
+public:
+	ShelfScan(const OrbisFrontendPaths& paths, double t0)
+		: m_paths(paths)
+		, m_t0(t0)
+	{
+	}
+	~ShelfScan()
+	{
+		if (m_thread_started)
+			pthread_join(m_thread, nullptr);
+	}
+
+	void Start(std::vector<GameInfo> games, int unread)
+	{
+		m_games = std::move(games);
+		m_total = unread;
+		if (unread == 0)
+		{
+			Run();
+			return;
+		}
+		pthread_attr_t attr;
+		pthread_attr_init(&attr);
+		pthread_attr_setstacksize(&attr, 1024 * 1024); // libchdr's codecs, as the cover service's threads
+		m_thread_started = pthread_create(&m_thread, &attr, &ShelfScan::ThreadMain, this) == 0;
+		pthread_attr_destroy(&attr);
+		if (!m_thread_started)
+			Run();
+	}
+
+	bool Done() const { return m_done.load(std::memory_order_acquire); }
+
+	// Up to `ms` (forever when negative); true when the scan is done.
+	bool Wait(int ms)
+	{
+		for (int waited = 0; !Done() && (ms < 0 || waited < ms); waited += 5)
+			usleep(5000);
+		return Done();
+	}
+
+	// The images read so far of those not seen before; false once the scan is done.
+	bool Progress(int& done, int& total) const
+	{
+		done = m_read.load(std::memory_order_relaxed);
+		total = m_total;
+		return !Done();
+	}
+
+	// The list, once Done().
+	std::vector<GameInfo> Take()
+	{
+		if (m_thread_started)
+		{
+			pthread_join(m_thread, nullptr);
+			m_thread_started = false;
+		}
+		return std::move(m_games);
+	}
+
+private:
+	static void* ThreadMain(void* self)
+	{
+		static_cast<ShelfScan*>(self)->Run();
+		return nullptr;
+	}
+
+	void Run()
+	{
+		const OrbisFrontendPaths& paths = m_paths;
+		int on_usb = 0, on_nfs = 0;
+		for (GameInfo& g : m_games)
+		{
+			std::string what;
+			if (!KnownSerial(g, g.serial, &what))
+			{
+				g.serial = ReadSerial(g, &what); // 2.02: through the serial cache, keyed by what ScanGames already has
+				m_read.fetch_add(1, std::memory_order_relaxed);
+			}
+			// vk-285-113: a CHD (or an ISO) named after its file shows the game's name from the game database.
+			const std::string file_title = g.title;
+			const bool renamed = ApplyGameDbTitle(g);
+			ReadBadges(g, paths.settings_dir, paths.gs_ini, paths.patches_dir);
+			on_usb += OnUsb(g.path) ? 1 : 0;
+			on_nfs += OnNetworkShare(g.path) ? 1 : 0;
+			if (renamed)
+				std::printf("[frontend] %s: titled \"%s\" (the file name gave \"%s\")\n", g.file.c_str(), g.title.c_str(), file_title.c_str());
+			// Test build 1: the size too (a disc image of an odd size is often a bad dump), and the folder.
+			std::printf("[frontend] %s | %s | %s | %llu bytes | %s\n", g.file.c_str(), g.serial.empty() ? "no serial" : g.serial.c_str(),
+				g.title.c_str(), static_cast<unsigned long long>(g.bytes), g.path.substr(0, g.path.rfind('/')).c_str());
+			// vk-285-109: a CHD without a serial says what it is (chdscan: from the cache file when it was read before).
+			if (g.serial.empty())
+			{
+				if (!what.empty())
+					std::printf("[frontend]   chd: %s\n", what.c_str());
+				// vk-285-134: libchdr's "invalid file/data" (or a version it doesn't read) is a damaged image; a CHD that needs
+				// its parent isn't (PCSX2 finds the parent itself).
+				const std::string cant = "libchdr can't open it: ";
+				if (what.rfind(cant, 0) == 0 && what.find("parent") == std::string::npos)
+					g.damaged = what.substr(cant.size());
+			}
+		}
+		SortGames(m_games); // vk-285-113: by the titles the game database may have changed
+		std::printf("[frontend] %zu disc image(s), %d on USB, %d on NFS shares, scanned in %.0f ms (%d image(s) read, the rest from the cache files)\n",
+			m_games.size(), on_usb, on_nfs, (Now() - m_t0) * 1000.0, m_read.load());
+		std::fflush(stdout);
+		m_done.store(true, std::memory_order_release);
+	}
+
+	const OrbisFrontendPaths& m_paths;
+	const double m_t0;
+	std::vector<GameInfo> m_games;
+	int m_total = 0;
+	std::atomic<int> m_read{0};
+	std::atomic<bool> m_done{false};
+	pthread_t m_thread{};
+	bool m_thread_started = false;
+};
+
 std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* build_tag, bool* ran)
 {
 	*ran = false;
@@ -1910,49 +2058,42 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	SetGameDbFile(paths.gamedb_file);       // vk-285-113
 	SetShareRoots(paths.share_roots);       // vk-285-156
 	std::vector<GameInfo> games = ScanGames(ScanRoots(paths), paths.scan_subfolders); // test build 1: USB drives; 2026-10-16: or only the folders set
-	int on_usb = 0, on_nfs = 0;
-	for (GameInfo& g : games)
+	// chdscan (AI-assisted): the images the cache files know (all of them on most starts) take no time; any others are read on a thread
+	// (ShelfScan) while the display comes up, and when that takes longer the shelf comes up without its games and counts them in.
+	ShelfScan scan(paths, t0);
+	int unread = 0;
+	for (const GameInfo& g : games)
 	{
-		g.serial = ReadSerial(g); // 2.02: through the serial cache, keyed by what ScanGames already has
-		// vk-285-113: a CHD (or an ISO) named after its file shows the game's name from the game database.
-		const std::string file_title = g.title;
-		const bool renamed = ApplyGameDbTitle(g);
-		ReadBadges(g, paths.settings_dir, paths.gs_ini, paths.patches_dir);
-		on_usb += OnUsb(g.path) ? 1 : 0;
-		on_nfs += OnNetworkShare(g.path) ? 1 : 0;
-		if (renamed)
-			std::printf("[frontend] %s: titled \"%s\" (the file name gave \"%s\")\n", g.file.c_str(), g.title.c_str(), file_title.c_str());
-		// Test build 1: the size too (a disc image of an odd size is often a bad dump), and the folder.
-		std::printf("[frontend] %s | %s | %s | %llu bytes | %s\n", g.file.c_str(), g.serial.empty() ? "no serial" : g.serial.c_str(),
-			g.title.c_str(), static_cast<unsigned long long>(g.bytes), g.path.substr(0, g.path.rfind('/')).c_str());
-		// vk-285-109: a CHD without a serial says what it is.
-		if (g.serial.empty())
-		{
-			const std::string what = DescribeImage(g.path);
-			if (!what.empty())
-				std::printf("[frontend]   chd: %s\n", what.c_str());
-			// vk-285-134: libchdr's "invalid file/data" (or a version it doesn't read) is a damaged image; a CHD that needs
-			// its parent isn't (PCSX2 finds the parent itself).
-			const std::string cant = "libchdr can't open it: ";
-			if (what.rfind(cant, 0) == 0 && what.find("parent") == std::string::npos)
-				g.damaged = what.substr(cant.size());
-		}
+		std::string serial;
+		unread += KnownSerial(g, serial) ? 0 : 1;
 	}
-	SortGames(games); // vk-285-113: by the titles the game database may have changed
-	std::printf("[frontend] %zu disc image(s), %d on USB, %d on NFS shares, scanned in %.0f ms\n", games.size(), on_usb, on_nfs,
-		(Now() - t0) * 1000.0);
-	std::fflush(stdout);
-	phase("games scanned");
-	WriteUsbList(paths.usb_list, games, RootsSignature(paths));
+	scan.Start(std::move(games), unread);
+	if (unread == 0)
+		scan.Wait(-1); // (no thread: the list is ready)
+	else
+	{
+		std::printf("[frontend] %d image(s) not seen before: read while the shelf comes up\n", unread);
+		std::fflush(stdout);
+	}
 	// Keep the shelf available without games too, for settings and account sign-in.
 	const std::string last = ReadLastGame(paths.top_dir);
-	int preselect = 0;
 	// fix180: "disc:<serial>" (main-boot.cpp writes it for a game started from a drive): a copy of that disc on the shelf is picked now; the drive's own
 	// entry, which the watcher reports a few seconds later, is picked when it comes (AppConfig::preselect_disc_serial)
 	const std::string last_disc = last.compare(0, 5, "disc:") == 0 ? last.substr(5) : std::string();
-	for (size_t i = 0; i < games.size(); i++)
-		if (last_disc.empty() ? games[i].file == last : (!games[i].serial.empty() && games[i].serial == last_disc))
-			preselect = static_cast<int>(i);
+	auto finish_scan = [&](std::vector<GameInfo>& out) {
+		out = scan.Take();
+		phase("games scanned");
+		WriteUsbList(paths.usb_list, out, RootsSignature(paths));
+		int pick = 0;
+		for (size_t i = 0; i < out.size(); i++)
+			if (last_disc.empty() ? out[i].file == last : (!out[i].serial.empty() && out[i].serial == last_disc))
+				pick = static_cast<int>(i);
+		return pick;
+	};
+	int preselect = 0;
+	bool scanning = !scan.Done();
+	if (!scanning)
+		preselect = finish_scan(games);
 	// vk-285-69: one game opens the shelf too, not the game straight away: the shelf's QR code is how
 	// testers reach the settings page and its Download logs (swordpdf, 2026-09-26).
 
@@ -2040,7 +2181,14 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 				std::fclose(f);
 			}
 	}
-	covers->Start(games, fonts, cc, CoverGet); // 2026-10-10: was libSceHttp2 (g_http), which fails after the jailbreak
+	// chdscan: the scan's last moments are waited for here (the display took ~150-250 ms of them); longer, and the shelf comes up with it running
+	if (scanning && scan.Wait(700))
+	{
+		scanning = false;
+		preselect = finish_scan(games);
+	}
+	if (!scanning)
+		covers->Start(games, fonts, cc, CoverGet); // 2026-10-10: was libSceHttp2 (g_http), which fails after the jailbreak; chdscan: or once the scan is done
 
 	phase("cover service started");
 	// The key sounds (vk-285-47). Without an audio port the shelf is simply quiet.
@@ -2296,6 +2444,8 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.bios_open_in_use = paths.bios_open_in_use;
 	acfg.bios_pending_launch = paths.bios_pending_launch;
 	acfg.games_folder_note = paths.games_folder_note; // 2026-10-16: the empty shelf names the folder you set
+	if (scanning)
+		acfg.scan_progress = [&scan](int& done, int& total) { return scan.Progress(done, total); }; // chdscan
 	// live-22 (AI-assisted): while a PS2 disc is being copied (orbis-shims/ProsperoDiscDump.cpp), the shelf shows a
 	// spinning-disc entry with the live percentage, read from this file (the same path the dumper writes).
 	acfg.disc_dump_progress = OrbisLogPath("disc-dump-progress.txt");
@@ -2412,6 +2562,14 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 			in.circle = pd.buttons & kPadCircle;
 			in.l2 = (pd.buttons & kPadL2) || pd.l2 > 160; // vk-285-116
 			in.r2 = (pd.buttons & kPadR2) || pd.r2 > 160;
+		}
+		if (scanning && scan.Done())
+		{
+			// chdscan: the games come
+			scanning = false;
+			preselect = finish_scan(games);
+			covers->Start(games, fonts, cc, CoverGet);
+			app.SetGames(games, preselect);
 		}
 		app.Update(dt, in);
 		app.Build(frame, Clock());

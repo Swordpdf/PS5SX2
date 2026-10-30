@@ -51,7 +51,13 @@ std::string ReadSerial(const std::string& image_path);
 // 2.02 (AI-assisted): the same for a game ScanGames listed, keyed by the size and mtime it already has (no second stat:
 // each one is a network round trip on an NFS share). Every format's serial is now kept in the serial cache file (2.01
 // read every ISO/BIN at every start: 2,287 games on an NFS share took 104 s before the shelf showed).
-std::string ReadSerial(const GameInfo& g);
+// chdscan (AI-assisted): images found to have no serial are kept too (cache/no-serial.txt beside the serials' file), so a folder of other
+// systems' CHDs is read once, not at every start. `what`: for a CHD without a serial, DescribeImage's text (from that file when it was
+// read before: no open), else empty.
+std::string ReadSerial(const GameInfo& g, std::string* what = nullptr);
+// chdscan: what the cache files know of the image (no image is opened): its serial, or that it has none (`serial` empty, `what` as
+// ReadSerial's). False: it hasn't been read yet.
+bool KnownSerial(const GameInfo& g, std::string& serial, std::string* what = nullptr);
 
 // Read the BOOT2 executable for the RA hash. Supports the shelf image formats. (AI-assisted)
 bool ReadAchievementExecutable(const std::string& path, std::string& name, std::vector<uint8_t>& bytes);

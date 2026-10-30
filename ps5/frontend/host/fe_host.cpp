@@ -275,6 +275,8 @@ bool ParseStep(const std::string& line, std::vector<Step>& out)
 		s >> st.seconds;
 	else if (st.op == "shot" || st.op == "game" || st.op == "lastdisc") // fix180: "lastdisc <serial>": the last game played was that disc from the drive
 		s >> st.arg;
+	else if (st.op == "scan") // chdscan: "scan <done>/<total>": the shelf came up while the scan runs, this far; "scan done": the games come (App::SetGames)
+		s >> st.arg;
 	else if (st.op == "dump") // live-22: "dump <pct>" writes the dumper's progress file, "dump off" removes it
 	s >> st.arg;
 	else if (st.op == "drive") // 2.11: "drive <serial> <title>" puts a PS2 disc in the drive (the watcher's report), "drive off" takes it out
@@ -870,7 +872,14 @@ int main(int argc, char** argv)
 	cc.manual_dir = data + "/covers";
 	cc.cache_dir = data + "/cache-covers";
 	cc.allow_download = false;
-	covers->Start(games, fonts, cc, [](const std::string&, std::vector<uint8_t>&) { return -1; });
+	// chdscan: with a "scan" step the shelf comes up without its games, as fe_ps5.cpp's does while images not seen before are read; the
+	// cover service starts with the games ("scan done").
+	const bool scan_mode = std::any_of(steps.begin(), steps.end(), [](const Step& st) { return st.op == "scan"; });
+	bool scanning = scan_mode;
+	int scan_done = 0, scan_total = 0;
+	const auto no_download = [](const std::string&, std::vector<uint8_t>&) { return -1; };
+	if (!scan_mode)
+		covers->Start(games, fonts, cc, no_download);
 
 	App app;
 	AppConfig acfg;
@@ -1184,12 +1193,18 @@ int main(int argc, char** argv)
 	return true;
 	};
 	acfg.drive_disc_reask = [&] { reasks++; };
+	if (scan_mode)
+		acfg.scan_progress = [&](int& done, int& total) {
+			done = scan_done;
+			total = scan_total;
+			return scanning;
+		};
 	for (const Step& s : steps)
 		if (s.op == "game")
 			acfg.preselect = std::atoi(s.arg.c_str());
 		else if (s.op == "lastdisc")
 			acfg.preselect_disc_serial = s.arg;
-	if (!app.Init(&renderer, fonts, games, covers, acfg))
+	if (!app.Init(&renderer, fonts, scan_mode ? std::vector<GameInfo>() : games, covers, acfg))
 	{
 		std::fprintf(stderr, "[host] app: %s\n", renderer.error().c_str());
 		return 1;
@@ -1238,6 +1253,7 @@ int main(int argc, char** argv)
 		       key == "backheld" ? app.BackHeld() :
 		       key == "backcount" ? app.BackRealCount() :
 		       key == "heldpeak" ? held_peak :
+		       key == "scanning" ? (scanning ? 1 : 0) : // chdscan: the shelf is waiting for the scan's games
 		       key == "countpeak" ? count_peak :
 		       key == "selected" ? app.Chosen() : key == "account" ? app.AccountOpen() : key == "sheet" ? app.SheetOpen() :
 			                key == "tab"      ? app.SheetTab() :
@@ -1398,6 +1414,18 @@ int main(int argc, char** argv)
 			else
 				WriteText(dump_progress, "SLUS-00000 " + s.arg + "\nHost Dump Game\n");
 			run(dt); // let the shelf poll it (PollDiscDump is throttled to ~0.5 s)
+		}
+		else if (s.op == "scan") // chdscan
+		{
+			if (s.arg == "done" && scanning)
+			{
+				scanning = false;
+				covers->Start(games, fonts, cc, no_download);
+				app.SetGames(games, acfg.preselect);
+			}
+			else
+				std::sscanf(s.arg.c_str(), "%d/%d", &scan_done, &scan_total);
+			run(dt);
 		}
 		else if (s.op == "drive") // 2.11: stand in for the disc watcher's report of the disc in the drive
 		{

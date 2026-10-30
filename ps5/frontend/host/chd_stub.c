@@ -15,6 +15,15 @@ chd_error chd_open(const char *filename, int mode, chd_file *parent, chd_file **
 	return CHDERR_FILE_NOT_FOUND;
 }
 
+chd_error chd_open_core_file(core_file *file, int mode, chd_file *parent, chd_file **chd) /* chdscan: fe_games.cpp opens a CHD through it */
+{
+	(void)file;
+	(void)mode;
+	(void)parent;
+	*chd = 0;
+	return CHDERR_FILE_NOT_FOUND;
+}
+
 void chd_close(chd_file *chd)
 {
 	(void)chd;

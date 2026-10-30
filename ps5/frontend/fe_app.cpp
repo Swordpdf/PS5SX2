@@ -247,6 +247,25 @@ bool App::Init(Renderer* renderer, const Fonts* fonts, std::vector<GameInfo> gam
 	return true;
 }
 
+void App::SetGames(std::vector<GameInfo> games, int preselect)
+{
+	const size_t all = games.size();
+	const size_t hidden = static_cast<size_t>(std::count_if(games.begin(), games.end(), [](const GameInfo& g) { return g.hidden; }));
+	// The entries already on the shelf (a disc drive's, a copy's: indices below 0) stay; the games join them as Init's list would be.
+	const int keep = m_moved && !m_games.empty() ? m_index[static_cast<size_t>(m_selected)] : preselect;
+	for (size_t i = 0; i < games.size(); i++)
+		m_shelved.push_back({std::move(games[i]), Slot(), static_cast<int>(i)});
+	ApplyHidden(keep);
+	m_scroll = static_cast<float>(m_selected);
+	m_scroll_vel = 0;
+	m_select_time = m_time;
+	if (m_covers && !m_games.empty() && m_index[static_cast<size_t>(m_selected)] >= 0)
+		m_covers->SetSelected(m_index[static_cast<size_t>(m_selected)]);
+	std::printf("[frontend] the scan is done: %zu games on the shelf%s\n", m_games.size(),
+		hidden > 0 ? (" (" + std::to_string(hidden) + " of " + std::to_string(all) + " hidden)").c_str() : "");
+	std::fflush(stdout);
+}
+
 // vk-285-134 (AI-assisted): a game (or the PS2 system menu) starts only with a BIOS. Looked for again at each pick, as a BIOS
 // may have been copied over meanwhile (the settings page, FTP); without one the pick stays on the shelf and the line says why.
 bool App::BiosReady(BiosWait wait, const std::string& path)
@@ -1737,6 +1756,14 @@ void App::Build(FrameDesc& f, const std::string& clock)
 	FadeRange(ui, qr_begin, ui.size(), 1.0f - sheet_e); // vk-285-114: under the options sheet
 
 	const size_t title_begin = ui.size();
+	int scan_done = 0, scan_total = 0;
+	if (n > 0 && m_cfg.scan_progress && m_cfg.scan_progress(scan_done, scan_total))
+	{
+		// chdscan: a disc drive's entry came before the games: the scan's line goes above the shelf
+		char line[160];
+		std::snprintf(line, sizeof(line), Tr(Str::ShelfScanning), scan_done, scan_total);
+		m_fonts->AddText(ui, line, W * 0.5f, H * 0.12f, 44.0f * k, dim, 0.2f, Fonts::Center);
+	}
 	if (n > 0)
 	{
 		const GameInfo& g = m_games[static_cast<size_t>(m_selected)];
@@ -1808,7 +1835,15 @@ void App::Build(FrameDesc& f, const std::string& clock)
 	}
 	else
 		{
-			if (m_search.applied.empty())
+			int scan_done = 0, scan_total = 0;
+			if (m_cfg.scan_progress && m_cfg.scan_progress(scan_done, scan_total))
+			{
+				// chdscan: the games come when the images not seen before have been read
+				char line[160];
+				std::snprintf(line, sizeof(line), Tr(Str::ShelfScanning), scan_done, scan_total);
+				m_fonts->AddText(ui, line, W * 0.5f, H * 0.5f, 64.0f * k, white, 0.4f, Fonts::Center);
+			}
+			else if (m_search.applied.empty())
 			{
 				// 2026-10-16: with games folders set, the empty shelf names the first of them, not /data/PCSX2/games (a language file
 				// without that path in its line is shown as it is)

@@ -72,6 +72,9 @@ struct AppConfig
 	// 2026-10-16: the games folder the player set (the first of them) while only those are listed; "" = the usual places. The empty
 	// shelf names it where it says /data/PCSX2/games (a typo or an unplugged drive then explains itself).
 	std::string games_folder_note;
+	// chdscan (AI-assisted): true while the images not seen before are being read (`done` of `total`): the shelf came up without its games
+	// (App::SetGames brings them) and says so where it would say there are none. Unset: no scan.
+	std::function<bool(int& done, int& total)> scan_progress;
 	// vk-285-135 (AI-assisted): the sheet for all games' Folders rows and their picker start from these places (label, path),
 	// those that are folders when it opens (the drives come and go); empty: no Folders rows.
 	std::vector<std::pair<std::string, std::string>> folder_places;
@@ -112,6 +115,10 @@ class App
 public:
 	bool Init(Renderer* renderer, const Fonts* fonts, std::vector<GameInfo> games, CoverService* covers, const AppConfig& cfg);
 	void Shutdown();
+
+	// chdscan (AI-assisted): the games, once the scan that Init's empty shelf waited for is done (the cover service was started with the
+	// same list). `preselect` is picked unless the player has moved on the shelf meanwhile (a disc drive's entry may be there).
+	void SetGames(std::vector<GameInfo> games, int preselect);
 
 	// Advances `dt` seconds with the pad's current buttons.
 	void Update(double dt, const Input& in);
