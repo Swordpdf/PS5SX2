@@ -51,6 +51,13 @@ run listed "game 2" "wait 1" "expect shelf=5" "expect selected=2" "expect drivee
   "expect driveentry=1" "expect shelf=6" "expect selected=2" "press left 3" "wait 1" "expect selected=-2" "shot drive-entry" \
   "press square" "wait 0.8" "expect sheet=1" "press circle" "wait 0.8" "expect sheet=0" "expect reasks=0" "press cross" "wait 0.3" "expect reasks=1" "shot drive-asked" \
   "press right" "wait 0.8" "expect selected=0" "drive off" "wait 0.8" "expect driveentry=0" "expect shelf=5" "expect selected=0"
+# fix180 (tester on 180: back from a disc game, the shelf showed the first entry): the disc played last (lastgame.txt "disc:<serial>") is picked when the
+# watcher reports it; not when the player has moved meanwhile, and not for another disc.
+run last-disc "game 2" "lastdisc SLUS-20312" "wait 1" "expect selected=2" "drive SLUS-20312 Final Fantasy X" "wait 0.8" "expect driveentry=1" \
+  "expect selected=-2"
+run last-disc-moved "game 2" "lastdisc SLUS-20312" "wait 1" "press right" "wait 0.5" "expect selected=3" "drive SLUS-20312 Final Fantasy X" "wait 0.8" \
+  "expect driveentry=1" "expect selected=3"
+run last-disc-other "game 2" "lastdisc SCES-50001" "wait 1" "drive SLUS-20312 Final Fantasy X" "wait 0.8" "expect driveentry=1" "expect selected=2"
 # (review) The copy's entry selects itself, so it waits while a sheet is open: no jump of the pick under the sheet; it comes when the sheet closes.
 run busy "game 1" "wait 1" "press square" "wait 0.8" "expect sheet=1" "dump 40" "wait 1.2" "expect dumppct=-1" "expect selected=1" "press circle" "wait 1.2" "expect sheet=0" "expect dumppct=40" "expect selected=-1"
 # The disc is taken out while it is picked: the shelf closes the gap; another disc replaces it.

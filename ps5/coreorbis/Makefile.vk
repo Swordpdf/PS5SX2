@@ -567,7 +567,7 @@ $(OBJDIR)/shim/orbis-shims/ProsperoTexWriter.o: ./orbis-shims/ProsperoTexWriter.
 # again afterwards (see ProsperoRelaunch.cpp, orbis-shims/OrbisLeavePlan.h). No -l flags: it looks its system calls up by name (dlsym).
 # An ELF with no entry point has no C runtime: build it with the llvm-18 view (reference-eboot-build-pipeline) and check `readelf -h`.
 RELAUNCH_ELF := $(OBJDIR)/relaunch/relaunch.elf
-$(RELAUNCH_ELF): ./relaunch/relaunch.c
+$(RELAUNCH_ELF): ./relaunch/relaunch.c ./relaunch/relaunch_guard.h
 	@mkdir -p $(dir $@)
 	$(CC) -Wall -Werror -O2 -o $@ $<
 	$(PS5_PAYLOAD_SDK)/bin/prospero-strip $@

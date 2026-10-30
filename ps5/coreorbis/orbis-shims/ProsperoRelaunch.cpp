@@ -232,6 +232,50 @@ bool OrbisRelaunchBuilt()
 #endif
 }
 
+std::string OrbisRelaunchConfirmCameBack()
+{
+	const std::string note = OrbisLogPath("menu-guard.txt");
+	FILE* f = std::fopen(note.c_str(), "rb");
+	if (!f)
+		return {};
+	char state[512] = {}, when[32] = {};
+	const bool got = std::fgets(state, sizeof(state), f) && std::fgets(when, sizeof(when), f);
+	std::fclose(f);
+	unlink(note.c_str());
+	std::string s = got ? state : "";
+	while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+		s.pop_back();
+	const long long age = got ? static_cast<long long>(std::time(nullptr)) - std::atoll(when) : -1;
+	if (s.empty() || s[0] != '/' || age < 0 || age > 120)
+		return "a back-to-the-menu guard note that is too old or unreadable was removed";
+	Touch(s + ".alive");
+	return "this start is the one \"back to the menu\" re-executed (" + std::to_string(age) + " s after it): its guard was told (" + s + ".alive), it launches nothing";
+}
+
+std::string OrbisRelaunchLastLog(size_t max_lines)
+{
+	FILE* f = std::fopen(OrbisLogPath("relaunch.log").c_str(), "rb");
+	if (!f)
+		return {};
+	std::vector<std::string> lines;
+	char buf[512];
+	while (std::fgets(buf, sizeof(buf), f))
+	{
+		std::string l = buf;
+		while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
+			l.pop_back();
+		if (l.find("request: pid") != std::string::npos)
+			lines.clear(); // the last request's lines only
+		lines.push_back(l);
+	}
+	std::fclose(f);
+	std::string out;
+	const size_t from = lines.size() > max_lines ? lines.size() - max_lines : 0;
+	for (size_t i = from; i < lines.size(); i++)
+		out += lines[i] + "\n";
+	return out;
+}
+
 bool OrbisRelaunchStart(const char* closing_title, const char* launch_title, int pid, std::string& why, const OrbisRelaunchTiming& timing)
 {
 #ifndef ORBIS_RELAUNCH_ELF
@@ -270,9 +314,18 @@ bool OrbisRelaunchStart(const char* closing_title, const char* launch_title, int
 		g_state.clear();
 		return false;
 	}
-	const std::string request = std::string(kMarker) + "\npid=" + std::to_string(pid) + "\nwait=" + closing + "\nlaunch=" + launch + "\nstate=" + state +
-	                            "\nsettle_ms=" + std::to_string(timing.settle_ms) + "\nmin_exit_ms=" + std::to_string(timing.min_exit_ms) +
-	                            "\nretry_ms=" + std::to_string(timing.retry_ms) + "\nlimit_s=45\n";
+	std::string request = std::string(kMarker) + "\npid=" + std::to_string(pid) + "\nwait=" + closing + "\nlaunch=" + launch + "\nstate=" + state +
+	                      "\nsettle_ms=" + std::to_string(timing.settle_ms) + "\nmin_exit_ms=" + std::to_string(timing.min_exit_ms) +
+	                      "\nretry_ms=" + std::to_string(timing.retry_ms) + "\nlimit_s=45\n";
+	if (timing.guard_ms > 0) // fix180: guard mode; the new process finds the state through logs/menu-guard.txt
+	{
+		request += "guard_ms=" + std::to_string(timing.guard_ms) + "\nhard_ms=" + std::to_string(timing.hard_ms) + "\n";
+		if (FILE* f = std::fopen(OrbisLogPath("menu-guard.txt").c_str(), "wb"))
+		{
+			std::fprintf(f, "%s\n%lld\n", state.c_str(), static_cast<long long>(std::time(nullptr)));
+			std::fclose(f);
+		}
+	}
 	if (request.size() >= kRoom)
 	{
 		why = "the request is too large";

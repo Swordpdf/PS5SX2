@@ -122,6 +122,16 @@ int main()
 				!SafeSerial(std::string(33, 'A')) && !SafeSerial("SLUS\xC3\xA9"),
 			"not fit: empty, dots, slashes, spaces, over 32, non-ASCII");
 	}
+	// fix180: after the PS5 drive refused 8.0, the 3.2 is sent only when the drive as it is reads no faster (King's Field IV at a flat 3.2x on 180)
+	{
+		Check(!KeepDriveAsIs(0.0), "keep as is: a timing that failed (0 MB/s) -> 3.2 is sent");
+		Check(!KeepDriveAsIs(2.77), "keep as is: the drive at its default 2.0 (2.77 MB/s) -> 3.2 is sent");
+		Check(!KeepDriveAsIs(4.46), "keep as is: the drive already at 3.2 (4.46 MB/s) -> 3.2 is sent (no change)");
+		Check(!KeepDriveAsIs(4.9), "keep as is: within the margin of 3.2 -> 3.2 is sent");
+		Check(KeepDriveAsIs(5.2), "keep as is: a CAV 8x drive halfway out (5.2 MB/s) -> left as it is");
+		Check(KeepDriveAsIs(11.08), "keep as is: 8.0 at the outer edge (11.08 MB/s) -> left as it is");
+		Check(kSpeed32Mbs > 4.4 && kSpeed32Mbs < 4.5, "3.2's speed: 4.43-4.46 MB/s as logged");
+	}
 	std::printf(fails ? "%d FAILED\n" : "all passed\n", fails);
 	return fails ? 1 : 0;
 }

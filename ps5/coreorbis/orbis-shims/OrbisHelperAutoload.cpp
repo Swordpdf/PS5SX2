@@ -89,11 +89,17 @@ orbis_helper::Status ReadStatus()
 }
 
 // The helper ELF the app ships: in its own title folder first, then where a tester may have put it by hand.
+// fix180: /app0 is the app's folder only BEFORE the jailbreak (main-boot.cpp reads disc-tile.txt there for that reason); after it (OrbisHelperAutoStart)
+// /app0/... was never found: every one of the 51 vk-285-180 session reports says "auto-load: skip - no helper ELF shipped with the app", though the
+// package has PPSA99203/PS5SXHelper.elf. So the app's folder is also looked at by its /data path (it is there after the jailbreak, for the main app and
+// for a disc or game tile, which are copies of the app under other title IDs).
 std::string FindElf()
 {
 	static const char* const kPaths[] = {
 		"/app0/PS5SXHelper.elf",
 		"/app0/PS5SXHelper-merged-nomount.elf",
+		"/data/homebrew/PPSA99203/PS5SXHelper.elf",
+		"/data/homebrew/PPSA99203/PS5SXHelper-merged-nomount.elf",
 		"/data/PCSX2/PS5SXHelper-merged-nomount.elf",
 		"/data/PCSX2/PS5SXHelper.elf",
 	};

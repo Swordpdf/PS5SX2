@@ -535,6 +535,80 @@ def case_anchor_needs_the_process():
     check("anchor_unseen", "ms more" not in r.relaunch_log(), "no anchor wait")
 
 
+# ---- fix180: GUARD mode (relaunch_guard.h). The main app leaves by its own exec; on 180 that exec twice brought nothing back (the player stayed on the home
+# screen). The payload launches PPSA99203 only when no new process says it is up ("<state>.alive") guard_ms after the old one went. ----
+GUARD = "guard_ms=2000\nhard_ms=5000\n"
+
+
+def case_guard_came_back():
+    # the exec works: the old process goes at 0.5 s and the new one says so at 1.5 s: nothing is launched, the payload ends at once
+    r = Run("guard_back", app_seconds=0.5, wait="PPSA99203", settle_ms=100, extra=GUARD)
+    r.sleep_until(1.5)
+    check("guard_back", not r.launches(), "nothing launched while the guard waits", r.relaunch_log()[-300:])
+    open(r.state + ".alive", "w").write("1\n")
+    r.finish()
+    check("guard_back", not r.launches(), "no launch: the exec brought the app back")
+    check("guard_back", r.status() == "came-back", "done says came-back", str(r.read(".done")))
+    check("guard_back", r.t_end - r.t0 < 2.3, "ends as soon as the new process says so", "%.2f s" % (r.t_end - r.t0))
+    check("guard_back", "guard mode" in r.relaunch_log() and "guard: the process" in r.relaunch_log(), "the log has the guard's steps", r.relaunch_log()[-400:])
+
+
+def case_guard_alive_before_gone():
+    # the new process said so before the old one was seen gone (a fast exec): nothing launched
+    d = os.path.join(work, "guard_early")
+    os.makedirs(d)
+    open(os.path.join(d, "relaunch-100.alive"), "w").write("1\n")
+    r = Run("guard_early", app_seconds=3.0, wait="PPSA99203", settle_ms=100, state_dir=d, extra=GUARD)
+    r.finish()
+    check("guard_early", not r.launches() and r.status() == "came-back", "came back, nothing launched", str(r.read(".done")))
+    check("guard_early", r.t_end - r.t0 < 1.5, "without waiting for the old process", "%.2f s" % (r.t_end - r.t0))
+
+
+def case_guard_not_back():
+    # the 180 case: the exec is accepted, the old process goes at 0.5 s and nothing comes: the launch follows guard_ms (2 s) + the settle after the exit
+    r = Run("guard_not_back", app_seconds=0.5, wait="PPSA99203", settle_ms=100, extra=GUARD)
+    r.finish()
+    ls = r.launches()
+    check("guard_not_back", len(ls) == 1 and ls[0]["title"] == "PPSA99203", "PPSA99203 launched once", str(ls))
+    timing_after(r, r.app_end(), 2.0 + 0.1, "guard_not_back", "after the guard and the settle, not before", slack=1.2)
+    check("guard_not_back", r.status() == "launched", "done says launched", str(r.read(".done")))
+    check("guard_not_back", "no new process said it is up" in r.relaunch_log(), "the log says why it launched", r.relaunch_log()[-400:])
+
+
+def case_guard_slow_new_app():
+    # another app process is there (the new one, starting slowly) but says nothing: the payload waits up to hard_ms (5 s), then launches (on the console
+    # the launch then answers "already running")
+    r = Run("guard_slow", app_seconds=0.5, wait="PPSA99203", settle_ms=100, extra=GUARD, env={"RELAUNCH_STUB_OTHERAPP": "1"})
+    r.finish()
+    timing_after(r, r.app_end(), 5.0 + 0.1, "guard_slow", "after hard_ms, not after guard_ms", slack=1.2)
+    check("guard_slow", "another app process is there" in r.relaunch_log(), "the log says it waits for it", r.relaunch_log()[-400:])
+
+
+def case_guard_slow_then_back():
+    # another app process is there and says it is up at 3 s (after guard_ms, before hard_ms): nothing launched
+    r = Run("guard_slow_back", app_seconds=0.5, wait="PPSA99203", settle_ms=100, extra=GUARD, env={"RELAUNCH_STUB_OTHERAPP": "1"})
+    r.sleep_until(3.0)
+    open(r.state + ".alive", "w").write("1\n")
+    r.finish()
+    check("guard_slow_back", not r.launches() and r.status() == "came-back", "came back late, nothing launched", str(r.read(".done")))
+
+
+def case_guard_cancelled():
+    # the exec was refused and the app went back to the game: it cancels; the game ends normally later: nothing is launched
+    r = Run("guard_cancel", app_seconds=3.0, wait="PPSA99203", settle_ms=100, extra=GUARD)
+    r.sleep_until(0.8)
+    open(r.state + ".cancel", "w").write("1\n")
+    r.finish()
+    check("guard_cancel", not r.launches() and r.status() == "cancelled", "a cancelled guard launches nothing", str(r.read(".done")))
+
+
+def case_guard_clamped():
+    # a guard of 5 ms is 1 s, not 0 (no guard would launch at once on top of an exec that works)
+    r = Run("guard_clamp", app_seconds=0.3, wait="PPSA99203", settle_ms=100, extra="guard_ms=5\n")
+    r.finish()
+    timing_after(r, r.app_end(), 1.0 + 0.1, "guard_clamp", "5 ms became 1 s", slack=1.2)
+
+
 cases = [v for k, v in sorted(globals().items()) if k.startswith("case_") and callable(v)]
 t0 = time.time()
 with ThreadPoolExecutor(max_workers=len(cases)) as pool:

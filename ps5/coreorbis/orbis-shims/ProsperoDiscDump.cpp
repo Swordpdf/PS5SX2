@@ -1168,6 +1168,15 @@ namespace
 				// background, a game running, the app still starting) nothing is copied: the disc waits, and the question comes with the shelf.
 				if (!resumed_copy && !OrbisFlag("nodiscask") && !AlreadyCopied(node, serial))
 				{
+					// fix180 (owner): a disc tile's process never asks "play from the disc or copy it" (the tile chose already: the dump by serial, else the
+					// disc; main-boot.cpp, OrbisDiscTileStart.h). When the tile ended on the shelf after all, the disc is its entry there, picked by hand.
+					if (s_tile_process.load()) // fix180
+					{
+						if (declined != serial)
+							Log("%s: a disc tile's process: no question about the disc (it is on the shelf to pick)", serial.c_str());
+						declined = serial;
+						continue;
+					}
 					if (asked != serial)
 					{
 						if (orbis_frontend_ask_disc(DiscTitle(serial), serial))

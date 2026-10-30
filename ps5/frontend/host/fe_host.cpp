@@ -273,7 +273,7 @@ bool ParseStep(const std::string& line, std::vector<Step>& out)
 	}
 	else if (st.op == "sleep") // 2026-10-05: real seconds, for the texture pack worker
 		s >> st.seconds;
-	else if (st.op == "shot" || st.op == "game")
+	else if (st.op == "shot" || st.op == "game" || st.op == "lastdisc") // fix180: "lastdisc <serial>": the last game played was that disc from the drive
 		s >> st.arg;
 	else if (st.op == "dump") // live-22: "dump <pct>" writes the dumper's progress file, "dump off" removes it
 	s >> st.arg;
@@ -1187,6 +1187,8 @@ int main(int argc, char** argv)
 	for (const Step& s : steps)
 		if (s.op == "game")
 			acfg.preselect = std::atoi(s.arg.c_str());
+		else if (s.op == "lastdisc")
+			acfg.preselect_disc_serial = s.arg;
 	if (!app.Init(&renderer, fonts, games, covers, acfg))
 	{
 		std::fprintf(stderr, "[host] app: %s\n", renderer.error().c_str());

@@ -73,6 +73,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/OrbisDiscDrive.h"   // PR #34: PS2 discs played straight from a drive (flag bootdisc)
 #include "orbis-shims/ProsperoRelaunch.h" // 2.11: "back to the menu" closes the app and a payload starts it again (relaunch/relaunch.c)
 #include "orbis-shims/OrbisLeavePlan.h"   // 2.11: how the process is left (relaunch payload, the old exec, or the plain close), as pure logic
+#include "orbis-shims/OrbisDiscTileStart.h" // fix180: a disc tile press: the dump by serial, else the disc, never the question
 #include "orbis-shims/OrbisDiscExec.h"    // 2.11 (dumpxmb): when the disc helper's exec signal is honoured; how old a disc-launch.txt may be
 #include "orbis-shims/OrbisVideoOutMode.h" // 2.11: the app's own 120 Hz output for frame generation (flag fg120)
 #include "SIO/Pad/PadGuitar.h"
@@ -2152,12 +2153,15 @@ static std::string orbis_menu_exec_path()
 
 // The note for the next start: the shelf opens, though the tile's marker (or the bootdisc flag) would start the disc again.
 // 176: "<time> <wall clock ms now> <wall clock ms of the press>" (orbis-shims/OrbisLeavePlan.h ShelfMark): the start that follows tells how long ago both were.
-static void orbis_mark_open_shelf()
+// fix180: and the title the leave starts (orbis_leave::TargetOf), so that only that title's start takes it (orbis_take_open_shelf_mark): a tile pressed after
+// a leave of the main app (whose own exec may not bring it back) starts its game instead of the shelf.
+static void orbis_mark_open_shelf(const char* target)
 {
   if (FILE* f = fopen(OrbisLogPath("open-shelf.txt").c_str(), "wb"))
   {
     const long long now_ms = orbis_wall_ms();
-    fprintf(f, "%lld %lld %lld\n", static_cast<long long>(time(nullptr)), now_ms, now_ms - (orbis_steady_us() - orbis_leave_base_us()) / 1000);
+    fprintf(f, "%lld %lld %lld %s\n", static_cast<long long>(time(nullptr)), now_ms, now_ms - (orbis_steady_us() - orbis_leave_base_us()) / 1000,
+      target && target[0] ? target : orbis_leave::kMainTitle);
     fclose(f);
   }
 }
@@ -2165,8 +2169,26 @@ static void orbis_mark_open_shelf()
 // The note this start took (zeros when it took none or it was an older file without the times), for orbis_leave_press_age_ms().
 static orbis_leave::ShelfMark s_leave_mark;
 
+// fix180: this process's title for the note (orbis_leave::NoteIsFor): PPSA99203 for the main app, the tile's folder name for a disc or game tile ("" when
+// its folder was not found; a game tile then goes by the tile= line of its marker). Asked after the jailbreak (orbis_own_tile_dir looks in /data/homebrew).
+static bool orbis_is_tile_start()
+{
+  return s_tile_marker_seen && !s_tile_marker_drive.empty() && s_tile_marker_drive != "reload";
+}
+static std::string orbis_own_title()
+{
+  if (!orbis_is_tile_start())
+    return orbis_leave::kMainTitle;
+  const std::string tile = orbis_own_tile_dir();
+  if (!tile.empty())
+    return tile.substr(tile.find_last_of('/') + 1);
+  return s_tile_is_game ? s_tile_game_id : std::string();
+}
+
 // Read and removed by the start that follows; true when it was left in the last three minutes. `out` (main() only) gets the note's numbers.
-static bool orbis_take_open_shelf_mark(orbis_leave::ShelfMark* out = nullptr)
+// fix180: with `for_this_start` (main() only), true only when the note is also addressed to this process (orbis_leave::NoteIsFor); a fresh note for another
+// title is said in boot.log and removed all the same (the leave it was written for is over: this start is the user's).
+static bool orbis_take_open_shelf_mark(orbis_leave::ShelfMark* out = nullptr, bool for_this_start = false)
 {
   const std::string path = OrbisLogPath("open-shelf.txt");
   bool fresh = false;
@@ -2179,6 +2201,19 @@ static bool orbis_take_open_shelf_mark(orbis_leave::ShelfMark* out = nullptr)
     if (orbis_leave::ParseShelfMark(text, mark))
     {
       fresh = mark.sec > 0 && time(nullptr) - mark.sec >= 0 && time(nullptr) - mark.sec < 180;
+      if (fresh && for_this_start)
+      {
+        const std::string own = orbis_own_title();
+        if (!orbis_leave::NoteIsFor(mark, own.c_str(), orbis_is_tile_start()))
+        {
+          printf("[boot] a \"back to the menu\" note of %lld s ago is for %s, not for this start (%s): not taken, %s\n",
+            static_cast<long long>(time(nullptr) - mark.sec), mark.target[0] ? mark.target : "the main app (a note without a title)",
+            own.empty() ? "a tile whose folder was not found" : own.c_str(),
+            s_tile_is_game ? "the game tile starts its game" : orbis_is_tile_start() ? "the disc tile starts its disc" : "the start goes on as usual");
+          fflush(stdout);
+          fresh = false;
+        }
+      }
       if (fresh && out)
         *out = mark;
     }
@@ -2288,6 +2323,9 @@ static void orbis_leave_note_ms(const char* what, long long since_us)
   orbis_leave_note(text);
 }
 
+// fix180: a guard payload is up for this leave (orbis_leave::WantGuard): called off when the process stays (the exec refused, back to the game).
+static bool s_leave_guard_up = false;
+
 // The relaunch payload, sent before the saves so its start overlaps them (at most 3 s; the picture is frozen anyway). True when it answered.
 static bool orbis_leave_start_relay(const OrbisLeaveFlags& fl)
 {
@@ -2297,6 +2335,29 @@ static bool orbis_leave_start_relay(const OrbisLeaveFlags& fl)
     // 176: the main app leaves by the exec of its own eboot (menufast) or a flag chooses the old way or the close: no payload
     if (orbis_leave::MainAppExec(want))
       printf("[menu] no relaunch payload: the main app leaves by the exec of its own eboot (%s)\n", fl.menufast ? "flag menufast" : "the default");
+    // fix180: but a GUARD payload, which starts the main app if the exec brings nothing back (180: twice the home screen). It returns false all the
+    // same: the way out stays the exec (orbis_leave::Decide is asked with relay_started = false).
+    s_leave_guard_up = false;
+    if (orbis_leave::WantGuard(want) && OrbisRelaunchBuilt())
+    {
+      std::string closing = orbis_leave::kMainTitle;
+      const std::string tile = orbis_own_tile_dir();
+      if (!tile.empty())
+        closing = tile.substr(tile.find_last_of('/') + 1);
+      else if (s_tile_marker_seen && !s_tile_marker_drive.empty())
+        closing.clear();
+      OrbisRelaunchTiming timing;
+      timing.settle_ms = fl.settle_ms;
+      timing.guard_ms = orbis_leave::kGuardMs;
+      timing.hard_ms = orbis_leave::kGuardHardMs;
+      std::string why;
+      const long long t_guard = orbis_steady_us();
+      s_leave_guard_up = OrbisRelaunchStart(closing.c_str(), orbis_leave::kMainTitle, static_cast<int>(getpid()), why, timing);
+      printf("[menu] guard payload (closing title '%s'; it starts %s if the exec brings nothing back %d ms after this process went): %s\n", closing.c_str(),
+        orbis_leave::kMainTitle, timing.guard_ms, s_leave_guard_up ? "up" : why.c_str());
+      fflush(stdout);
+      orbis_leave_note_ms(s_leave_guard_up ? "guard: up" : "guard: none", t_guard);
+    }
     return false;
   }
   if (!OrbisRelaunchBuilt())
@@ -2334,6 +2395,8 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
   in.relay_started = relay;
   in.tile_dir_found = tile_found;
   How how = orbis_leave::Decide(in);
+  const std::string own_tile = tile_found ? tile.substr(tile.find_last_of('/') + 1) : std::string(); // fix180: the note's title for the tile's own eboot
+  orbis_mark_open_shelf(orbis_leave::TargetOf(how, own_tile.c_str()));
   printf("[menu] leaving by %s (payload %d, disc tile %d, its eboot found %d, flags menuexec %d menuclose %d menufast %d menurelaunch %d, main app exec by default %d)\n",
     kHow[static_cast<int>(how)], relay, is_tile, tile_found, fl.menuexec, fl.menuclose, fl.menufast, fl.menurelaunch, orbis_leave::kMainAppExecByDefault);
   orbis_leave_note(kHow[static_cast<int>(how)]);
@@ -2370,6 +2433,8 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
   }
   // The old way (a disc tile's own eboot, then the app's; the main app's): "It doesn't come back when it works; allow for one that returns first and ends the process later."
   const std::string path = orbis_menu_exec_path();
+  // fix180: the note names the title this eboot is (the tile's own, else the main app's)
+  orbis_mark_open_shelf(tile_found && path == tile + "/eboot.bin" ? own_tile.c_str() : orbis_leave::kMainTitle);
   printf("[menu] re-executing %s\n", path.c_str());
   orbis_leave_note("exec: eboot issued");
   fflush(stdout);
@@ -2380,10 +2445,20 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
   {
     printf("[menu] the tile's own eboot didn't take: PPSA99203's is tried\n"); // 2.11
     fflush(stdout);
+    orbis_mark_open_shelf(orbis_leave::kMainTitle); // fix180
     exec_rc = orbis_exec_for_menu("/data/homebrew/PPSA99203/eboot.bin");
   }
   orbis_leave_note("exec: eboot returned");
-  return orbis_leave::AfterExecReturn(exec_rc) == orbis_leave::AfterExec::KeepWaiting; // accepted, merely outlived the wait: the notes for the next start stay
+  const bool waiting = orbis_leave::AfterExecReturn(exec_rc) == orbis_leave::AfterExec::KeepWaiting; // accepted, merely outlived the wait: the notes stay
+  if (!waiting && s_leave_guard_up)
+  {
+    // fix180: the exec was refused and this process stays (back to the game): the guard must not start the app when the game ends later
+    OrbisRelaunchCancel();
+    s_leave_guard_up = false;
+    printf("[menu] the exec was refused: the guard payload is called off\n");
+    fflush(stdout);
+  }
+  return waiting;
 }
 
 // vk-285-109: our own eboot again, into the shelf, after a start that failed (the VM never ran, so no memory
@@ -2398,7 +2473,7 @@ static void orbis_restart_to_menu()
   const bool relay = orbis_leave_start_relay(fl); // 2.11: the relaunch payload, or the old exec
   orbis_leave_note_ms(relay ? "relay: up" : "relay: none", t_relay);
   orbis_mark_relaunch(); // vk-285-144
-  orbis_mark_open_shelf(); // 2.11
+  // 2.11: open-shelf.txt (fix180: written by orbis_leave_process, with the title its way starts)
   const bool waiting = orbis_leave_process(relay, fl);
   if (!waiting)
     orbis_take_open_shelf_mark(); // still here: the note is not for a later start
@@ -2436,7 +2511,7 @@ static void orbis_back_to_menu()
   // disc speed restore hook (disc work)
   cdvdQuiesce(400); // 2.11 (disc lag round): a game from a disc drive: no new drive read from here on (and none half done when the process goes); nothing is sent to the drive and no lock taken
   orbis_mark_relaunch(); // vk-285-144
-  orbis_mark_open_shelf(); // 2.11: the shelf opens next, not the tile's disc again
+  // 2.11: the shelf opens next, not the tile's disc again (open-shelf.txt; fix180: written by orbis_leave_process, with the title its way starts)
   // It doesn't come back when it works; allow for one that returns first and ends the process later.
   const bool waiting = orbis_leave_process(relay, fl);
   if (!waiting)
@@ -3614,6 +3689,25 @@ int main()
   orbis_log_flag_access("after the jailbreak");
 #endif
   orbis_boot_log_release("after the jailbreak"); // vk-285-113: boot.log's first lines, when /data wasn't there yet
+  // fix180: a guard of the "back to the menu" that re-executed this process is told it came back (it then starts nothing), and the payload's steps of the
+  // last leave go to boot.log, so a session report shows which way out worked (the exec, the guard's launch, the relay).
+  {
+    const std::string back = OrbisRelaunchConfirmCameBack();
+    if (!back.empty())
+      printf("[menu] %s\n", back.c_str());
+    const std::string last = OrbisRelaunchLastLog();
+    if (!last.empty())
+    {
+      size_t at = 0;
+      while (at < last.size())
+      {
+        const size_t eol = last.find('\n', at);
+        printf("[menu] relaunch.log: %s\n", last.substr(at, (eol == std::string::npos ? last.size() : eol) - at).c_str());
+        at = eol == std::string::npos ? last.size() : eol + 1;
+      }
+    }
+    fflush(stdout);
+  }
   // 179: load the PS5SX2 Disc Helper ourselves (PS5SX3-style, 127.0.0.1:9021) so the user need not load it by hand
   // (OrbisHelperAutoload.cpp; the flag file helper_noautoload skips it, and it never replaces a newer or a busy helper).
   { extern void OrbisHelperAutoStart(); OrbisHelperAutoStart(); }
@@ -3861,7 +3955,7 @@ int main()
   // Nothing is copied from here. The file is read, not deleted: it belongs to the tile.
   // 2.11: a start that follows "back to the menu" (L1 + R1 + touchpad, or a game that failed to start): the shelf opens. Neither the tile's
   // marker nor the bootdisc flag starts the disc in the drive again then. Taken once, and only when it is fresh.
-  const bool open_shelf = orbis_take_open_shelf_mark(&s_leave_mark);
+  const bool open_shelf = orbis_take_open_shelf_mark(&s_leave_mark, true); // fix180: only a note addressed to this title (a tile press after a leave of the main app starts its game)
   if (open_shelf)
   {
     printf("[boot] opened by \"back to the menu\": the shelf opens, the disc in the drive isn't started again%s\n",
@@ -3910,21 +4004,54 @@ int main()
       else
       {
         const std::string serial = fe::ReadSerial(drive);
-        const std::string copy = serial.empty() ? std::string() : OrbisFindDiscCopy(serial, drive);
-        if (!copy.empty())
+        std::string copy = serial.empty() ? std::string() : OrbisFindDiscCopy(serial, drive);
+        // fix180 (owner): no copy under its own name or at the disc's size: any game of the shelf's folders with the disc's serial (any format, any size;
+        // not a half-finished or damaged one: orbis-shims/OrbisDiscTileStart.h). NFS shares are left out (a large share takes long to read); the serial
+        // cache keeps the scan quick for the rest.
+        if (copy.empty() && !serial.empty())
         {
-          s_game_path = copy;
-          pre_from = OrbisBios::StartFrom::DiscTile;
-          printf("[disc] disc tile: %s holds %s: its copy %s starts\n", drive.c_str(), serial.c_str(), copy.c_str());
+          const double t_scan = orbis_mono_seconds();
+          fe::SetSerialCacheFile(OrbisDir("cache") + "/chd-serials.txt");
+          std::vector<std::string> dirs;
+          for (const std::string& dir : s_roots.dirs)
+          {
+            bool share = false;
+            for (const OrbisNfs::ShareInfo& s : OrbisNfs::Shares())
+              share = share || dir.compare(0, s.mount_point.size(), s.mount_point) == 0;
+            if (!share)
+              dirs.push_back(dir);
+          }
+          std::vector<orbis_disc::TileCandidate> cands;
+          for (const fe::GameInfo& g : fe::ScanGames(dirs, s_roots.scan_subfolders))
+          {
+            orbis_disc::TileCandidate c;
+            c.path = g.path;
+            c.serial = g.serial.empty() ? fe::ReadSerial(g) : g.serial;
+            c.unreadable = !g.damaged.empty();
+            cands.push_back(c);
+          }
+          const auto exists = [](const std::string& p) { struct stat st = {}; return stat(p.c_str(), &st) == 0; };
+          const std::string scanned = orbis_disc::PickTileCopy(cands, serial, exists);
+          printf("[disc] disc tile: %s: no copy by its own name; the shelf's folders (%zu games, %zu folders) %s (%.0f ms)\n", serial.c_str(), cands.size(),
+            dirs.size(), scanned.empty() ? "have no whole dump of it either" : ("have " + scanned).c_str(), (orbis_mono_seconds() - t_scan) * 1000.0);
+          copy = scanned;
         }
-        else if (!serial.empty())
+        switch (orbis_disc::DecideTileStart(serial, copy))
         {
-          s_game_path = drive;
-          pre_from = OrbisBios::StartFrom::DiscTile;
-          printf("[disc] disc tile: %s holds %s: no copy, so it starts from the drive\n", drive.c_str(), serial.c_str());
+          case orbis_disc::TileStart::Copy:
+            s_game_path = copy;
+            pre_from = OrbisBios::StartFrom::DiscTile;
+            printf("[disc] disc tile: %s holds %s: its copy %s starts (a tile press asks nothing)\n", drive.c_str(), serial.c_str(), copy.c_str());
+            break;
+          case orbis_disc::TileStart::Disc:
+            s_game_path = drive;
+            pre_from = OrbisBios::StartFrom::DiscTile;
+            printf("[disc] disc tile: %s holds %s: no copy, so it starts from the drive (a tile press asks nothing)\n", drive.c_str(), serial.c_str());
+            break;
+          case orbis_disc::TileStart::Nothing:
+            printf("[disc] disc tile: %s holds no PS2 game any more: the shelf opens\n", drive.c_str());
+            break;
         }
-        else
-          printf("[disc] disc tile: %s holds no PS2 game any more: the shelf opens\n", drive.c_str());
         orbis_eventf("disc tile: %s %s", drive.c_str(), s_game_path.empty() ? "(nothing to start)" : s_game_path.c_str());
         fflush(stdout);
       }
@@ -4157,6 +4284,27 @@ int main()
     }
   }
   OrbisDiscNoteGameStarting("main-boot: a game is chosen");
+  // fix180 (tester on 180: back from a disc game the shelf showed the first entry): the shelf picks the game played last (lastgame.txt). A game from a
+  // drive is "disc:<serial>" (the shelf picks a copy of that disc, or the drive's entry when it comes); any other start its file name, as the shelf writes.
+  if (!s_game_path.empty() && s_game_path != kOrbisSystemMenuPath)
+  {
+    std::string last;
+    if (OrbisDiscDrive::IsDrivePath(s_game_path))
+    {
+      const std::string serial = fe::ReadSerial(s_game_path);
+      if (OrbisDiscDrive::SafeSerial(serial))
+        last = "disc:" + serial;
+    }
+    else
+      last = s_game_path.substr(s_game_path.rfind('/') + 1);
+    if (!last.empty())
+      if (FILE* lf = fopen("/data/PCSX2/lastgame.txt", "w"))
+      {
+        fprintf(lf, "%s\n", last.c_str());
+        fclose(lf);
+        printf("[boot] last game for the shelf: %s\n", last.c_str());
+      }
+  }
   // 2026-10-08 (AI-assisted; testers asked for the PS2's own boot and menu): the sheet's "PS2 system menu" (fe_ps5.h
   // kOrbisSystemMenuPath): no disc, so VMManager boots the BIOS into its menu (AutoDetectSource: an empty file name is
   // CDVD_SourceType::NoDisc); gs.ini's settings, no game's file. Needs proper testing on the console.

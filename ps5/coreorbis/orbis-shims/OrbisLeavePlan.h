@@ -84,15 +84,29 @@ constexpr int SettleMs(const char* text)
 	return v < 0 ? 0 : v > kSettleMaxMs ? kSettleMaxMs : static_cast<int>(v);
 }
 
-// logs/open-shelf.txt, the note for the next start: "<time(NULL)> <wall clock ms when the exit was issued> <wall clock ms of the press>". The 175 file had
-// the first number only; the other two are 0 then. The new process prints how long ago the other two were (the whole gap from the press to its main(), in
-// boot.log and settings.log).
+// logs/open-shelf.txt, the note for the next start: "<time(NULL)> <wall clock ms when the exit was issued> <wall clock ms of the press> <title>". The 175
+// file had the first number only; the other two are 0 then. The new process prints how long ago the other two were (the whole gap from the press to its
+// main(), in boot.log and settings.log).
+// fix180 (tester on 180: "after the first time, sometimes the tile just opens PS5SX2 to the game's cover, but doesn't boot the game; I need to close
+// everything and reopen"): the fourth field is the title the leave starts (TargetOf). A disc tile's console log: "back to the menu" in the main app at
+// 23:37:18 (its own exec), no new process; the disc tile pressed 43 s later took the note (fresh for 3 minutes) and opened the shelf; closed and pressed
+// again 11 s later, it started the disc. Any start within 3 minutes took a note that was left for another title. Now a start takes only the note
+// addressed to it (NoteIsFor): a tile press after a leave of the main app, or of another tile, starts its game.
+constexpr const char* kMainTitle = "PPSA99203";
+constexpr int kTitleMax = 16;
+
 struct ShelfMark
 {
 	long long sec = 0;
 	long long mark_ms = 0;  // when the exit was issued
 	long long press_ms = 0; // when "back to the menu" was pressed (the first note of the leave, for a start that failed)
+	char target[kTitleMax] = {}; // fix180: the title the leave starts ("" = a note of 2.11 to 180, which had none)
 };
+
+constexpr bool IsTitleChar(char c)
+{
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+}
 
 constexpr bool ParseShelfMark(const char* text, ShelfMark& out)
 {
@@ -102,8 +116,42 @@ constexpr bool ParseShelfMark(const char* text, ShelfMark& out)
 	if (!TakeNumber(text, out.mark_ms))
 		return true;
 	if (!TakeNumber(text, out.press_ms))
+	{
 		out.press_ms = 0;
+		return true;
+	}
+	// fix180: the title, when there is one (letters, digits, '_' and '-', shorter than kTitleMax); anything else leaves it out
+	while (IsBlank(*text))
+		text++;
+	int n = 0;
+	while (IsTitleChar(text[n]) && n < kTitleMax - 1)
+		n++;
+	if (n > 0 && (text[n] == '\0' || IsBlank(text[n])))
+		for (int i = 0; i < n; i++)
+			out.target[i] = text[i];
 	return true;
+}
+
+constexpr bool SameText(const char* a, const char* b)
+{
+	if (!a || !b)
+		return false;
+	while (*a && *a == *b)
+	{
+		a++;
+		b++;
+	}
+	return *a == *b;
+}
+
+// fix180: whether the note is for this start. `own` = this process's title: kMainTitle for the main app, the tile's folder name (PPSA99231.., PPSA99251..)
+// for a disc or game tile, "" for a tile whose folder was not found. A note without a title (2.11 to 180) is the main app's only: a tile press starts its
+// game, whatever such a note says.
+constexpr bool NoteIsFor(const ShelfMark& mark, const char* own, bool is_tile)
+{
+	if (mark.target[0] == '\0')
+		return !is_tile;
+	return own && own[0] != '\0' && SameText(mark.target, own);
 }
 
 enum class How
@@ -139,6 +187,17 @@ constexpr bool WantRelay(const In& in)
 	return !in.flag_menuclose && !in.flag_menuexec && !MainAppExec(in);
 }
 
+// fix180 (owner: "L1 + R1 + Touchpad during a game must ALWAYS return to the PS5SX2 shelf, never to the XMB"): a way out by an exec (the main app's own,
+// menufast or the default; the flag menuexec) is no longer alone. On vk-285-180 the main app's exec was accepted and nothing came back, twice on one
+// console. So the relaunch payload is started in GUARD mode before it (relaunch/relaunch_guard.h): it launches PPSA99203 only if no new process says it
+// is up kGuardMs after the old one went. Not with menuclose (the player asked for the home screen) and not when the relay itself is the way.
+constexpr int kGuardMs = 7000;
+constexpr int kGuardHardMs = 20000;
+constexpr bool WantGuard(const In& in)
+{
+	return !in.flag_menuclose && !WantRelay(in);
+}
+
 // In this order: menuclose, the main app's own exec (menufast / the default), menuexec (the old rule), the relay, and without a relay the tile's own eboot
 // or the main app's. A tile whose folder is gone does NOT exec PPSA99203's eboot from inside the tile (a cross-title exec, what ended at the home screen in
 // 2.10): it closes.
@@ -162,6 +221,14 @@ enum class AfterExec
 	FallBack,    // LoadExec refused at once: nothing is under way, take the next way
 	KeepWaiting, // LoadExec accepted (rc 0): the shell has started the kill, this process merely outlived the wait; never cancel the payload, never exec twice
 };
+
+// fix180: the title a way out starts, for the note (open-shelf.txt): the relay and the main app's eboot start PPSA99203, a tile's own eboot that tile
+// (`own_tile`, its folder name). The plain close starts nothing: its note is the main app's, as every note was before (a later start of the main app opens
+// the shelf and the bootdisc flag does not start the disc again; a tile press starts its game).
+constexpr const char* TargetOf(How how, const char* own_tile)
+{
+	return how == How::ExecOwnTile && own_tile && own_tile[0] != '\0' ? own_tile : kMainTitle;
+}
 
 // What to do once sceSystemServiceLoadExec(...) and the wait after it are over and this process still lives. rc is LoadExec's return value.
 constexpr AfterExec AfterExecReturn(int rc)
