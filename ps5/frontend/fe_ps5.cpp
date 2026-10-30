@@ -172,17 +172,62 @@ FE_INCBIN_ASSET(fe_hd_sources, "hd-pack-sources.json");
 // 2.11: LaunchBox's art by PS2 serial (fe_launchbox.h; made by tools/make_launchbox_covers.py).
 FE_INCBIN_ASSET(fe_launchbox, "launchbox-covers.txt");
 // bioscheck (2026-10-29): OpenPS2BIOS 0.5, the open-source BIOS PS5SX2 ships (Tamariba Devs, MIT), and its licence.
+// fix181: FE_OPEN_BIOS_FILE (make OPENBIOS_EMBED=0): not in the eboot but a file in the app's folder (PPSA99203/openps2bios/), read on first use. A
+// console test for the slow "back to the menu" exec: since 180 the eboot is 44.3 MB (the 4 MB BIOS embedded) against 39.9 MB on 177/179, and the exec of
+// the app's own eboot went from about 1 s (177: median 0.98 s, 303 exits) to 3.5 s or never (180/181).
+#ifndef FE_OPEN_BIOS_FILE
 FE_INCBIN_ASSET(fe_open_bios, "openps2bios/OpenPS2BIOS-0.5.bin");
 FE_INCBIN_ASSET(fe_open_bios_licence, "openps2bios/LICENSE");
 extern "C" const uint8_t fe_open_bios[], fe_open_bios_end[], fe_open_bios_licence[], fe_open_bios_licence_end[];
+#endif
 
 bool orbis_frontend_open_bios_image(const unsigned char** data, size_t* size, const unsigned char** licence, size_t* licence_size)
 {
+#ifdef FE_OPEN_BIOS_FILE
+	static std::vector<uint8_t> s_bios, s_licence;
+	static bool s_looked = false;
+	if (!s_looked)
+	{
+		s_looked = true;
+		static const char* const kDirs[] = {"/data/homebrew/PPSA99203/openps2bios", "/app0/openps2bios"};
+		auto read_all = [](const std::string& path, std::vector<uint8_t>& out, size_t max) {
+			out.clear();
+			FILE* f = std::fopen(path.c_str(), "rb");
+			if (!f)
+				return false;
+			uint8_t buf[65536];
+			size_t n;
+			while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0 && out.size() <= max)
+				out.insert(out.end(), buf, buf + n);
+			std::fclose(f);
+			return !out.empty() && out.size() <= max;
+		};
+		for (const char* dir : kDirs)
+		{
+			if (read_all(std::string(dir) + "/OpenPS2BIOS-0.5.bin", s_bios, 4u << 20) && s_bios.size() == (4u << 20))
+			{
+				read_all(std::string(dir) + "/LICENSE", s_licence, 64u << 10);
+				std::printf("[bios] OpenPS2BIOS read from %s (not in the eboot: OPENBIOS_EMBED=0)\n", dir);
+				break;
+			}
+			s_bios.clear();
+		}
+		if (s_bios.empty())
+			std::printf("[bios] OpenPS2BIOS: not in the eboot (OPENBIOS_EMBED=0) and no openps2bios/OpenPS2BIOS-0.5.bin in the app's folder\n");
+		std::fflush(stdout);
+	}
+	*data = s_bios.data();
+	*size = s_bios.size();
+	*licence = s_licence.data();
+	*licence_size = s_licence.size();
+	return *size > 0;
+#else
 	*data = fe_open_bios;
 	*size = static_cast<size_t>(fe_open_bios_end - fe_open_bios);
 	*licence = fe_open_bios_licence;
 	*licence_size = static_cast<size_t>(fe_open_bios_licence_end - fe_open_bios_licence);
 	return *size > 0;
+#endif
 }
 extern "C" const uint8_t fe_font_brands[], fe_font_brands_end[], fe_web_page[], fe_web_page_end[], fe_web_discord[],
 	fe_web_discord_end[], fe_web_x[], fe_web_x_end[], fe_presets[], fe_presets_end[], fe_hd_sources[], fe_hd_sources_end[], fe_launchbox[],
