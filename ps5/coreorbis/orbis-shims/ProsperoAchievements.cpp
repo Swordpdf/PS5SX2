@@ -1,6 +1,7 @@
 // Persistent RetroAchievements credentials and shelf login worker (AI-assisted).
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cctype> // vk-285-134
+#include <cerrno>
 #include <cstdio>
 #include "ProsperoAchievements.h"
 #include "ProsperoNotify.h"
@@ -12,6 +13,7 @@
 #include <mutex>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace
 {
@@ -20,6 +22,7 @@ namespace
 		std::mutex mutex;
 		fe::AchievementAccountState state;
 		std::unique_ptr<INISettingsInterface> credentials;
+		std::string path; // ra180: the credentials file, for its mode after each save
 		pthread_t worker{};
 		bool started = false;
 	};
@@ -28,6 +31,18 @@ namespace
 		// Runtime callbacks and settings layers outlive the shelf.
 		static Account* account = new Account();
 		return *account;
+	}
+	// ra180 (2026-10-30, AI-assisted): the credentials file's mode. It was 0600, and PS5SX2 doesn't always run under the same
+	// uid: uid 0 when a HEN answers the elevation request, uid 1 (the app's own) when none does. A 0600 file written under one
+	// uid was unreadable (and not chmod-able) under the other, so the account was gone (177's and 180's reports: consoles with a
+	// saved account whose sessions under the other uid never tried the token sign-in). Readable by every uid now (only this app
+	// reaches /data/PCSX2: other apps are sandboxed away from it), written by its owner; INISettingsInterface::Save makes a 0600
+	// file (mkstemp), so the mode is set again after every save.
+	constexpr mode_t kAccountFileMode = 0644;
+	void ProtectAccountFile(const Account& account)
+	{
+		if (!account.path.empty())
+			chmod(account.path.c_str(), kAccountFileMode); // best effort: a drive without Unix modes keeps its own
 	}
 	struct Login
 	{
@@ -66,7 +81,10 @@ namespace
 			Host::SetBaseStringSettingValue("Achievements", "LoginTimestamp", old_timestamp.c_str());
 		}
 		if (success)
+		{
 			Host::SetBaseBoolSettingValue("Achievements", "Enabled", true); // pr9n: on from now, with an account (review item 8)
+			ProtectAccountFile(account); // ra180
+		}
 		std::lock_guard lock(account.mutex);
 		account.state.busy = false;
 		account.state.authenticated = success;
@@ -146,6 +164,8 @@ namespace
 			auto lock = Host::GetSecretsSettingsLock();
 			saved = account.credentials->Save(&error);
 		}
+		if (saved)
+			ProtectAccountFile(account); // ra180
 		std::lock_guard lock(account.mutex);
 		account.state.authenticated = false;
 		account.state.saved = false;
@@ -159,11 +179,37 @@ bool OrbisAchievementsInit(SettingsInterface& base, const std::string& directory
 	Account& account = GetAccount();
 	const std::string path = directory + "/achievements-secrets.ini";
 	account.credentials = std::make_unique<INISettingsInterface>(path);
+	account.path = path;
+	// ra180 (2026-10-30, AI-assisted; a tester on 180, and older builds too: "Could not read or protect account storage", signed out
+	// and no sign-in possible): a saved account the app couldn't read (fopen refused: the file is another user's, 0600 from a
+	// session that ran under another uid, or a drive that refuses it) or couldn't chmod (a file that isn't ours, a drive without
+	// Unix modes) switched the whole account off: `available` false, so the shelf and the web page refused every sign-in for good,
+	// with nothing in the logs. Now: protection is best effort, an unreadable file only costs the saved sign-in (a new sign-in
+	// saves a fresh file over it: Save writes a temporary file and renames it, which needs the folder, not the old file), and
+	// what happened goes to the log.
 	struct stat st;
 	const bool exists = stat(path.c_str(), &st) == 0;
-	const bool loaded = !exists || account.credentials->Load();
-	const bool protected_file = !exists || chmod(path.c_str(), 0600) == 0;
-	account.state.available = loaded && protected_file;
+	int read_errno = 0;
+	bool loaded = !exists || account.credentials->Load();
+	if (!loaded)
+	{
+		std::FILE* probe = std::fopen(path.c_str(), "rb");
+		read_errno = probe ? 0 : errno;
+		if (probe)
+			std::fclose(probe);
+		account.credentials = std::make_unique<INISettingsInterface>(path); // nothing half-read survives
+	}
+	int chmod_errno = 0;
+	if (exists && loaded && (st.st_mode & 0777) != kAccountFileMode && chmod(path.c_str(), kAccountFileMode) != 0)
+		chmod_errno = errno;
+	if (exists)
+	{
+		std::printf("[achievements] account file: %s, owner uid %u (app uid %u), mode %o, chmod errno %d, open errno %d\n",
+			loaded ? "read" : "NOT READABLE (sign in again)", static_cast<unsigned>(st.st_uid), static_cast<unsigned>(geteuid()),
+			static_cast<unsigned>(st.st_mode & 07777), chmod_errno, read_errno);
+		std::fflush(stdout);
+	}
+	account.state.available = true;
 	{
 		auto lock = Host::GetSettingsLock();
 		Host::Internal::SetBaseSettingsLayer(&base);
@@ -174,8 +220,8 @@ bool OrbisAchievementsInit(SettingsInterface& base, const std::string& directory
 	account.state.username = base.GetStringValue("Achievements", "Username", "");
 	account.state.saved = !account.state.username.empty() &&
 	                      !account.credentials->GetStringValue("Achievements", "Token", "").empty();
-	if (!account.state.available)
-		account.state.message = "Could not read or protect account storage.";
+	if (!loaded)
+		account.state.message = "The saved RetroAchievements sign-in couldn't be read. Sign in again.";
 	{
 		auto lock = Host::GetSettingsLock();
 		OrbisAchievementsConfigure(base); // again, now that `saved` is known

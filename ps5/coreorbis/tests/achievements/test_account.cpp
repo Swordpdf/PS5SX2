@@ -139,7 +139,7 @@ int main(int argc, char** argv)
 		assert(stored.GetStringValue("Achievements", "Token", "") == "synthetic-token");
 	}
 	struct stat st;
-	assert(stat(path.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600);
+	assert(stat(path.c_str(), &st) == 0 && (st.st_mode & 0777) == 0644); // ra180: readable under either uid the app runs as
 	std::ifstream file(path);
 	const std::string contents((std::istreambuf_iterator<char>(file)), {});
 	assert(contents.find("synthetic-password") == std::string::npos);
@@ -169,4 +169,53 @@ int main(int argc, char** argv)
 	assert(cleared.Load());
 	assert(cleared.GetStringValue("Achievements", "Username", "").empty());
 	assert(cleared.GetStringValue("Achievements", "Token", "").empty());
+
+	// ra180 (AI-assisted): a saved account from an older build, 0600, is made readable by every uid at the next start and stays
+	// signed in.
+	{
+		INISettingsInterface old_build(path);
+		old_build.SetStringValue("Achievements", "Username", "kept");
+		old_build.SetStringValue("Achievements", "Token", "kept-token");
+		assert(old_build.Save());
+		assert(chmod(path.c_str(), 0600) == 0);
+		MemorySettingsInterface boot;
+		assert(OrbisAchievementsInit(boot, directory));
+		assert(service.state().available && service.state().saved && service.state().message.empty());
+		assert(boot.GetBoolValue("Achievements", "Enabled", false) && boot.GetStringValue("Achievements", "Username", "") == "kept");
+		assert(stat(path.c_str(), &st) == 0 && (st.st_mode & 0777) == 0644);
+	}
+	// ra180: a saved account this run can't read (another uid's 0600 file; here a 0000 one) only costs the saved sign-in: the
+	// account stays available, a sign-in works and writes a file this run (and any other uid) can read. Before, the account was
+	// switched off for good ("Could not read or protect account storage.") and every sign-in was refused.
+	if (geteuid() != 0) // root reads a 0000 file anyway
+	{
+		assert(chmod(path.c_str(), 0000) == 0);
+		MemorySettingsInterface boot;
+		assert(OrbisAchievementsInit(boot, directory));
+		assert(service.state().available && !service.state().saved && !service.state().message.empty());
+		assert(!boot.GetBoolValue("Achievements", "Enabled", true) && boot.GetStringValue("Achievements", "Username", "x").empty());
+		assert(service.login("after-unreadable", "synthetic-password"));
+		OrbisAchievementsWaitForLogin();
+		assert(service.state().authenticated && service.state().saved);
+		assert(stat(path.c_str(), &st) == 0 && (st.st_mode & 0777) == 0644);
+		INISettingsInterface stored(path);
+		assert(stored.Load());
+		assert(stored.GetStringValue("Achievements", "Username", "") == "after-unreadable");
+		assert(stored.GetStringValue("Achievements", "Token", "") == "synthetic-token");
+		MemorySettingsInterface next_boot;
+		assert(OrbisAchievementsInit(next_boot, directory));
+		assert(service.state().saved && next_boot.GetBoolValue("Achievements", "Enabled", false));
+	}
+	// ra180: a file whose mode this run can't change (not its own; here a link to a root-owned 0755 file) is still read, and the
+	// account stays available.
+	struct stat foreign;
+	if (geteuid() != 0 && stat("/usr/bin/ldd", &foreign) == 0 && foreign.st_uid != geteuid() && (foreign.st_mode & 0777) != 0644)
+	{
+		const std::string linked_dir = directory + "-foreign";
+		assert(mkdir(linked_dir.c_str(), 0700) == 0);
+		assert(symlink("/usr/bin/ldd", (linked_dir + "/achievements-secrets.ini").c_str()) == 0);
+		MemorySettingsInterface boot;
+		assert(OrbisAchievementsInit(boot, linked_dir));
+		assert(service.state().available && !service.state().saved && service.state().message.empty());
+	}
 }
