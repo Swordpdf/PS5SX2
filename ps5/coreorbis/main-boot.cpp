@@ -73,6 +73,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/OrbisDiscDrive.h"   // PR #34: PS2 discs played straight from a drive (flag bootdisc)
 #include "orbis-shims/ProsperoRelaunch.h" // 2.11: "back to the menu" closes the app and a payload starts it again (relaunch/relaunch.c)
 #include "orbis-shims/OrbisLeavePlan.h"   // 2.11: how the process is left (relaunch payload, the old exec, or the plain close), as pure logic
+#include "orbis-shims/OrbisDiscTileStart.h" // fix180: a disc tile press: the dump by serial, else the disc, never the question
 #include "orbis-shims/OrbisDiscExec.h"    // 2.11 (dumpxmb): when the disc helper's exec signal is honoured; how old a disc-launch.txt may be
 #include "orbis-shims/OrbisVideoOutMode.h" // 2.11: the app's own 120 Hz output for frame generation (flag fg120)
 #include "SIO/Pad/PadGuitar.h"
@@ -4003,21 +4004,54 @@ int main()
       else
       {
         const std::string serial = fe::ReadSerial(drive);
-        const std::string copy = serial.empty() ? std::string() : OrbisFindDiscCopy(serial, drive);
-        if (!copy.empty())
+        std::string copy = serial.empty() ? std::string() : OrbisFindDiscCopy(serial, drive);
+        // fix180 (owner): no copy under its own name or at the disc's size: any game of the shelf's folders with the disc's serial (any format, any size;
+        // not a half-finished or damaged one: orbis-shims/OrbisDiscTileStart.h). NFS shares are left out (a large share takes long to read); the serial
+        // cache keeps the scan quick for the rest.
+        if (copy.empty() && !serial.empty())
         {
-          s_game_path = copy;
-          pre_from = OrbisBios::StartFrom::DiscTile;
-          printf("[disc] disc tile: %s holds %s: its copy %s starts\n", drive.c_str(), serial.c_str(), copy.c_str());
+          const double t_scan = orbis_mono_seconds();
+          fe::SetSerialCacheFile(OrbisDir("cache") + "/chd-serials.txt");
+          std::vector<std::string> dirs;
+          for (const std::string& dir : s_roots.dirs)
+          {
+            bool share = false;
+            for (const OrbisNfs::ShareInfo& s : OrbisNfs::Shares())
+              share = share || dir.compare(0, s.mount_point.size(), s.mount_point) == 0;
+            if (!share)
+              dirs.push_back(dir);
+          }
+          std::vector<orbis_disc::TileCandidate> cands;
+          for (const fe::GameInfo& g : fe::ScanGames(dirs, s_roots.scan_subfolders))
+          {
+            orbis_disc::TileCandidate c;
+            c.path = g.path;
+            c.serial = g.serial.empty() ? fe::ReadSerial(g) : g.serial;
+            c.unreadable = !g.damaged.empty();
+            cands.push_back(c);
+          }
+          const auto exists = [](const std::string& p) { struct stat st = {}; return stat(p.c_str(), &st) == 0; };
+          const std::string scanned = orbis_disc::PickTileCopy(cands, serial, exists);
+          printf("[disc] disc tile: %s: no copy by its own name; the shelf's folders (%zu games, %zu folders) %s (%.0f ms)\n", serial.c_str(), cands.size(),
+            dirs.size(), scanned.empty() ? "have no whole dump of it either" : ("have " + scanned).c_str(), (orbis_mono_seconds() - t_scan) * 1000.0);
+          copy = scanned;
         }
-        else if (!serial.empty())
+        switch (orbis_disc::DecideTileStart(serial, copy))
         {
-          s_game_path = drive;
-          pre_from = OrbisBios::StartFrom::DiscTile;
-          printf("[disc] disc tile: %s holds %s: no copy, so it starts from the drive\n", drive.c_str(), serial.c_str());
+          case orbis_disc::TileStart::Copy:
+            s_game_path = copy;
+            pre_from = OrbisBios::StartFrom::DiscTile;
+            printf("[disc] disc tile: %s holds %s: its copy %s starts (a tile press asks nothing)\n", drive.c_str(), serial.c_str(), copy.c_str());
+            break;
+          case orbis_disc::TileStart::Disc:
+            s_game_path = drive;
+            pre_from = OrbisBios::StartFrom::DiscTile;
+            printf("[disc] disc tile: %s holds %s: no copy, so it starts from the drive (a tile press asks nothing)\n", drive.c_str(), serial.c_str());
+            break;
+          case orbis_disc::TileStart::Nothing:
+            printf("[disc] disc tile: %s holds no PS2 game any more: the shelf opens\n", drive.c_str());
+            break;
         }
-        else
-          printf("[disc] disc tile: %s holds no PS2 game any more: the shelf opens\n", drive.c_str());
         orbis_eventf("disc tile: %s %s", drive.c_str(), s_game_path.empty() ? "(nothing to start)" : s_game_path.c_str());
         fflush(stdout);
       }
