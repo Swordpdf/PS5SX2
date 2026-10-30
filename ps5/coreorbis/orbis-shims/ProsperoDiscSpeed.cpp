@@ -363,6 +363,36 @@ void OrbisDiscSpeedUp(const char* cd_path, uint64_t bytes, OrbisDiscReadMethod* 
 		bool set = false;
 		for (int i = first; i < 2 && !set; i++)
 		{
+			// fix180: before the 3.2: the drive as it is, near the disc's end (orbis_mmc::KeepDriveAsIs). DiscSpeed8's patched shell may have it faster
+			// already; the 3.2 would slow it down for the whole copy. Kept as it is: nothing is set, so nothing is put back after the copy either.
+			if (tryset[i].sp == 0x0032 && out->cd >= 0 && bytes >= (80ull << 20))
+			{
+				std::vector<uint8_t> sbuf(64u << 10);
+				const uint64_t from = (bytes - (16ull << 20)) & ~static_cast<uint64_t>(2047);
+				for (uint64_t o = from; o < from + (4ull << 20); o += sbuf.size())
+					pread(out->cd, sbuf.data(), sbuf.size(), static_cast<off_t>(o));
+				const auto t0 = std::chrono::steady_clock::now();
+				uint64_t gotb = 0;
+				for (uint64_t o = from + (4ull << 20); o < from + (12ull << 20); o += sbuf.size())
+				{
+					if (pread(out->cd, sbuf.data(), sbuf.size(), static_cast<off_t>(o)) != static_cast<ssize_t>(sbuf.size()))
+						break;
+					gotb += sbuf.size();
+				}
+				const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+				const double as_is = gotb == (8ull << 20) && sec > 0 ? gotb / sec / 1e6 : 0.0;
+				if (orbis_mmc::KeepDriveAsIs(as_is))
+				{
+					char name[96];
+					snprintf(name, sizeof(name), "pread on /dev/cd0 as the drive is (%.1fx near the end)", as_is * 1e6 / 1385000.0);
+					out->name = name;
+					Log("the drive as it is reads %.2f MB/s = %.2fx DVD near the disc's end, faster than 3.2 (%.2f MB/s): left as it is, 3.2 not sent "
+						"(DiscSpeed8's shell setting, or a game's)", as_is, as_is * 1e6 / 1385000.0, orbis_mmc::kSpeed32Mbs);
+					close(pass);
+					return;
+				}
+				Log("the drive as it is reads %.2f MB/s = %.2fx DVD near the disc's end: 3.2 is faster, it is set", as_is, as_is * 1e6 / 1385000.0);
+			}
 			char what[128];
 			snprintf(what, sizeof(what), "Sony speed command for the copy: rotation %u, speed %s (DB %02x %02x %02x)", tryset[i].rot,
 				orbis_mmc::SieSpeedText(tryset[i].sp).c_str(), 0xdb, tryset[i].sp >> 8, tryset[i].sp & 0xFF);

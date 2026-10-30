@@ -162,6 +162,16 @@ namespace orbis_mmc
 		Be16(&c[2], speed);
 		return c;
 	}
+	// fix180 (tester on vk-285-180: "Installed King's Field IV, seemed to be at 3.2x from the start, 15min"): the shelf's copy line says "3.2x" only when
+	// the PS5 drive refused Sony's 8.0 (DB 01 00 80) from the app and took 3.2 (DB 00 00 32) instead (ProsperoDiscSpeed.cpp). So 8x WAS tried and refused
+	// through the app's pass device, as on every PS5 drive the app logged (vk-285-153/154: rotation 1 refused, asc 0x24). DiscSpeed8's patched SceShellCore
+	// (helper 171j+) sends the 8.0 from the shell's own setSpeed, so the drive can already read faster than 3.2 when the copy starts, and the app's 3.2 then
+	// SLOWED it to a flat 3.2 for the whole copy (helper 171k's 60 s pin re-sends the 8.0 through a pass device too: no help if the drive refuses it there).
+	// Now the drive as it is is timed first, near the disc's END (a CAV 8x drive reads 3.2x at the inner edge and faster outwards; 3.2 itself is flat at
+	// 4.43-4.46 MB/s from edge to edge on every drive logged): faster than 3.2 by this margin, it is left as it is.
+	constexpr double kSpeed32Mbs = 4.45; // MB/s at Sony's 3.2 (DB 00 00 32), anywhere on the disc
+	inline bool KeepDriveAsIs(double as_is_mbs) { return as_is_mbs >= kSpeed32Mbs * 1.12; }
+
 	inline std::string SieSpeedText(uint16_t speed)
 	{
 		if (speed == 0xFFFF)
