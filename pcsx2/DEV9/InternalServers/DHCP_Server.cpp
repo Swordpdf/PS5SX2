@@ -94,6 +94,20 @@ namespace InternalServers
 
 		AutoDNS(adapter, EmuConfig.DEV9.ModeDNS1 == Pcsx2Config::DEV9Options::DnsMode::Auto, EmuConfig.DEV9.ModeDNS2 == Pcsx2Config::DEV9Options::DnsMode::Auto);
 		AutoBroadcast(ps2IP, netmask);
+#ifdef ORBIS_VULKAN
+		// PS5 port (killzone-online, 2026-10-30, AI-assisted): what the PS2 is given, and from where. The only DNS line was AdapterUtils'
+		// "DNS from the PS5", printed even when DEV9/Eth/ModeDNS1=Manual (the PS5's is still asked, for an automatic DNS2), so a report
+		// with a game's own DNS (PS Rewired's) read as if that DNS were ignored. A game set up with its own DNS (no DHCP) uses that one.
+		{
+			const auto from = [](Pcsx2Config::DEV9Options::DnsMode m) {
+				return m == Pcsx2Config::DEV9Options::DnsMode::Manual ? "set in the settings" :
+					   m == Pcsx2Config::DEV9Options::DnsMode::Internal ? "PCSX2's own" : "the PS5's";
+			};
+			Console.WriteLn("DEV9: DHCP gives the PS2 DNS %u.%u.%u.%u (%s), second DNS %u.%u.%u.%u (%s)", dns1.bytes[0], dns1.bytes[1],
+				dns1.bytes[2], dns1.bytes[3], from(EmuConfig.DEV9.ModeDNS1), dns2.bytes[0], dns2.bytes[1], dns2.bytes[2], dns2.bytes[3],
+				from(EmuConfig.DEV9.ModeDNS2));
+		}
+#endif
 	}
 
 #ifdef _WIN32

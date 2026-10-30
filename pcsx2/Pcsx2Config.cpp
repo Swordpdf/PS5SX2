@@ -1374,7 +1374,9 @@ void Pcsx2Config::DEV9Options::LoadSave(SettingsWrapper& wrap)
 			LoadIPHelper(Mask, maskStr);
 			LoadIPHelper(Gateway, gatewayStr);
 			LoadIPHelper(DNS1, dns1Str);
-			LoadIPHelper(DNS1, dns1Str);
+			// PS5 port (killzone-online, 2026-10-30, AI-assisted): DNS2, not DNS1 a second time (upstream reads DNS1 twice, so a manual
+			// DNS2 was never read: 0.0.0.0).
+			LoadIPHelper(DNS2, dns2Str);
 		}
 
 		SettingsWrapEntry(AutoMask);

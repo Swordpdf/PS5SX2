@@ -140,6 +140,8 @@ public:
 	void SetOnlinePatchRow(bool on) { m_online_patch_row = on; }
 	// 2.12: a game's sheet gets the "Home screen tile" row (under Shelf) when the app can ask the helper for it and the game can have a tile.
 	void SetHomeTileRow(bool on) { m_home_tile_row = on; }
+	// gamedb (2026-10-30): a disc entry's sheet (the disc in the drive, a disc being copied) has no Hide from the shelf row: it isn't a file of the list.
+	void SetHideRow(bool on) { m_hide_row = on; }
 	// 2026-10-08: the sheet for all games gets the "PS2 system menu" row when the app can start it. TakeSystemMenu: true
 	// once, after the row was confirmed (Cross twice), for the app to start it.
 	void SetSystemMenuRow(bool on) { m_system_menu_row = on; }
@@ -228,6 +230,7 @@ private:
 	bool m_texture_pack_row = false;
 	bool m_online_patch_row = false; // 2026-10-08
 	bool m_home_tile_row = false;    // 2.12
+	bool m_hide_row = true;          // gamedb (2026-10-30)
 	bool m_system_menu_row = false, m_system_menu = false; // 2026-10-08
 	bool m_folder_rows = false; // vk-285-135
 	bool m_update_rows = false; // 180

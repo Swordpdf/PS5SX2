@@ -640,6 +640,8 @@ void OptionsSheet::BuildRows()
 			continue;
 		if (g.title == "Folders" && settings && m_global && m_folder_rows)
 			continue; // 2026-10-16: its rows came with the folder rows above
+		if (g.title == "Shelf" && !m_global && !m_hide_row)
+			continue; // gamedb (2026-10-30): a disc entry's sheet
 		add(Kind::Header, g.title);
 		// vk-285-139: the cheat disc itself, on the sheet for all games, before its switch.
 		if (g.title == "Discs" && m_global)

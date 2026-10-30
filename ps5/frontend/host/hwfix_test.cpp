@@ -349,6 +349,36 @@ int main(int argc, char** argv)
 		Check(all.find("gamefixes") == std::string::npos, "or for all games");
 	}
 
+	// gamedb (2026-10-30, AI-assisted): the eboot's copy behind the file (fe::SetGameDbFallback; on the console OrbisGameDb.h). Without
+	// resources/GameIndex.yaml, or with a cut-off one, the shelf still has the games' fixes (Burnout Revenge's halfPixelOffset 2, the
+	// #bugs scan's vertical lines); a usable file still comes first.
+	{
+		const std::string text = Read(argv[2]);
+		const auto burnout = [] {
+			for (const auto& f : fe::GameDbHwFixes("SLES-53507"))
+				if (f.first == "halfPixelOffset")
+					return f.second;
+			return -1;
+		};
+		fe::SetGameDbFallback(text.data(), text.size());
+		fe::SetGameDbFile(root + "/no-resources/GameIndex.yaml");
+		Check(burnout() == 2 && fe::GameDbFromFallback(), "no file: the fallback's fixes (Burnout Revenge SLES-53507 halfPixelOffset 2)");
+		Write(root + "/cut.yaml", text.substr(0, 1000));
+		fe::SetGameDbFile(root + "/cut.yaml");
+		Check(burnout() == 2 && fe::GameDbFromFallback(), "a cut-off file (1000 bytes): the fallback");
+		std::string edited = text;
+		const size_t at = edited.find("    halfPixelOffset: 2 # Fixes depth lines.", edited.find("\nSLES-53507:"));
+		Check(at != std::string::npos, "the database has Burnout's line");
+		edited.replace(at, 22, "    halfPixelOffset: 4");
+		Write(root + "/edited.yaml", edited);
+		fe::SetGameDbFile(root + "/edited.yaml");
+		Check(burnout() == 4 && !fe::GameDbFromFallback(), "a usable file wins over the fallback (an edit is kept)");
+		fe::SetGameDbFallback(nullptr, 0);
+		fe::SetGameDbFile(root + "/no-resources/GameIndex.yaml");
+		Check(burnout() == -1 && !fe::GameDbFromFallback(), "no file and no fallback: no fixes (as before)");
+		fe::SetGameDbFile(argv[2]);
+	}
+
 	std::printf(g_fails ? "%d FAILED\n" : "all passed\n", g_fails);
 	return g_fails ? 1 : 0;
 }

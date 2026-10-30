@@ -1445,6 +1445,9 @@ struct DbEntry
 std::mutex s_db_mutex;
 std::string s_db_file;
 bool s_db_loaded = false;
+const char* s_db_fallback = nullptr; // gamedb (2026-10-30): SetGameDbFallback
+size_t s_db_fallback_size = 0;
+bool s_db_used_fallback = false;
 std::unordered_map<std::string, DbEntry> s_db;
 
 // The value of a `key: "text"` line's double-quoted scalar (GameIndex.yaml has no escapes), or a bare one up to " #".
@@ -1470,20 +1473,30 @@ std::string YamlValue(const char* p, const char* end)
 
 void LoadDbLocked()
 {
-	if (s_db_loaded || s_db_file.empty())
+	if (s_db_loaded || (s_db_file.empty() && !s_db_fallback))
 		return;
 	s_db_loaded = true;
-	FILE* f = std::fopen(s_db_file.c_str(), "rb");
-	if (!f)
-		return;
+	s_db_used_fallback = false;
 	std::string text;
-	// On the heap, not the stack: this runs on the settings page's server thread too (/api/games), and a 64 KB array
-	// there overflowed its stack and ended the app the first time the page opened (vk-285-113).
-	std::vector<char> buf(65536);
-	size_t n;
-	while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0)
-		text.append(buf.data(), n);
-	std::fclose(f);
+	if (FILE* f = s_db_file.empty() ? nullptr : std::fopen(s_db_file.c_str(), "rb"))
+	{
+		// On the heap, not the stack: this runs on the settings page's server thread too (/api/games), and a 64 KB array
+		// there overflowed its stack and ended the app the first time the page opened (vk-285-113).
+		std::vector<char> buf(65536);
+		size_t n;
+		while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0)
+			text.append(buf.data(), n);
+		std::fclose(f);
+	}
+	// gamedb (2026-10-30, AI-assisted): no file, or plainly not the database (the real one is 2.6 MB): the eboot's copy, so the shelf
+	// still names the games and the sheet still shows their hardware fixes on a console without the resources folder.
+	if (text.size() < 64 * 1024 && s_db_fallback && s_db_fallback_size > 0)
+	{
+		text.assign(s_db_fallback, s_db_fallback_size);
+		s_db_used_fallback = true;
+	}
+	if (text.empty())
+		return;
 	std::string serial, name, name_en, region, section;
 	std::vector<std::pair<std::string, int>> hw_fixes;
 	const auto flush = [&]() {
@@ -1616,6 +1629,23 @@ void SetGameDbFile(const std::string& path)
 	s_db_file = path;
 	s_db_loaded = false;
 	s_db.clear();
+}
+
+void SetGameDbFallback(const char* data, size_t size)
+{
+	std::lock_guard<std::mutex> lock(s_db_mutex);
+	if (data == s_db_fallback && size == s_db_fallback_size)
+		return;
+	s_db_fallback = data;
+	s_db_fallback_size = size;
+	s_db_loaded = false;
+	s_db.clear();
+}
+
+bool GameDbFromFallback()
+{
+	std::lock_guard<std::mutex> lock(s_db_mutex);
+	return s_db_loaded && s_db_used_fallback;
 }
 
 bool ApplyGameDbTitle(GameInfo& g)

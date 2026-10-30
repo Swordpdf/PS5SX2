@@ -425,7 +425,23 @@ int logger_run(void) {
            relay ? logger_relay_url() : "not set", relay ? "sent" : "kept in outbox/");
 
   uint64_t next_send = 0, backoff_ms = 60000;
+  int said_quiet = 0;
   for (;;) {
+    /* fix181 (testers on 181: "sometimes when I restart, it just shuts off, I have to press power twice... then it rebuilds database"): a restart or
+     * power-off closes PS5SX2 too, and the logger then read the session's logs, gzipped them into outbox/ on /data and sent them over HTTPS while the
+     * console was going down. Nothing is read, written or sent while the system is shutting down or going to rest mode; a session that ended then is
+     * reported at the next boot ("ended while we weren't running"), its outbox sent then. */
+    if (plat_shutting_down() == 1) {
+      if (!said_quiet)
+        log_line("logger: the console is shutting down or going to rest mode: nothing is read, written or sent now");
+      said_quiet = 1;
+      sleep_ms(1000);
+      continue;
+    }
+    if (said_quiet) {
+      log_line("logger: the console is up again");
+      said_quiet = 0;
+    }
     if (outbox_count() > 0 && mono_ms() >= next_send) {
       const int n = logger_send_outbox();
       if (n < 0) {
@@ -438,6 +454,8 @@ int logger_run(void) {
       }
     }
     sleep_ms(LOGGER_POLL_SECONDS * 1000);
+    if (plat_shutting_down() == 1)
+      continue; /* fix181: looked at again at the top of the loop */
     if (fs_exists(g_p.no_log_upload)) {
       log_line("logger: switched off");
       notify("PS5SX2 log upload is off");

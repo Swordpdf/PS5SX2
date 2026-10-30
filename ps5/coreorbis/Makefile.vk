@@ -347,7 +347,7 @@ SHIM_SRCS := ./orbis-shims/ProsperoInput.cpp ./orbis-shims/ProsperoCDVD.cpp \
   ./orbis-shims/ProsperoKbdMouse.cpp ./orbis-shims/ProsperoNotify.cpp ./orbis-shims/ProsperoImeRelay.cpp ./orbis-shims/ProsperoTexWriter.cpp ./orbis-shims/ProsperoRelaunch.cpp ./orbis-shims/ProsperoUsbPad.cpp ./orbis-shims/ProsperoMic.cpp ./orbis-shims/ProsperoDiscDump.cpp ./orbis-shims/ProsperoDiscSpeed.cpp \
   ./orbis-shims/ProsperoHTTPDownloader.cpp ./orbis-shims/ProsperoHTTPConsole.cpp ./orbis-shims/ProsperoAchievements.cpp \
   ./orbis-shims/ProsperoAchievementBrowser.cpp \
-  ./orbis-shims/orbis_gs_shaders.cpp \
+  ./orbis-shims/orbis_gs_shaders.cpp ./orbis-shims/orbis_gamedb.cpp \
   ./orbis-shims/ps5_framegen.cpp ./orbis-shims/OrbisVideoOutMode.cpp \
   ./orbis-shims/OrbisNfs.cpp ./orbis-shims/OrbisDiscDrive.cpp ./orbis-shims/OrbisIOCtlSrc.cpp ./orbis-shims/OrbisHelperAutoload.cpp \
   ./orbis-shims/OrbisInstallerStart.cpp
@@ -525,6 +525,13 @@ $(OBJDIR)/shim/orbis-shims/orbis_gs_shaders.o: ./orbis-shims/orbis_gs_shaders.cp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -DORBIS_GS_SHADER_DIR=\"$(abspath $(PCSX2)/bin/resources/shaders)\" -c $< -o $@
 
+# gamedb (2026-10-30, AI-assisted): PCSX2's game database, embedded from bin/resources/GameIndex.yaml (.incbin), for a console whose
+# resources folder lacks it (include-orbis/OrbisGameDb.h). Listed so an edited database rebuilds the object.
+ORBIS_GAMEDB_YAML := $(abspath $(PCSX2)/bin/resources/GameIndex.yaml)
+$(OBJDIR)/shim/orbis-shims/orbis_gamedb.o: ./orbis-shims/orbis_gamedb.cpp ./include-orbis/OrbisGameDb.h $(ORBIS_GAMEDB_YAML)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -DORBIS_GAMEDB_FILE=\"$(ORBIS_GAMEDB_YAML)\" -c $< -o $@
+
 # 2026-10-05 (AI-assisted): the notification relay payload (notify-relay/notify_relay.c), built with the payload SDK's
 # own link (it imports libSceNotification) and embedded in ProsperoNotify.o (.incbin): PS5SX2's process can't load
 # libSceNotification on 11.40/12.00, so rich toasts go through the console's ELF loader (see ProsperoNotify.cpp).
@@ -613,3 +620,10 @@ clean:
 	rm -rf $(OBJDIR) objects.txt
 
 .PHONY: all clean
+
+# fix181 (AI-assisted): OPENBIOS_EMBED=0 leaves OpenPS2BIOS (4 MB) out of the eboot; the package then needs PPSA99203/openps2bios/OpenPS2BIOS-0.5.bin and
+# LICENSE (fe_ps5.cpp reads them on first use). For the console test of the slow "back to the menu" exec (180's eboot is 4.4 MB bigger than 179's).
+OPENBIOS_EMBED ?= 1
+ifeq ($(OPENBIOS_EMBED),0)
+$(OBJDIR)/frontend/fe_ps5.o: CXXFLAGS += -DFE_OPEN_BIOS_FILE
+endif

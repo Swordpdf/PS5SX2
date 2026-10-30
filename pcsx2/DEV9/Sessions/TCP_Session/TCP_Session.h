@@ -74,6 +74,15 @@ namespace Sessions
 		u32 _ReceivedAckNumber = 1;
 		std::atomic<bool> myNumberACKed{true};
 
+#ifdef ORBIS_VULKAN
+		// PS5 port (killzone-online, 2026-10-30, AI-assisted): the PS2's data the server's side had no room for yet (OrbisDev9Send.h). The
+		// emulation's thread puts it here instead of waiting; the receive thread (Recv) and later sends pass it on, in order.
+		std::mutex pendingSentry;
+		std::vector<u8> pendingSend;
+		// Sends what it can of pendingSend within `budget` (0: no wait); false on a socket error (`err`). pendingSentry held.
+		bool FlushPendingLocked(std::chrono::microseconds budget, int* err);
+#endif
+
 	public:
 		TCP_Session(ConnectionKey parKey, PacketReader::IP::IP_Address parAdapterIP);
 

@@ -35,6 +35,7 @@
 #include "../fe_app.h"
 #include "../fe_games.h"
 #include "../fe_i18n.h"
+#include "../fe_discsettings.h" // gamedb (2026-10-30)
 
 #include <dirent.h>
 #include <dlfcn.h>
@@ -273,6 +274,12 @@ bool ParseStep(const std::string& line, std::vector<Step>& out)
 	}
 	else if (st.op == "sleep") // 2026-10-05: real seconds, for the texture pack worker
 		s >> st.seconds;
+	else if (st.op == "expectsheetfile") // gamedb (2026-10-30): "expectsheetfile settings/<stem>.ini": the file the open sheet writes
+	{
+		std::getline(s, st.arg);
+		while (!st.arg.empty() && st.arg.front() == ' ')
+			st.arg.erase(0, 1);
+	}
 	else if (st.op == "shot" || st.op == "game" || st.op == "lastdisc") // fix180: "lastdisc <serial>": the last game played was that disc from the drive
 		s >> st.arg;
 	else if (st.op == "scan") // chdscan: "scan <done>/<total>": the shelf came up while the scan runs, this far; "scan done": the games come (App::SetGames)
@@ -704,6 +711,7 @@ int main(int argc, char** argv)
 	std::string web;
 	bool no_bios = false; // vk-285-134
 	std::string no_bios_problem;
+	std::string gamedb_missing; // gamedb (2026-10-30)
 	bool open_bios = false;      // bioscheck
 	std::string bios_pending;    // bioscheck
 	std::string games_file, build_tag = "vk-285-114 (host)", record, record_audio; // 2026-10-08: the showcase video
@@ -755,6 +763,8 @@ int main(int argc, char** argv)
 		}
 		else if (a == "--open-bios") // bioscheck
 			open_bios = true;
+		else if (a == "--no-gamedb") // gamedb (2026-10-30): resources/GameIndex.yaml is missing (the shelf's note names this file)
+			gamedb_missing = next();
 		else if (a == "--bios-pending") // bioscheck
 			bios_pending = next();
 		else if (a == "--games")
@@ -1199,6 +1209,14 @@ int main(int argc, char** argv)
 			total = scan_total;
 			return scanning;
 		};
+	acfg.gamedb_missing = gamedb_missing; // gamedb (2026-10-30)
+	// gamedb (2026-10-30): the disc entries' settings file, by the console's rule (fe_discsettings.h) with the drive's title as the copy's name
+	acfg.disc_settings_stem = [&, settings_dir = op.settings_dir](const std::string& serial) {
+		if (serial.size() < 5)
+			return std::string(); // a serial unfit for a file name (the console: OrbisDiscDrive::SafeSerial)
+		const std::string by_copy = (serial == drive_serial && !drive_title.empty() ? drive_title : std::string("PS2 disc")) + " (" + serial + ")";
+		return fe::DiscSettingsStem(serial, by_copy, [&](const std::string& stem) { return access((settings_dir + "/" + stem + ".ini").c_str(), F_OK) == 0; });
+	};
 	for (const Step& s : steps)
 		if (s.op == "game")
 			acfg.preselect = std::atoi(s.arg.c_str());
@@ -1290,6 +1308,7 @@ int main(int argc, char** argv)
 				key == "biosask"   ? (app.BiosChoiceOpen() ? 1 : 0) : // bioscheck: the BIOS question is up
 				key == "biosrow"   ? app.BiosChoiceRow() :            // bioscheck: its focused card (-1: not up)
 				key == "biosmissing" ? (app.BiosMissing() ? 1 : 0) :  // bioscheck
+				key == "gamedbnote" ? (app.GameDbNoteShown() ? 1 : 0) : // gamedb (2026-10-30): the shelf's note about the missing database
 				key == "bioslooks" ? bios_looks :                     // bioscheck: how often the stand-in was asked
 				key == "openchosen" ? (open_chosen() ? 1 : 0) :       // bioscheck: gs.ini PS5SX2/OpenBios=true
 				key == "outsideok" ? outside_ok :                     // bioscheck: the last "outside" step was taken (1), refused (0)
@@ -1426,6 +1445,17 @@ int main(int argc, char** argv)
 			else
 				std::sscanf(s.arg.c_str(), "%d/%d", &scan_done, &scan_total);
 			run(dt);
+		}
+		else if (s.op == "expectsheetfile") // gamedb (2026-10-30)
+		{
+			const std::string got = app.SheetOpen() ? app.SheetFileLabel() : std::string("(no sheet)");
+			if (got != s.arg)
+			{
+				std::printf("[host] expect FAILED: the sheet's file is %s, wanted %s\n", got.c_str(), s.arg.c_str());
+				failures++;
+			}
+			else
+				std::printf("[host] expect ok: the sheet's file is %s\n", got.c_str());
 		}
 		else if (s.op == "drive") // 2.11: stand in for the disc watcher's report of the disc in the drive
 		{

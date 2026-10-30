@@ -17,6 +17,9 @@
 #include "common/YAML.h"
 
 #include <sstream>
+#ifdef ORBIS_VULKAN
+#include "OrbisGameDb.h" // gamedb (2026-10-30): the eboot's GameIndex.yaml when the resources folder lacks it
+#endif
 #include "fmt/format.h"
 #include "fmt/ranges.h"
 #include <fstream>
@@ -1028,17 +1031,45 @@ void GameDatabase::initDatabase()
 	const std::string path(Path::Combine(EmuFolders::Resources, GAMEDB_YAML_FILE_NAME));
 	const std::string name(GAMEDB_YAML_FILE_NAME);
 
+#ifdef ORBIS_VULKAN
+	// gamedb (2026-10-30, AI-assisted): the resources folder's copy, else the eboot's (OrbisGameDb.h). The #bugs scan of 2026-10-30:
+	// Black, NFS Carbon and Burnout Revenge ran without their GameIndex fixes on consoles with no resources folder.
+	std::optional<std::string> buffer(std::in_place);
+	std::string problem;
+	const OrbisGameDbSource source = OrbisReadGameDb(EmuFolders::Resources, &*buffer, &problem);
+	if (source == OrbisGameDbSource::None)
+	{
+		Console.ErrorFmt("GameDB: Unable to open GameDB file, file does not exist ({}; this build carries no copy).", problem);
+		return;
+	}
+	if (source == OrbisGameDbSource::Builtin)
+		Console.WarningFmt("GameDB: {}: this build's own copy is used ({} bytes). The PS5SX2 Installer puts the file back.", problem,
+			buffer->size());
+#else
 	const std::optional<std::string> buffer = FileSystem::ReadFileToString(path.c_str());
 	if (!buffer.has_value())
 	{
 		Console.Error("GameDB: Unable to open GameDB file, file does not exist.");
 		return;
 	}
+#endif
 
 	const ryml::csubstr yaml = ryml::to_csubstr(*buffer);
 
 	Error error;
 	std::optional<ryml::Tree> tree = ParseYAMLFromString(yaml, ryml::to_csubstr(name), &error, true);
+#ifdef ORBIS_VULKAN
+	// The folder's copy doesn't parse (an edit gone wrong, a cut-off file): the eboot's then.
+	if (!tree.has_value() && source == OrbisGameDbSource::Folder && OrbisReadBuiltinGameDb(&*buffer))
+	{
+		Console.ErrorFmt("GameDB: Failed to parse game database file {}:", path);
+		Console.Error(error.GetDescription());
+		Console.Warning("GameDB: this build's own copy is used instead.");
+		OrbisGameDbNoteFolderUnparsable(EmuFolders::Resources);
+		error.Clear();
+		tree = ParseYAMLFromString(ryml::to_csubstr(*buffer), ryml::to_csubstr(name), &error, true);
+	}
+#endif
 	if (!tree.has_value())
 	{
 		Console.ErrorFmt("GameDB: Failed to parse game database file {}:", path);

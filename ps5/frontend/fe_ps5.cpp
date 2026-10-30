@@ -27,6 +27,10 @@
 #include "fe_web.h"
 #include "ps5/coreorbis/orbis-shims/ProsperoNotify.h" // 2026-10-05: the texture packs' popup
 #include "OrbisPaths.h" // live-22: OrbisLogPath for the disc-dump progress file the shelf shows
+#include "OrbisGameDb.h" // gamedb (2026-10-30): the eboot's GameIndex.yaml behind resources/
+#include "fe_discsettings.h" // gamedb (2026-10-30): a disc's settings file
+#include "ps5/coreorbis/orbis-shims/ProsperoDiscDump.h" // gamedb (2026-10-30): OrbisDiscSettingsStem
+#include "ps5/coreorbis/orbis-shims/OrbisDiscDrive.h" // gamedb (2026-10-30): SafeSerial
 #include "ps5/coreorbis/orbis-shims/ProsperoImeRelay.h" // 2.11: the keyboard through the ELF loader's payload (experiment, flags/imerelay)
 #include "ps5/coreorbis/orbis-shims/ProsperoTexWriter.h" // 2026-10-29: the texture packs' writer process
 #ifdef PS5SX2_ACHIEVEMENTS
@@ -172,17 +176,62 @@ FE_INCBIN_ASSET(fe_hd_sources, "hd-pack-sources.json");
 // 2.11: LaunchBox's art by PS2 serial (fe_launchbox.h; made by tools/make_launchbox_covers.py).
 FE_INCBIN_ASSET(fe_launchbox, "launchbox-covers.txt");
 // bioscheck (2026-10-29): OpenPS2BIOS 0.5, the open-source BIOS PS5SX2 ships (Tamariba Devs, MIT), and its licence.
+// fix181: FE_OPEN_BIOS_FILE (make OPENBIOS_EMBED=0): not in the eboot but a file in the app's folder (PPSA99203/openps2bios/), read on first use. A
+// console test for the slow "back to the menu" exec: since 180 the eboot is 44.3 MB (the 4 MB BIOS embedded) against 39.9 MB on 177/179, and the exec of
+// the app's own eboot went from about 1 s (177: median 0.98 s, 303 exits) to 3.5 s or never (180/181).
+#ifndef FE_OPEN_BIOS_FILE
 FE_INCBIN_ASSET(fe_open_bios, "openps2bios/OpenPS2BIOS-0.5.bin");
 FE_INCBIN_ASSET(fe_open_bios_licence, "openps2bios/LICENSE");
 extern "C" const uint8_t fe_open_bios[], fe_open_bios_end[], fe_open_bios_licence[], fe_open_bios_licence_end[];
+#endif
 
 bool orbis_frontend_open_bios_image(const unsigned char** data, size_t* size, const unsigned char** licence, size_t* licence_size)
 {
+#ifdef FE_OPEN_BIOS_FILE
+	static std::vector<uint8_t> s_bios, s_licence;
+	static bool s_looked = false;
+	if (!s_looked)
+	{
+		s_looked = true;
+		static const char* const kDirs[] = {"/data/homebrew/PPSA99203/openps2bios", "/app0/openps2bios"};
+		auto read_all = [](const std::string& path, std::vector<uint8_t>& out, size_t max) {
+			out.clear();
+			FILE* f = std::fopen(path.c_str(), "rb");
+			if (!f)
+				return false;
+			uint8_t buf[65536];
+			size_t n;
+			while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0 && out.size() <= max)
+				out.insert(out.end(), buf, buf + n);
+			std::fclose(f);
+			return !out.empty() && out.size() <= max;
+		};
+		for (const char* dir : kDirs)
+		{
+			if (read_all(std::string(dir) + "/OpenPS2BIOS-0.5.bin", s_bios, 4u << 20) && s_bios.size() == (4u << 20))
+			{
+				read_all(std::string(dir) + "/LICENSE", s_licence, 64u << 10);
+				std::printf("[bios] OpenPS2BIOS read from %s (not in the eboot: OPENBIOS_EMBED=0)\n", dir);
+				break;
+			}
+			s_bios.clear();
+		}
+		if (s_bios.empty())
+			std::printf("[bios] OpenPS2BIOS: not in the eboot (OPENBIOS_EMBED=0) and no openps2bios/OpenPS2BIOS-0.5.bin in the app's folder\n");
+		std::fflush(stdout);
+	}
+	*data = s_bios.data();
+	*size = s_bios.size();
+	*licence = s_licence.data();
+	*licence_size = s_licence.size();
+	return *size > 0;
+#else
 	*data = fe_open_bios;
 	*size = static_cast<size_t>(fe_open_bios_end - fe_open_bios);
 	*licence = fe_open_bios_licence;
 	*licence_size = static_cast<size_t>(fe_open_bios_licence_end - fe_open_bios_licence);
 	return *size > 0;
+#endif
 }
 extern "C" const uint8_t fe_font_brands[], fe_font_brands_end[], fe_web_page[], fe_web_page_end[], fe_web_discord[],
 	fe_web_discord_end[], fe_web_x[], fe_web_x_end[], fe_presets[], fe_presets_end[], fe_hd_sources[], fe_hd_sources_end[], fe_launchbox[],
@@ -1641,12 +1690,26 @@ extern "C" void orbis_event_log(const char* line)
 		g_event_busy.store(false, std::memory_order_release);
 }
 
+namespace
+{
+// gamedb (2026-10-30, AI-assisted): the game database for the shelf and the page: resources/GameIndex.yaml, else the eboot's own copy
+// (OrbisGameDb.h), so a console without the resources folder still gets the games' names and their hardware fixes rows.
+void UseGameDb(const OrbisFrontendPaths& paths)
+{
+	const char* data = nullptr;
+	size_t size = 0;
+	OrbisBuiltinGameDb(&data, &size);
+	SetGameDbFallback(data, size);
+	SetGameDbFile(paths.gamedb_file);
+}
+} // namespace
+
 bool orbis_web_start(const OrbisFrontendPaths& paths, const char* build_tag)
 {
 	if (g_web)
 		return true;
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
-	SetGameDbFile(paths.gamedb_file);       // vk-285-113
+	UseGameDb(paths);                       // vk-285-113; gamedb (2026-10-30): with the eboot's copy behind the file
 	SetShareRoots(paths.share_roots);       // vk-285-156
 	WebConfig cfg;
 	cfg.game_dirs = ScanRoots(paths); // 2026-10-16: the same folders as the shelf (games/, the top folder, the drives; or only the folders set)
@@ -1758,7 +1821,7 @@ int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budge
 		return 0;
 	const double t0 = Now();
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
-	SetGameDbFile(paths.gamedb_file);       // vk-285-113
+	UseGameDb(paths);                       // vk-285-113; gamedb (2026-10-30): with the eboot's copy behind the file
 	SetShareRoots(paths.share_roots);       // chdscan: OnNetworkShare below
 	std::vector<GameInfo> games = ScanGames(ScanRoots(paths), paths.scan_subfolders); // test build 1: USB drives, when visible here
 	// chdscan (AI-assisted): this all runs before the shelf, on a black screen. A PS5 Pro tester's 390 games on a USB drive: 30.4 s of
@@ -2055,7 +2118,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		std::fflush(stdout);
 	};
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
-	SetGameDbFile(paths.gamedb_file);       // vk-285-113
+	UseGameDb(paths);                       // vk-285-113; gamedb (2026-10-30): with the eboot's copy behind the file
 	SetShareRoots(paths.share_roots);       // vk-285-156
 	std::vector<GameInfo> games = ScanGames(ScanRoots(paths), paths.scan_subfolders); // test build 1: USB drives; 2026-10-16: or only the folders set
 	// chdscan (AI-assisted): the images the cache files know (all of them on most starts) take no time; any others are read on a thread
@@ -2440,6 +2503,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.bios_present = paths.bios_check; // vk-285-134
 	acfg.bios_problem = paths.bios_problem;
 	acfg.bios_dir = paths.bios_dir;
+	acfg.gamedb_missing = paths.gamedb_missing; // gamedb (2026-10-30)
 	acfg.open_bios_bundled = paths.open_bios_bundled; // bioscheck
 	acfg.bios_open_in_use = paths.bios_open_in_use;
 	acfg.bios_pending_launch = paths.bios_pending_launch;
@@ -2471,6 +2535,13 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	title = g_drive_title;
 	serial = g_drive_serial;
 	return true;
+	};
+	// gamedb (2026-10-30, AI-assisted): the disc entries' sheet writes the file a start from the drive reads (main-boot.cpp, the same rule).
+	acfg.disc_settings_stem = [settings_dir = paths.settings_dir](const std::string& serial) {
+		if (!OrbisDiscDrive::SafeSerial(serial))
+			return std::string();
+		return DiscSettingsStem(serial, OrbisDiscSettingsStem(serial),
+			[&](const std::string& stem) { return access((settings_dir + "/" + stem + ".ini").c_str(), F_OK) == 0; });
 	};
 	acfg.drive_disc_reask = [] {
 	std::lock_guard<std::mutex> lock(g_launch_lock);

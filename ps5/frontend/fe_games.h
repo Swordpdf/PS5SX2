@@ -79,6 +79,11 @@ void MakeTitle(const std::string& stem, std::string& title, std::string& region,
 // from the file name already holds that name (a Redump-style file name keeps its own spelling, region and
 // language tags). False when nothing changed. Read once, on first use; an empty path reads none.
 void SetGameDbFile(const std::string& path);
+// gamedb (2026-10-30, AI-assisted): the database text used when the file is missing, unreadable or plainly not the database (the
+// eboot's own GameIndex.yaml on the console: coreorbis OrbisGameDb.h). Not copied: it must outlive the shelf (the eboot's data).
+void SetGameDbFallback(const char* data, size_t size);
+// Whether the last load used the fallback (the file wasn't usable); false before any load.
+bool GameDbFromFallback();
 bool ApplyGameDbTitle(GameInfo& g);
 // 2026-10-08 (AI-assisted): the database's hardware-renderer fixes for a serial (its gsHWFixes, "nativeScaling" -> 3), in
 // the file's order; none when the serial isn't there or no database file is set. Fixes whose value is a function's name
