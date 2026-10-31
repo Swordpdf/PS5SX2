@@ -10,6 +10,7 @@
 #include "zlib.h"         // vk-285-113: CSO images (ps5/third_party/zlib, inflate only)
 
 #include <algorithm>
+#include <cerrno>
 #include <atomic>
 #include <cctype>
 #include <cstdio>
@@ -1265,6 +1266,13 @@ std::string KeyedSerialNow(const std::string& path, const std::string& key, std:
 // lock - its log lines and the bad-images.txt line are made beforehand and written with write(2) - so a read that holds something
 // process-wide (the drive's file, the allocator) can't keep the 6 s give-up and its record from happening. Once kMaxStuck reads have been given up on and are still running (the drive itself may not
 // answer), no more images are read in this run: they are listed without a serial and read at the next start.
+// b185 (the same tester, build 184: the log ends at "no answer after 1 s yet" again, and nothing after, no frame lines either; the console
+// needs its plug pulled; "happens every time, even after restart"): the read hangs in the system itself (the USB drive's file system or a
+// bad sector), which no thread of ours gets past. What has to work is the next start, and it didn't: reading-image.txt and bad-images.txt
+// were written with fopen/fclose only, so they were still in memory when the power went. Now each is fsync'd before anything relies on
+// it: reading-image.txt (written to a .tmp, fsync'd, renamed over, its folder fsync'd) before the read's thread starts, a bad-images.txt
+// line before the waiter goes on, and before the start-up takes a leftover reading-image.txt away. Only new images are read, so the cost
+// is a few ms per new image.
 const char kBadHeader[] = "# PS5SX2: images whose reading never finished (skipped at each start; delete this file to read them again)";
 constexpr int kMaxStuck = 3;
 double s_read_limit_s = 6.0;
@@ -1287,6 +1295,47 @@ std::string CacheDirFileLocked(const char* name)
 	return slash == std::string::npos ? std::string() : s_serial_file.substr(0, slash) + "/" + name;
 }
 
+void RawWrite(int fd, const char* text, size_t n);
+bool AppendBadRaw(const std::string& file, const std::string& line, const std::string& dir);
+
+// b185: an fsync that failed, said once a run (with write(2): the waiter may call this while a read holds the stdio lock).
+std::atomic<bool> s_sync_failed_said{false};
+void SyncFailed(const char* what, int err)
+{
+	if (s_sync_failed_said.exchange(true))
+		return;
+	char line[200];
+	const int n = std::snprintf(line, sizeof(line), "[scan] %s could not be fsync'd (errno %d): if a read hangs the console, the next start may read "
+													"that image again (said once)\n", what, err);
+	if (n > 0)
+		RawWrite(fileno(stdout), line, std::min<size_t>(static_cast<size_t>(n), sizeof(line) - 1));
+}
+
+bool SyncFd(int fd, const char* what)
+{
+	if (fsync(fd) == 0)
+		return true;
+	SyncFailed(what, errno);
+	return false;
+}
+
+// b185: a folder's entries (a file made or renamed in it) on disk. `dir` is made beforehand: the waiter allocates nothing here.
+void SyncDir(const char* dir, const char* what)
+{
+#ifdef O_DIRECTORY
+	const int fd = open(dir, O_RDONLY | O_DIRECTORY);
+#else
+	const int fd = open(dir, O_RDONLY);
+#endif
+	if (fd < 0)
+	{
+		SyncFailed(what, errno);
+		return;
+	}
+	SyncFd(fd, what);
+	close(fd);
+}
+
 void StoreBadLocked(const std::string& key, std::string why)
 {
 	for (char& c : why)
@@ -1296,17 +1345,9 @@ void StoreBadLocked(const std::string& key, std::string why)
 	const std::string file = CacheDirFileLocked("bad-images.txt");
 	if (file.empty())
 		return;
-	mkdir(file.substr(0, file.rfind('/')).c_str(), 0777);
-	struct stat st = {};
-	const bool fresh = stat(file.c_str(), &st) != 0 || st.st_size == 0;
-	if (FILE* f = std::fopen(file.c_str(), "ab"))
-	{
-		if (fresh)
-			std::fprintf(f, "%s\n", kBadHeader);
-		const std::string line = key + "\t" + why + "\n";
-		std::fwrite(line.data(), 1, line.size(), f);
-		std::fclose(f);
-	}
+	const std::string dir = file.substr(0, file.rfind('/'));
+	mkdir(dir.c_str(), 0777);
+	AppendBadRaw(file, key + "\t" + why + "\n", dir); // b185: on disk before the caller goes on (the start-up then takes reading-image.txt away)
 }
 
 void WriteReadingLocked()
@@ -1319,13 +1360,34 @@ void WriteReadingLocked()
 		unlink(file.c_str());
 		return;
 	}
-	mkdir(file.substr(0, file.rfind('/')).c_str(), 0777);
-	if (FILE* f = std::fopen(file.c_str(), "wb"))
+	const std::string dir = file.substr(0, file.rfind('/'));
+	mkdir(dir.c_str(), 0777);
+	// b185: on disk before the read starts (a read that hangs the console is followed by a power pull): a .tmp written and fsync'd, renamed
+	// over, the folder fsync'd. Where the .tmp can't be made, written in place and fsync'd.
+	std::string text;
+	for (const std::string& k : s_reading)
+		text += k + "\n";
+	const std::string tmp = file + ".tmp";
+	int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	const bool via_tmp = fd >= 0;
+	if (!via_tmp)
+		fd = open(file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	if (fd < 0)
+		return;
+	RawWrite(fd, text.data(), text.size());
+	SyncFd(fd, "cache/reading-image.txt");
+	close(fd);
+	if (via_tmp && rename(tmp.c_str(), file.c_str()) != 0)
 	{
-		for (const std::string& k : s_reading)
-			std::fprintf(f, "%s\n", k.c_str());
-		std::fclose(f);
+		unlink(tmp.c_str());
+		fd = open(file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+		if (fd < 0)
+			return;
+		RawWrite(fd, text.data(), text.size());
+		SyncFd(fd, "cache/reading-image.txt");
+		close(fd);
 	}
+	SyncDir(dir.c_str(), "the cache folder (reading-image.txt)");
 }
 
 void LoadBadLocked()
@@ -1441,7 +1503,8 @@ void RawWrite(int fd, const char* text, size_t n)
 }
 
 // b184: a line added to bad-images.txt with open/write/close only (the header first in a new or empty file). False when it can't be.
-bool AppendBadRaw(const std::string& file, const std::string& line)
+// b185: and fsync'd before it returns (the folder too when the file is new; `dir` is made by the caller: nothing is allocated here).
+bool AppendBadRaw(const std::string& file, const std::string& line, const std::string& dir)
 {
 	if (file.empty())
 		return false;
@@ -1449,13 +1512,17 @@ bool AppendBadRaw(const std::string& file, const std::string& line)
 	if (fd < 0)
 		return false;
 	struct stat st = {};
-	if (fstat(fd, &st) == 0 && st.st_size == 0)
+	const bool fresh = fstat(fd, &st) == 0 && st.st_size == 0;
+	if (fresh)
 	{
 		RawWrite(fd, kBadHeader, sizeof(kBadHeader) - 1);
 		RawWrite(fd, "\n", 1);
 	}
 	RawWrite(fd, line.data(), line.size());
+	SyncFd(fd, "cache/bad-images.txt");
 	close(fd);
+	if (fresh && !dir.empty())
+		SyncDir(dir.c_str(), "the cache folder (bad-images.txt)");
 	return true;
 }
 
@@ -1495,12 +1562,15 @@ std::string KeyedSerial(const std::string& path, const std::string& key, std::st
 	const std::string line_gave_up = "[scan] " + path + ": " + why +
 									 ": skipped, and skipped at the next starts too (cache/bad-images.txt; delete it to read it again); ";
 	const std::string bad_line = key + "\t" + why + "\n";
-	std::string bad_file;
+	std::string bad_file, bad_dir;
 	{
 		// the image is named in reading-image.txt before its read starts: an app that hangs or is closed during the read skips it next time
+		// (b185: on disk - fsync'd - before the read's thread is started)
 		std::lock_guard<std::mutex> lock(s_serial_mutex);
 		LoadBadLocked();
 		bad_file = CacheDirFileLocked("bad-images.txt");
+		if (!bad_file.empty())
+			bad_dir = bad_file.substr(0, bad_file.rfind('/'));
 		if (std::find(s_reading.begin(), s_reading.end(), key) == s_reading.end())
 			s_reading.push_back(key);
 		WriteReadingLocked();
@@ -1544,7 +1614,7 @@ std::string KeyedSerial(const std::string& path, const std::string& key, std::st
 			const int n = std::snprintf(tail, sizeof(tail), "%d read(s) given up on are still running\n", s_stuck.fetch_add(1) + 1);
 			RawWrite(out, line_gave_up.data(), line_gave_up.size());
 			RawWrite(out, tail, n > 0 ? std::min<size_t>(static_cast<size_t>(n), sizeof(tail) - 1) : 0);
-			const bool written = AppendBadRaw(bad_file, bad_line);
+			const bool written = AppendBadRaw(bad_file, bad_line, bad_dir);
 			// the bookkeeping, now that the record is on disk
 			{
 				std::lock_guard<std::mutex> cache_lock(s_serial_mutex);

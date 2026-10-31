@@ -99,8 +99,81 @@ extern "C" void* realloc(void* p, size_t n)
 	Trap();
 	return __libc_realloc(p, n);
 }
+// b185 (the CHD tester, build 184: the read hung the console, the plug was pulled, and the next start read the same image again): the
+// order of the fsyncs, the unlinks and the reads of "hang" files, to check that each mark is on disk before what relies on it. Kept in
+// fixed arrays (no allocation: the waiter fsyncs while the allocator may be trapped).
+struct SyncEvent
+{
+	char kind; // 'f' fsync (name = the file or folder's last part), 'u' unlink, 'r' a read of a "hang" file while the drive doesn't answer
+	char name[96];
+};
+static SyncEvent g_events[8192];
+static std::atomic<int> g_nevents{0};
+static void Event(char kind, const char* path)
+{
+	const int i = g_nevents.fetch_add(1);
+	if (i < 0 || i >= 8192)
+		return;
+	const char* slash = std::strrchr(path, '/');
+	g_events[i].kind = kind;
+	std::strncpy(g_events[i].name, slash ? slash + 1 : path, sizeof(g_events[i].name) - 1);
+	g_events[i].name[sizeof(g_events[i].name) - 1] = 0;
+}
+// the index of the first event of `kind` whose name contains `part` (-1: none)
+static int FirstEvent(char kind, const char* part)
+{
+	const int n = std::min(g_nevents.load(), 8192);
+	for (int i = 0; i < n; i++)
+		if (g_events[i].kind == kind && std::strstr(g_events[i].name, part))
+			return i;
+	return -1;
+}
+static int LastEventBefore(char kind, const char* part, int before)
+{
+	int last = -1;
+	for (int i = 0; i < std::min(before, 8192); i++)
+		if (g_events[i].kind == kind && std::strstr(g_events[i].name, part))
+			last = i;
+	return last;
+}
+static int FirstEventAfter(char kind, const char* part, int after)
+{
+	const int n = std::min(g_nevents.load(), 8192);
+	for (int i = after + 1; i < n; i++)
+		if (g_events[i].kind == kind && std::strstr(g_events[i].name, part))
+			return i;
+	return -1;
+}
+extern "C" int fsync(int fd)
+{
+	char link[64], target[512];
+	std::snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+	const ssize_t n = readlink(link, target, sizeof(target) - 1);
+	if (n > 0)
+	{
+		target[n] = 0;
+		Event('f', target);
+	}
+	return static_cast<int>(syscall(SYS_fsync, fd));
+}
+extern "C" int unlink(const char* path)
+{
+	Event('u', path);
+	return static_cast<int>(syscall(SYS_unlinkat, AT_FDCWD, path, 0));
+}
 extern "C" ssize_t pread(int fd, void* buf, size_t n, off_t off)
 {
+	if (fd >= 0 && fd < 4096 && g_hang_fd[fd] && g_block)
+	{
+		char link[64], target[512];
+		std::snprintf(link, sizeof(link), "/proc/self/fd/%d", fd);
+		const ssize_t len = readlink(link, target, sizeof(target) - 1);
+		if (len > 0)
+		{
+			target[len] = 0;
+			Event('r', target);
+		}
+	}
 	if (fd >= 0 && fd < 4096 && g_hang_fd[fd] && g_block && g_arm_trap.exchange(false))
 	{
 		g_trap_t0 = MonoNow();
@@ -450,9 +523,21 @@ int main(int argc, char** argv)
 		stat((big + "Game 0800 hang2.chd").c_str(), &st);
 		std::ofstream(work + "/cache2/reading-image.txt") << big << "Game 0800 hang2.chd\t" << st.st_size << "\t" << st.st_mtime << "\n";
 		g_hang_opens = 0;
+		g_nevents = 0;
 		const Scan c = scan(big);
 		Check(c.read == 0 && c.known == 1007 && g_hang_opens == 0, "the image a closed app was reading (reading-image.txt) is not read again");
 		Check(access((work + "/cache2/reading-image.txt").c_str(), F_OK) != 0, "... and reading-image.txt is taken (gone)");
+		{
+			const int synced = FirstEvent('f', "bad-images.txt"), taken = FirstEvent('u', "reading-image.txt");
+			Check(synced >= 0 && taken >= 0 && synced < taken,
+				"b185: bad-images.txt is fsync'd before the leftover reading-image.txt is taken away (" + std::to_string(synced) + " < " +
+					std::to_string(taken) + ")");
+			std::ifstream f(work + "/cache2/bad-images.txt");
+			std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+			const size_t at = all.find("hang2.chd\t");
+			Check(at != std::string::npos && all.find("\tthe app ended while it was being read", at) != std::string::npos,
+				"b185: ... and bad-images.txt names it (the app ended while it was being read)");
+		}
 	}
 	// A read still going after a second is named in reading-image.txt while it runs.
 	{
@@ -542,6 +627,7 @@ int main(int argc, char** argv)
 		});
 		g_first_trap = -1;
 		g_trap_tid = syscall(SYS_gettid);
+		g_nevents = 0;
 		g_block = true;
 		g_arm_trap = true;
 		int listed = 0, serials = 0, gave_up = 0;
@@ -569,6 +655,20 @@ int main(int argc, char** argv)
 		Check(bad_in_time, "bad-images.txt names the image while the read and the allocator are still blocked");
 		Check(g_first_trap.load() < 0 || g_first_trap.load() >= 0.95, "the waiting thread allocated nothing before it gave up on the read");
 		Check(listed == 7 && serials == 6 && gave_up == 1, "the scan goes on: the images after the blocked one are read and listed");
+		{
+			// the images before it were read and their marks taken away ('u'); the mark of hang7 is the reading-image.txt fsync'd after that
+			const int read = FirstEvent('r', "hang7.chd");
+			const int cleared = LastEventBefore('u', "reading-image.txt", read);
+			const int mark = FirstEventAfter('f', "reading-image.txt", cleared), folder = FirstEventAfter('f', "cache3", cleared);
+			Check(read >= 0 && cleared >= 0 && mark > cleared && mark < read,
+				"b185: hang7's mark (reading-image.txt) is fsync'd before its read starts (" + std::to_string(cleared) + " < " + std::to_string(mark) +
+					" < " + std::to_string(read) + ")");
+			Check(folder > cleared && folder < read, "b185: ... and so is the cache folder (the file's name in it)");
+			const int bad = FirstEvent('f', "bad-images.txt");
+			Check(bad > read, "b185: the give-up's bad-images.txt line is fsync'd");
+			std::ifstream f(work + "/cache3/reading-image.txt.tmp");
+			Check(!f.good(), "b185: no reading-image.txt.tmp left behind");
+		}
 		g_block = false;
 		usleep(300000);
 	}
