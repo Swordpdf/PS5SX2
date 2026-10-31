@@ -29,6 +29,11 @@
 #include <atomic>
 #include <unistd.h>
 #include "OrbisPaths.h" // vk-285-33 (the port's include-orbis)
+#include "OrbisMcdNoEcc.h" // b185: .mc2 / .bin cards (no ECC): names, conversions, durable writes
+
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 static constexpr int MCD_SIZE = 1024 * 8 * 16; // Legacy PSX card default size
 
@@ -57,49 +62,10 @@ namespace
 
 bool FileMcd_Open = false;
 
-// ECC code ported from mymc
-// https://sourceforge.net/p/mymc-opl/code/ci/master/tree/ps2mc_ecc.py
-// Public domain license
-
+// ECC code ported from mymc (public domain): b185, in OrbisMcdNoEcc.h now (the PC test runs it there).
 static u32 CalculateECC(u8* buf)
 {
-	const u8 parity_table[256] = {0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1,
-		0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
-		1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1,
-		0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0,
-		1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1,
-		0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0,
-		1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0,
-		1, 0, 1, 1, 0};
-
-	const u8 column_parity_mask[256] = {0, 7, 22, 17, 37, 34, 51, 52, 52, 51, 34, 37, 17, 22,
-		7, 0, 67, 68, 85, 82, 102, 97, 112, 119, 119, 112, 97, 102, 82, 85, 68, 67, 82, 85, 68, 67, 119, 112,
-		97, 102, 102, 97, 112, 119, 67, 68, 85, 82, 17, 22, 7, 0, 52, 51, 34, 37, 37, 34, 51, 52, 0, 7, 22, 17,
-		97, 102, 119, 112, 68, 67, 82, 85, 85, 82, 67, 68, 112, 119, 102, 97, 34, 37, 52, 51, 7, 0, 17, 22,
-		22, 17, 0, 7, 51, 52, 37, 34, 51, 52, 37, 34, 22, 17, 0, 7, 7, 0, 17, 22, 34, 37, 52, 51, 112, 119, 102,
-		97, 85, 82, 67, 68, 68, 67, 82, 85, 97, 102, 119, 112, 112, 119, 102, 97, 85, 82, 67, 68, 68, 67, 82,
-		85, 97, 102, 119, 112, 51, 52, 37, 34, 22, 17, 0, 7, 7, 0, 17, 22, 34, 37, 52, 51, 34, 37, 52, 51, 7, 0,
-		17, 22, 22, 17, 0, 7, 51, 52, 37, 34, 97, 102, 119, 112, 68, 67, 82, 85, 85, 82, 67, 68, 112, 119, 102,
-		97, 17, 22, 7, 0, 52, 51, 34, 37, 37, 34, 51, 52, 0, 7, 22, 17, 82, 85, 68, 67, 119, 112, 97, 102, 102,
-		97, 112, 119, 67, 68, 85, 82, 67, 68, 85, 82, 102, 97, 112, 119, 119, 112, 97, 102, 82, 85, 68, 67,
-		0, 7, 22, 17, 37, 34, 51, 52, 52, 51, 34, 37, 17, 22, 7, 0};
-
-	u8 column_parity = 0x77;
-	u8 line_parity_0 = 0x7F;
-	u8 line_parity_1 = 0x7F;
-
-	for (int i = 0; i < 128; i++)
-	{
-		u8 b = buf[i];
-		column_parity ^= column_parity_mask[b];
-		if (parity_table[b])
-		{
-			line_parity_0 ^= ~i;
-			line_parity_1 ^= i;
-		}
-	}
-
-	return column_parity | (line_parity_0 << 8) | (line_parity_1 << 16);
+	return mcd_noecc::CalculateECC(buf);
 }
 
 static bool ConvertNoECCtoRAW(const char* file_in, const char* file_out)
@@ -141,35 +107,99 @@ static bool ConvertNoECCtoRAW(const char* file_in, const char* file_out)
 	return true;
 }
 
+// b185: written durably (OrbisMcdNoEcc.h WriteDurable: a .tmp beside the card, fsync'd, renamed over it, the folder fsync'd): it used to
+// be written in place, so a power cut or a kill during it left half a card.
 static bool ConvertRAWtoNoECC(const char* file_in, const char* file_out)
 {
-	auto fin = FileSystem::OpenManagedCFile(file_in, "rb");
-	if (!fin)
+	std::vector<u8> raw;
+	if (!mcd_noecc::ReadAll(file_in, raw))
 		return false;
-
-	auto fout = FileSystem::OpenManagedCFile(file_out, "wb");
-	if (!fout)
-		return false;
-
-	const s64 size = FileSystem::FSize64(fin.get());
-	u8 buffer[512];
-	u8 checksum[16];
-
-	for (s64 i = 0; i < (size / 528); i++)
+	std::string error;
+	if (!mcd_noecc::WriteDurable(file_out, mcd_noecc::NoEccFromRaw(raw.data(), raw.size()), {}, &error))
 	{
-		if (std::fread(buffer, sizeof(buffer), 1, fin.get()) != 1 ||
-			std::fwrite(buffer, sizeof(buffer), 1, fout.get()) != 1 ||
-			std::fread(checksum, sizeof(checksum), 1, fin.get()) != 1)
-		{
-			return false;
-		}
-	}
-
-	if (std::fflush(fout.get()) != 0)
+		std::printf("[mcd] %s: %s\n", file_out, error.c_str());
 		return false;
-
+	}
 	return true;
 }
+
+namespace
+{
+	// b185 (AI-assisted; the owner: make .mc2 cards - MemCard PRO2 / SD2PSX - safe on PS5): a .mc2 / .bin card is PCSX2's RAW copy
+	// "<card>x" while it is open, turned back into the card only when it closes, and on the PS5 that close often never comes (the app
+	// closed from the home screen kills it): the session's saves stayed in the .mc2x and the next start overwrote it from the old card.
+	// Now the card is written back a few seconds after the game's last write to it (FileMemoryCard::WriteBackNoEcc). The write (8 to 64
+	// MiB, fsync'd) is done here, off the EE thread: one job per card file, the newest image wins; Wait lets the close write the last one
+	// itself once nothing for that card is being written.
+	class NoEccWriter
+	{
+	public:
+		void Submit(const std::string& path, std::vector<u8> image, const char* why, uint slot)
+		{
+			std::unique_lock<std::mutex> lock(m_mutex);
+			m_jobs[path] = Job{std::move(image), why, slot};
+			if (!m_started)
+			{
+				m_started = true;
+				std::thread([this] { Run(); }).detach();
+			}
+			m_cv.notify_all();
+		}
+
+		void Wait(const std::string& path)
+		{
+			std::unique_lock<std::mutex> lock(m_mutex);
+			m_jobs.erase(path); // the close writes the newest image itself
+			m_cv.wait(lock, [&] { return m_busy != path; });
+		}
+
+	private:
+		struct Job
+		{
+			std::vector<u8> image;
+			const char* why = "";
+			uint slot = 0;
+		};
+
+		void Run()
+		{
+			std::unique_lock<std::mutex> lock(m_mutex);
+			for (;;)
+			{
+				m_cv.wait(lock, [&] { return !m_jobs.empty(); });
+				const auto it = m_jobs.begin();
+				const std::string path = it->first;
+				const Job job = std::move(it->second);
+				m_jobs.erase(it);
+				m_busy = path;
+				lock.unlock();
+				const auto c0 = std::chrono::steady_clock::now();
+				std::string error;
+				const bool ok = mcd_noecc::WriteDurable(path, job.image, {}, &error);
+				std::printf("[mcd] slot %u: %s written back (%zu KiB, %s, %.0f ms)%s%s\n", job.slot, std::string(Path::GetFileName(path)).c_str(),
+					job.image.size() >> 10, job.why, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count(),
+					ok ? "" : " -- FAILED: ", ok ? "" : error.c_str());
+				std::fflush(stdout);
+				lock.lock();
+				m_busy.clear();
+				m_cv.notify_all();
+			}
+		}
+
+		std::mutex m_mutex;
+		std::condition_variable m_cv;
+		std::map<std::string, Job> m_jobs;
+		std::string m_busy;
+		bool m_started = false;
+	};
+
+	// Never destroyed: its thread waits for jobs for as long as the app runs.
+	NoEccWriter& NoEccWriterOf()
+	{
+		static NoEccWriter* const w = new NoEccWriter;
+		return *w;
+	}
+} // namespace
 
 // --------------------------------------------------------------------------------------
 //  FileMemoryCard
@@ -199,6 +229,12 @@ protected:
 	u32 m_idle_seconds[8] = {};
 	u32 m_dirty_seconds[8] = {};
 
+	// b185: .mc2 / .bin cards (OrbisMcdNoEcc.h): the card written back from its .mc2x a few emulated seconds after the game's last
+	// write to it (NextFrame), and a .mc2x a killed session left put back into the card when it opens.
+	bool m_noecc[8] = {};
+	bool m_noecc_pending[8] = {};
+	u32 m_noecc_idle[8] = {};
+
 public:
 	FileMemoryCard();
 	~FileMemoryCard();
@@ -224,6 +260,17 @@ protected:
 	bool LoadCache(uint slot); // vk-285-31
 	void FlushCache(uint slot, const char* why);
 	void MarkDirty(uint slot, u32 adr, u32 size);
+	// b185
+	void NoteNoEccWrite(uint slot)
+	{
+		if (m_noecc[slot])
+		{
+			m_noecc_pending[slot] = true;
+			m_noecc_idle[slot] = 0;
+		}
+	}
+	void WriteBackNoEcc(uint slot, const char* why);
+	void RecoverNoEccLeftover(uint slot, const std::string& card, const std::string& raw);
 };
 
 uint FileMcd_GetMtapPort(uint slot)
@@ -321,6 +368,10 @@ void FileMemoryCard::Open()
 			continue;
 		}
 
+		// b185: a .mc2x a session that never closed left behind, newer than the card: its saves back into the card before it is read.
+		if (mcd_noecc::IsNoEccName(fname))
+			RecoverNoEccLeftover(slot, fname, fname + "x");
+
 		if (FileSystem::GetPathFileSize(fname.c_str()) <= 0)
 		{
 			if (!Create(fname.c_str(), 8))
@@ -331,7 +382,7 @@ void FileMemoryCard::Open()
 			}
 		}
 
-		if (fname.ends_with(".bin") || fname.ends_with(".mc2"))
+		if (mcd_noecc::IsNoEccName(fname)) // b185: any case ("Card.MC2" too)
 		{
 			std::string newname(fname + "x");
 			if (!ConvertNoECCtoRAW(fname.c_str(), newname.c_str()))
@@ -367,6 +418,9 @@ void FileMemoryCard::Open()
 				FileMcd_IsMemoryCardFormatted(m_file[slot]) ? "Formatted" : "UNFORMATTED");
 
 			m_filenames[slot] = std::move(fname);
+			m_noecc[slot] = mcd_noecc::IsNoEccName(m_filenames[slot]); // b185
+			m_noecc_pending[slot] = false;
+			m_noecc_idle[slot] = 0;
 			m_ispsx[slot] = m_fileSize[slot] == 0x20000;
 			m_chkaddr = 0x210;
 
@@ -477,14 +531,91 @@ void FileMemoryCard::FlushCache(uint slot, const char* why)
 // the write happened in, so two calls without writes in between mean a whole idle second.
 void FileMemoryCard::NextFrame(uint slot)
 {
-	if (!m_dirty_any[slot])
+	if (m_dirty_any[slot])
+	{
+		m_idle_seconds[slot]++;
+		m_dirty_seconds[slot]++;
+		if (m_idle_seconds[slot] >= 2)
+			FlushCache(slot, "idle");
+		else if (m_dirty_seconds[slot] >= 5)
+			FlushCache(slot, "busy");
+	}
+	// b185: a .mc2 / .bin card written to: back into the card once no write has come for 3 calls (2 to 3 emulated seconds; the
+	// cache's own "idle" flush has run by then).
+	if (m_noecc_pending[slot] && ++m_noecc_idle[slot] >= 3 && !m_dirty_any[slot])
+		WriteBackNoEcc(slot, "idle");
+}
+
+// b185: the card (.mc2 / .bin) made from its .mc2x as it is now: the RAM image (or the file, flushed), with the checksum the close would
+// store, converted here and written on NoEccWriter's thread (durably). A kill after this loses nothing that was written before it.
+void FileMemoryCard::WriteBackNoEcc(uint slot, const char* why)
+{
+	m_noecc_pending[slot] = false;
+	if (!m_file[slot] || m_filenames[slot].empty())
 		return;
-	m_idle_seconds[slot]++;
-	m_dirty_seconds[slot]++;
-	if (m_idle_seconds[slot] >= 2)
-		FlushCache(slot, "idle");
-	else if (m_dirty_seconds[slot] >= 5)
-		FlushCache(slot, "busy");
+	OrbisMcdTimer timer;
+	std::vector<u8> image;
+	if (!m_cache[slot].empty())
+	{
+		FlushCache(slot, why); // (nothing when it is clean) the .mc2x and the card say the same
+		image = mcd_noecc::NoEccFromRaw(m_cache[slot].data(), m_cache[slot].size());
+	}
+	else
+	{
+		std::FILE* f = m_file[slot];
+		std::vector<u8> raw(static_cast<size_t>(std::max<s64>(m_fileSize[slot], 0)));
+		if (raw.empty() || std::fflush(f) != 0 || FileSystem::FSeek64(f, 0, SEEK_SET) != 0 || std::fread(raw.data(), raw.size(), 1, f) != 1)
+		{
+			std::printf("[mcd] slot %u: the card's RAW copy couldn't be read for the write-back: tried again after the next write\n", slot);
+			return;
+		}
+		image = mcd_noecc::NoEccFromRaw(raw.data(), raw.size());
+	}
+	// the close stores the checksum at m_chkaddr of the .mc2x (in a page's data: 0x210 is page 1's first bytes); the card gets it the same way
+	const size_t page = m_chkaddr / mcd_noecc::kRawPage, at = m_chkaddr % mcd_noecc::kRawPage;
+	if (!m_ispsx[slot] && at + sizeof(m_chksum[slot]) <= mcd_noecc::kPage && (page + 1) * mcd_noecc::kPage <= image.size())
+		std::memcpy(&image[page * mcd_noecc::kPage + at], &m_chksum[slot], sizeof(m_chksum[slot]));
+	NoEccWriterOf().Submit(m_filenames[slot], std::move(image), why, slot);
+}
+
+// b185: "<card>x" is still there when the card opens: a session that never closed left it (the app closed from the PS5 home screen, a
+// power cut). Newer than the card and a RAW image of a card that size (OrbisMcdNoEcc.h DecideLeftover): put back into the card, durably,
+// the card as it was kept as "<card>.bak". Anything else is said and left: the open makes the .mc2x again from the card, as before.
+void FileMemoryCard::RecoverNoEccLeftover(uint slot, const std::string& card, const std::string& raw)
+{
+	FILESYSTEM_STAT_DATA rs = {}, cs = {};
+	if (!FileSystem::StatFile(raw.c_str(), &rs))
+		return;
+	const bool have_card = FileSystem::StatFile(card.c_str(), &cs) && cs.Size > 0;
+	const std::string raw_name(Path::GetFileName(raw)), card_name(Path::GetFileName(card));
+	const mcd_noecc::Leftover what = mcd_noecc::DecideLeftover(have_card ? cs.Size : 0, have_card ? static_cast<long long>(cs.ModificationTime) : 0,
+		rs.Size, static_cast<long long>(rs.ModificationTime));
+	if (what != mcd_noecc::Leftover::Recover)
+	{
+		std::printf("[mcd] slot %u: %s left by an earlier session: %s, not used\n", slot, raw_name.c_str(),
+			what == mcd_noecc::Leftover::NotNewer ? "not newer than the card" : "not a RAW image of a card that size");
+		return;
+	}
+	std::vector<u8> image;
+	if (!mcd_noecc::ReadAll(raw, image))
+	{
+		std::printf("[mcd] slot %u: %s left by a session that didn't close couldn't be read: not used\n", slot, raw_name.c_str());
+		return;
+	}
+	const std::vector<u8> recovered = mcd_noecc::NoEccFromRaw(image.data(), image.size());
+	std::vector<u8> current;
+	if (have_card && mcd_noecc::ReadAll(card, current) && current == recovered)
+	{
+		std::printf("[mcd] slot %u: %s left by a session that didn't close is the same as %s: nothing to put back\n", slot, raw_name.c_str(), card_name.c_str());
+		return;
+	}
+	std::string error;
+	if (mcd_noecc::WriteDurable(card, recovered, have_card ? card + ".bak" : std::string(), &error))
+		std::printf("[mcd] slot %u: %s from a session that didn't close (newer than the card): its saves put back into %s%s\n", slot,
+			raw_name.c_str(), card_name.c_str(), have_card ? (" (the card as it was kept as " + card_name + ".bak)").c_str() : "");
+	else
+		std::printf("[mcd] slot %u: %s from a session that didn't close couldn't be put back into %s: %s\n", slot, raw_name.c_str(),
+			card_name.c_str(), error.c_str());
 }
 
 void FileMemoryCard::Close()
@@ -508,12 +639,15 @@ void FileMemoryCard::Close()
 		std::fclose(m_file[slot]);
 		m_file[slot] = nullptr;
 
-		if (m_filenames[slot].ends_with(".bin") || m_filenames[slot].ends_with(".mc2"))
+		if (mcd_noecc::IsNoEccName(m_filenames[slot])) // b185: any case
 		{
+			// b185: a write-back of this card being written finishes first (one still waiting is dropped: this one is newer)
+			NoEccWriterOf().Wait(m_filenames[slot]);
 			const std::string name_in(m_filenames[slot] + 'x');
 			if (ConvertRAWtoNoECC(name_in.c_str(), m_filenames[slot].c_str()))
 				FileSystem::DeleteFilePath(name_in.c_str());
 		}
+		m_noecc[slot] = m_noecc_pending[slot] = false;
 
 		m_filenames[slot] = {};
 		m_fileSize[slot] = -1;
@@ -606,6 +740,7 @@ s32 FileMemoryCard::Save(uint slot, const u8* src, u32 adr, int size)
 		DevCon.Error("(FileMcd) Ignoring attempted save/write to disabled slot.");
 		return 1;
 	}
+	NoteNoEccWrite(slot); // b185
 
 	// vk-285-31: on the RAM image (loaded now if this card waited for its first write).
 	OrbisMcdTimer timer;
@@ -704,6 +839,7 @@ s32 FileMemoryCard::EraseBlock(uint slot, u32 adr)
 		DevCon.Error("MemoryCard: Ignoring erase for disabled slot.");
 		return 1;
 	}
+	NoteNoEccWrite(slot); // b185
 
 	// vk-285-31: on the RAM image.
 	OrbisMcdTimer timer;
@@ -1119,9 +1255,7 @@ std::vector<AvailableMcdInfo> FileMcd_GetAvailableCards(bool include_in_use_card
 		}
 
 		// We only want relevant file types.
-		if (!(fd.FileName.ends_with(".ps2") || fd.FileName.ends_with(".mcr") ||
-				fd.FileName.ends_with(".mcd") || fd.FileName.ends_with(".bin") ||
-				fd.FileName.ends_with(".mc2")))
+		if (!mcd_noecc::IsCardFileName(fd.FileName)) // b185: any case (a MemCard PRO2's "Card.MC2" too)
 			continue;
 
 		if (fd.Attributes & FILESYSTEM_FILE_ATTRIBUTE_DIRECTORY)

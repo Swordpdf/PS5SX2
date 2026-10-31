@@ -176,10 +176,12 @@ bool SafeValue(const std::string& v)
 
 bool HasCardExtension(const std::string& name)
 {
+	// b185: any case (a MemCard PRO2's "Card.MC2" too), as the core's list (OrbisMcdNoEcc.h IsCardFileName); the file keeps its name
+	const std::string lower = Lower(name);
 	for (const char* ext : {".ps2", ".mcr", ".mcd", ".bin", ".mc2"})
 	{
 		const size_t n = std::strlen(ext);
-		if (name.size() > n && name.compare(name.size() - n, n, ext) == 0)
+		if (lower.size() > n && lower.compare(lower.size() - n, n, ext) == 0)
 			return true;
 	}
 	return false;
