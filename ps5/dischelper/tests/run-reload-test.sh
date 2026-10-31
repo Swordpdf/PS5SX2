@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Helper 171l (build 184): the Reload tile's removal by the person sticks (make_reload_test.py cuts the shipped block out of disctile.c).
+# 171m (build 185): and the flag switched while running (PS5SX2's settings) takes the tile away or makes it again.
 # ASAN+UBSAN, then -O2. RT_VERBOSE=1 prints every check.
 set -euo pipefail
 here=$(cd -- "$(dirname -- "$0")" && pwd)

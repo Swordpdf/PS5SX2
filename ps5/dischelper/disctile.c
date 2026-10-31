@@ -82,7 +82,7 @@ static void write_helper_status(void); /* 179: forward decl; defined lower, used
 #define MAX_DRIVES 4
 #define NSLOTS     8
 #define POLL_US    250000
-#define PAYLOAD_REV "171l" /* written in the log's first line, so that a log says which payload made it: 171l = 171k + the Reload tile removed by the person stays removed (flag disctile_noreload made for them), DiscSpeed8's shell patch on fw 11.40 only (flag disc_speed8_anyfw) and every detach of the shell checked (never left traced or stopped); 171k = 171j + next to the PS5SX3 helper (disc_compat.h: a drive with a disc that is not a PS2 disc is left alone until the disc goes - not opened, not asked, not pinned to 8x - and ps5sx2-helper.txt says so (compat=1, cd0..cd3=, usb=), so that the PS5SX3 helper takes the drive without stopping this one; the system's disc tile put back at a stop only for a PS2 disc; a removed tile's concept rows that another title uses stay; flag disc_noyield = 171j's way); 171j = 171i + DiscSpeed8 SceShellCore 8x patch and 60 s drive pin (disc_speed8.c; flag disc_nospeed8), game tiles ON by default (gametile_off switches off); 171i = 171h + the flag kp_log looked at every 10 s (not only at the start); 171h = disc speed (the copies of disc_launch.c read in bigger pieces, a drive the watcher reads is not opened here, every 3 s while PS5SX2 copies), 171 = the first reload build, 171b = cover/art refresh on reload, clean slots first,
+#define PAYLOAD_REV "171m" /* written in the log's first line, so that a log says which payload made it: 171m = 171l + the Reload tile switched from PS5SX2's settings (the flag disctile_noreload looked at every 3 s while running: made -> the tile taken away at once, deleted -> made again; the seen mark forgotten whenever the flag takes the tile away, so switching it back on is not taken for a removal by the person); 171l = 171k + the Reload tile removed by the person stays removed (flag disctile_noreload made for them), DiscSpeed8's shell patch on fw 11.40 only (flag disc_speed8_anyfw) and every detach of the shell checked (never left traced or stopped); 171k = 171j + next to the PS5SX3 helper (disc_compat.h: a drive with a disc that is not a PS2 disc is left alone until the disc goes - not opened, not asked, not pinned to 8x - and ps5sx2-helper.txt says so (compat=1, cd0..cd3=, usb=), so that the PS5SX3 helper takes the drive without stopping this one; the system's disc tile put back at a stop only for a PS2 disc; a removed tile's concept rows that another title uses stay; flag disc_noyield = 171j's way); 171j = 171i + DiscSpeed8 SceShellCore 8x patch and 60 s drive pin (disc_speed8.c; flag disc_nospeed8), game tiles ON by default (gametile_off switches off); 171i = 171h + the flag kp_log looked at every 10 s (not only at the start); 171h = disc speed (the copies of disc_launch.c read in bigger pieces, a drive the watcher reads is not opened here, every 3 s while PS5SX2 copies), 171 = the first reload build, 171b = cover/art refresh on reload, clean slots first,
                             * tile-gone timing; 171c = the Reload tile kept next to the disc tile, the uninstall on its own thread asked every 0.4 s, half a second of debounce at eject;
                             * 171d = a tile's game closed when its disc goes out, the leftover database rows of a removed tile deleted, concept rows for the order, a title card when there is no cover;
                             * 171e = kp.c: quiet while the console shuts down or rests (no drive, file, database, ShadowMount+ or notification access), the log files off in a KP test build,
@@ -2762,6 +2762,7 @@ static int reload_tile_build(void) {
  * this may run on the reload thread). Flag disctile_noreload: no reload tile (an earlier one is taken away). */
 static void reload_tile_ensure(void) {
     if (flag("disctile_noreload")) {
+        unlink(RELOAD_SHOWN); /* 171m: taken away by the flag, not by the person: a later "on" makes it again and waits to see it first */
         if (exists(RELOAD_DIR)) {
             char reply[300];
             rm_tree(RELOAD_DIR);
@@ -2783,7 +2784,14 @@ static void reload_tile_ensure(void) {
  * there). Now: once the tile this folder made has been seen on the home screen (RELOAD_SHOWN), a tile that has no row in the home screen's database and no
  * /user/app folder any more - while this payload did not take it away itself (it only does that with the flag) and is not making or waiting for it -
  * was removed by the person: the flag disctile_noreload is made (an empty file in /data/PCSX2/flags) and logged, and the tile's folder is taken away
- * like the flag always did. To get the tile back: delete /data/PCSX2/flags/disctile_noreload and open PS5SX2 again. Main loop only (SQLite). */
+ * like the flag always did. To get the tile back: delete /data/PCSX2/flags/disctile_noreload and open PS5SX2 again. Main loop only (SQLite).
+ * 171m (build 185; the owner: "allow people to actually delete the reload disc tile, and it won't come back"): PS5SX2's settings (the sheet for all
+ * games, "Reload PS2 Disc tile") make or delete that flag while this payload runs. Up to 171l the flag was read at the start only (the 30 s recheck
+ * then did nothing), so the tile stayed until the next start. reload_tile_flag_tick looks at it every 3 s: made -> reload_tile_ensure's flag way at
+ * once (the folder and the home screen's tile taken away, the seen mark forgotten), deleted -> reload_tile_ensure makes the tile again and the home
+ * screen is asked to take it up. A flag this payload makes itself (the person deleted the tile) is not taken for a switch. */
+static int g_noreload_seen = -1; /* 171m: the flag as the main loop last saw it (-1: not looked at yet) */
+
 static void reload_tile_mark_shown(void) {
     if (!exists(RELOAD_SHOWN)) write_file(RELOAD_SHOWN, "1\n", 2);
 }
@@ -2801,6 +2809,7 @@ static void reload_tile_removed_by_user(const char *when) {
     say("the reload tile " RELOAD_TID " was removed by the person (%s: no row on the home screen, no /user/app folder, not taken away by us): "
         "flag disctile_noreload %s, so it is not installed again (delete that flag to get the tile back)", when, made ? "made" : "COULD NOT be made");
     unlink(RELOAD_SHOWN);
+    if (made) g_noreload_seen = 1; /* 171m: ours, not a switch in the settings */
     if (made) reload_tile_ensure(); /* the flag's way: the folder taken away, so that no scan of ShadowMount+ takes it up again */
 }
 
@@ -2821,6 +2830,19 @@ static void reload_tile_watch(time_t now) {
         strikes = 0;
         reload_tile_removed_by_user("while running");
     }
+}
+/* 171m: from the main loop every 3 s: the flag disctile_noreload made or deleted while running (PS5SX2's settings, or by hand). */
+static void reload_tile_flag_tick(time_t now) {
+    static time_t next;
+    if (now < next) return;
+    next = now + 3;
+    const int off = flag("disctile_noreload");
+    if (g_noreload_seen == -1) { g_noreload_seen = off; return; } /* the start took care of the state it found */
+    if (off == g_noreload_seen || g_reload_running) return;       /* a reload in progress: looked at again when it is over */
+    g_noreload_seen = off;
+    say("flag disctile_noreload %s while running (PS5SX2's settings or by hand): the reload tile is %s", off ? "made" : "deleted",
+        off ? "taken away" : "made again");
+    reload_tile_ensure();
 }
 /* ---------------------------------------------------------------- 171l end */
 
@@ -3338,6 +3360,7 @@ static int payload_run(int hosted) {
         }
         reload_tile_tick(now);
         reload_tile_watch(now); /* 171l: a removal by the person sticks */
+        reload_tile_flag_tick(now); /* 171m: the flag switched in PS5SX2's settings: the tile taken away or made again now */
         reload_tile_recheck(now);
         heal_tick(now);
         gone_tick();

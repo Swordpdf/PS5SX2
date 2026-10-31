@@ -680,6 +680,13 @@ void OptionsSheet::BuildRows()
 		add(Kind::SystemUpdate, Tr(Str::UpdateRow));
 		add(Kind::LogUpload, Tr(Str::LogsRow));
 	}
+	// b185 (AI-assisted; the owner: "allow people to actually delete the reload disc tile, and it won't come back"): the helper's Reload PS2 Disc
+	// tile, kept on the home screen or not (the app reads and sets the helper's flag file flags/disctile_noreload: fe_ps5.cpp).
+	if (settings && m_global && m_reload_tile_row)
+	{
+		add(Kind::Header, "Home screen");
+		add(Kind::ReloadTile, Tr(Str::ReloadTileRow));
+	}
 	// 2026-10-08: the "Get patches and cheats" row heads the game's patches (shown with none yet), then its cheats.
 	const bool online = settings && m_online_patch_row && !m_global && !m_serial.empty();
 	if (settings && (!m_patches.empty() || online))
@@ -818,6 +825,7 @@ std::string OptionsSheet::Value(const Row& r) const
 		case Kind::HomeTile: // 2.12: the app's too (fe_app.cpp, from fe_gametile.h)
 		case Kind::SystemUpdate: // 180: the app's (fe_app.cpp, from fe_update.h)
 		case Kind::LogUpload:
+		case Kind::ReloadTile: // b185: the app's (fe_app.cpp)
 			return {};
 	}
 	return {};

@@ -2455,6 +2455,34 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		std::printf("[tiles] game tiles: on by default (flag gametile_off removes them); the helper and the shelf talk through %s\n", acfg.tiles_dir.c_str());
 		std::fflush(stdout);
 	}
+	// b185 (AI-assisted; the owner: "allow people to actually delete the reload disc tile, and it won't come back"): the switch for the helper's
+	// Reload PS2 Disc tile is the helper's own flag file, /data/PCSX2/flags/disctile_noreload (disctile.c FLAGS_DIR; read directly, not through
+	// OrbisFlag's start-up snapshot). The helper (171m) takes the tile off within seconds when the file appears and puts it back when it goes; a
+	// tile deleted on the home screen makes the file too (171l), so the row shows Off then. Not in a game tile's copy.
+	if (acfg.own_tile_game.empty())
+	{
+		static const char* const kNoReload = "/data/PCSX2/flags/disctile_noreload";
+		acfg.reload_tile_on = [] {
+			struct stat st = {};
+			return stat(kNoReload, &st) != 0;
+		};
+		acfg.set_reload_tile = [](bool on) {
+			bool ok;
+			if (on)
+				ok = unlink(kNoReload) == 0 || errno == ENOENT;
+			else
+			{
+				mkdir("/data/PCSX2/flags", 0777);
+				const int fd = open(kNoReload, O_WRONLY | O_CREAT, 0666);
+				ok = fd >= 0;
+				if (fd >= 0)
+					close(fd);
+			}
+			std::printf("[options] reload tile %s: flags/disctile_noreload %s%s\n", on ? "on" : "off", on ? "deleted" : "made", ok ? "" : " FAILED");
+			std::fflush(stdout);
+			return ok;
+		};
+	}
 	// 180 (AI-assisted; the owner: an in-app updater like PS5SX3's, and nothing to load by hand but ShadowMount and kstuff): the sheet for all games'
 	// PS5SX2 group (fe_update.h). System update looks at the latest GitHub release over its own HTTPS client and, asked twice, sends the installer the
 	// app ships (OrbisInstallerStart.cpp) and closes; Session logs writes the installer's no-log-upload switch. Not in a game tile's copy: the

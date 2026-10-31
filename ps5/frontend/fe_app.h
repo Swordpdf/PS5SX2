@@ -115,6 +115,11 @@ struct AppConfig
 	std::function<std::string(const GameInfo&)> tile_cover;
 	// 180 (AI-assisted): PS5SX2 updating itself and the session-log switch: the sheet for all games' PS5SX2 group (fe_update.h). Unset: no group.
 	UpdateService updates;
+	// b185 (AI-assisted): the "Reload PS2 Disc tile" switch of the sheet for all games. reload_tile_on: the helper keeps its Reload tile on the home
+	// screen (no flags/disctile_noreload); set_reload_tile makes or deletes that flag file (true: done; the helper takes the tile off or puts it
+	// back within seconds). Unset: no row.
+	std::function<bool()> reload_tile_on;
+	std::function<bool(bool on)> set_reload_tile;
 };
 
 class App
@@ -191,6 +196,7 @@ public:
 	int TilePhase() const { return m_sheet_open && m_tile_row ? static_cast<int>(m_tile_view.phase) : -1; }
 	int TileRowShown() const { return m_sheet_open && m_tile_row ? 1 : 0; }
 	int TileFocused() const;
+	bool ReloadTileFocused() const; // b185: the focused row of the sheet is the Reload PS2 Disc tile switch (tests)
 	int TilePolls() const { return m_tile_polls; }
 	void ResetTilePolls() { m_tile_polls = 0; }
 	int TilePending() const { return m_tile.PendingCount(); }
@@ -241,6 +247,7 @@ private:
 	std::string OnlinePatchValue() const; // 2026-10-08: the "Get patches and cheats" row's value
 	// 180: the PS5SX2 group's rows (fe_update.h): a press on either, what they show and say, and the close after the installer started.
 	void UpdateRowPress(const OptionsSheet::Row& row, double now);
+	void ReloadTileToggle(double now); // b185
 	std::string UpdateRowValue(const OptionsSheet::Row& row) const;
 	std::string UpdateRowHelp(const OptionsSheet::Row& row) const;
 	void UpdateQuitTick();

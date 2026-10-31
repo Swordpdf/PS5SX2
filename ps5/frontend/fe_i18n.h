@@ -169,6 +169,12 @@ enum class Str : int
 	// gamedb (2026-10-30): "Game database missing (%s): this app's own copy is used. The PS5SX2 Installer repairs it." (%s: the file)
 	ShelfNoGameDb,
 	UpdateDownloadingInstaller, // installer-dl (AI-assisted): "Downloading the installer...": System update fetches PS5SX2Installer.elf (English only for now)
+	// reloadtile (b185, AI-assisted; the owner: people can delete the Reload PS2 Disc tile and it doesn't come back): the sheet for all games' switch
+	// for the helper's "Reload PS2 Disc" tile (English only for now).
+	ReloadTileRow,  // "Reload PS2 Disc tile"
+	ReloadTileOn,   // "On"
+	ReloadTileOff,  // "Off"
+	ReloadTileHelp, // what the row does
 	Count
 };
 

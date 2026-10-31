@@ -157,6 +157,10 @@ const char* const kKeys[kCount] = {
 	"shelf.scanning",
 	"shelf.no_gamedb",
 	"update.downloading_installer",
+	"reloadtile.row",
+	"reloadtile.on",
+	"reloadtile.off",
+	"reloadtile.help",
 };
 
 const char* const kEnglish[kCount] = {
@@ -303,6 +307,10 @@ const char* const kEnglish[kCount] = {
 	"Looking at new games  %d / %d",
 	"Game database missing (%s): this app's own copy is used. The PS5SX2 Installer repairs it.",
 	"Downloading the installer...",
+	"Reload PS2 Disc tile",
+	"On",
+	"Off",
+	"Off takes the Reload PS2 Disc tile off the PS5 home screen for good (deleting the tile there does the same); On puts it back.",
 };
 
 const char* const kSpanish[kCount] = {

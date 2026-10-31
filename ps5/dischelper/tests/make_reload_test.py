@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # Helper 171l (build 184), AI-assisted: the host test of "the Reload tile removed by the person stays removed" AS IT SHIPS. Cuts the 171l block of
+# (171m, build 185: and the flag switched while running from PS5SX2's settings: reload_tile_flag_tick takes the tile away / makes it again, once, and
+# switching it back on is not taken for a removal by the person)
 # disctile.c (reload_tile_mark_shown .. reload_tile_watch) out as it is, puts a made-up world around it (files in a test folder, the home screen's rows,
 # a virtual clock) and checks: the tile seen then deleted -> the flag is made once; our own rebuild / a scan in progress / an unreadable database /
 # a tile never seen -> no flag. Usage: make_reload_test.py <disctile.c> <out.c>
@@ -9,7 +11,7 @@ src = open(sys.argv[1], encoding="utf-8").read()
 a = src.index("/* ---------------------------------------------------------------- 171l: the Reload tile removed by the person")
 b = src.index("/* ---------------------------------------------------------------- 171l end */", a)
 block = src[a:b]
-for name in ("reload_tile_mark_shown", "reload_tile_user_removed", "reload_tile_removed_by_user", "reload_tile_watch"):
+for name in ("reload_tile_mark_shown", "reload_tile_user_removed", "reload_tile_removed_by_user", "reload_tile_watch", "reload_tile_flag_tick"):
     assert ("static void %s(" % name) in block or ("static int %s(" % name) in block, name
 
 head = r'''
@@ -63,8 +65,13 @@ static void say(const char *fmt, ...) {
     g_says++;
     if (getenv("RT_VERBOSE")) printf("  say: %s\n", g_last);
 }
-/* the flag's way in the shipped reload_tile_ensure: the folder taken away; counted here */
-static void reload_tile_ensure(void) { g_ensures++; }
+/* the shipped reload_tile_ensure: with the flag the folder is taken away and (171m) the seen mark forgotten; without it the tile is made again.
+ * Counted here (g_ensures with the flag, g_makes without). */
+static int g_makes;
+static void reload_tile_ensure(void) {
+    if (flag("disctile_noreload")) { g_ensures++; unlink(RELOAD_SHOWN); }
+    else g_makes++;
+}
 '''
 
 tail = r'''
@@ -73,13 +80,20 @@ static int fails;
 
 static void reset(void) {
     (void)!system("rm -rf " RT_DIR " && mkdir -p " WORK);
-    g_reload_running = 0; g_reload_scan_at = 0; g_reload_ours_at = 0; g_rows = 0; g_ensures = 0; g_says = 0;
+    g_reload_running = 0; g_reload_scan_at = 0; g_reload_ours_at = 0; g_rows = 0; g_ensures = 0; g_says = 0; g_makes = 0; g_noreload_seen = -1;
 }
 static void installed(int yes) {
     g_rows = yes ? 2 : 0;
     if (yes) { FILE *f = fopen(USER_APP, "w"); if (f) fclose(f); } else unlink(USER_APP);
 }
-static time_t run(time_t from, int seconds) { for (time_t t = from; t < from + seconds; t++) reload_tile_watch(t); return from + seconds; }
+static time_t run(time_t from, int seconds) {
+    for (time_t t = from; t < from + seconds; t++) { reload_tile_watch(t); reload_tile_flag_tick(t); }
+    return from + seconds;
+}
+static void set_flag(int on) {
+    if (on) { (void)!system("mkdir -p " FLAGS_DIR); FILE *f = fopen(FLAGS_DIR "/disctile_noreload", "w"); if (f) fclose(f); }
+    else unlink(FLAGS_DIR "/disctile_noreload");
+}
 
 int main(void) {
     time_t now = 100000;
@@ -159,6 +173,43 @@ int main(void) {
     CHECK(reload_tile_user_removed() == 1, "at the start: seen before and gone now -> removed");
     unlink(RELOAD_SHOWN);
     CHECK(reload_tile_user_removed() == 0, "at the start: never seen -> not removed");
+
+    /* 8. 171m: the switch in PS5SX2's settings while the payload runs */
+    reset();
+    installed(1);
+    now = run(now, 12);
+    CHECK(exists(RELOAD_SHOWN) && g_ensures == 0 && g_makes == 0, "171m: tile there and seen; the first look of the flag does nothing");
+    set_flag(1);                              /* Off */
+    now = run(now, 4);
+    CHECK(g_ensures == 1, "171m: flag made in the settings -> the tile taken away within 3 s");
+    CHECK(strstr(g_last, "made while running") != NULL, "171m: logged");
+    CHECK(!exists(RELOAD_SHOWN), "171m: the seen mark forgotten (taken away by the flag, not by the person)");
+    installed(0);                             /* ShadowMount+ uninstalled it */
+    now = run(now, 30);
+    CHECK(g_ensures == 1 && g_makes == 0, "171m: nothing more while the flag stays");
+    set_flag(0);                              /* On again */
+    now = run(now, 4);
+    CHECK(g_makes == 1, "171m: flag deleted -> the tile made again within 3 s");
+    CHECK(strstr(g_last, "deleted while running") != NULL, "171m: logged");
+    now = run(now, 60);                       /* the tile not on the home screen yet: not a removal by the person */
+    CHECK(!flag("disctile_noreload"), "171m: switching it back on is not taken for a removal (no flag made again)");
+    installed(1);
+    now = run(now, 10);
+    CHECK(exists(RELOAD_SHOWN) && g_makes == 1, "171m: once it is back on the home screen it counts as seen again");
+    /* the person deletes it on the home screen: 171l's flag, and the tick does not take that for a switch */
+    installed(0);
+    now = run(now, 20);
+    CHECK(flag("disctile_noreload") && g_ensures == 2, "171m: deleted on the home screen -> 171l's flag and its way, once");
+    now = run(now, 20);
+    CHECK(g_ensures == 2 && g_makes == 1, "171m: the flag the payload made itself is not taken for a switch");
+    /* a reload in progress: the switch waits for it */
+    set_flag(0);
+    g_reload_running = 1;
+    now = run(now, 10);
+    CHECK(g_makes == 1, "171m: not while a reload runs");
+    g_reload_running = 0;
+    now = run(now, 4);
+    CHECK(g_makes == 2, "171m: ... and done once it is over");
 
     (void)!system("rm -rf " RT_DIR);
     printf("reload-tile removal test: %s (%d failure(s))\n", fails ? "FAILED" : "all passed", fails);

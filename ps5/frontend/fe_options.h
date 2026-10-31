@@ -111,6 +111,7 @@ public:
 		HomeTile,    // 2.12: a game's sheet: its tile on the PS5 home screen (the app asks the helper and draws the value and help: fe_gametile.h)
 		SystemUpdate, // 180: the sheet for all games: look for and install a newer PS5SX2 (the app's: fe_update.h)
 		LogUpload,    // 180: the sheet for all games: the session logs sent or not (the app's: fe_update.h)
+		ReloadTile,   // b185: the sheet for all games: the helper's "Reload PS2 Disc" tile on the home screen or not (the app's: AppConfig::reload_tile_on)
 	};
 
 	enum class From
@@ -147,6 +148,8 @@ public:
 	void SetSystemMenuRow(bool on) { m_system_menu_row = on; }
 	// 180: the sheet for all games gets the PS5SX2 group (System update, Session logs) when the app has an updater.
 	void SetUpdateRows(bool on) { m_update_rows = on; }
+	// b185: the sheet for all games gets the "Reload PS2 Disc tile" switch when the app can set the helper's flag for it.
+	void SetReloadTileRow(bool on) { m_reload_tile_row = on; }
 	bool TakeSystemMenu()
 	{
 		const bool asked = m_system_menu;
@@ -234,6 +237,7 @@ private:
 	bool m_system_menu_row = false, m_system_menu = false; // 2026-10-08
 	bool m_folder_rows = false; // vk-285-135
 	bool m_update_rows = false; // 180
+	bool m_reload_tile_row = false; // b185
 	Kind m_folder_request = Kind::Header;
 	bool m_elf = false; // 2026-10-08: this sheet's game is an ELF (the Disc image row)
 	int m_armed_row = -1;

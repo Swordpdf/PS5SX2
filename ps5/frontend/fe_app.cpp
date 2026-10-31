@@ -2213,6 +2213,7 @@ void App::OpenSheet(bool global)
 	m_sheet.SetOnlinePatchRow(static_cast<bool>(m_cfg.online_patches)); // 2026-10-08
 	m_sheet.SetSystemMenuRow(m_cfg.system_menu);                        // 2026-10-08
 	m_sheet.SetUpdateRows(static_cast<bool>(m_cfg.updates) && m_cfg.own_tile_game.empty()); // 180: not in a game tile's copy (it updates the main app)
+	m_sheet.SetReloadTileRow(static_cast<bool>(m_cfg.reload_tile_on) && static_cast<bool>(m_cfg.set_reload_tile) && m_cfg.own_tile_game.empty()); // b185
 	m_sheet.SetFolderRows(!m_cfg.folder_places.empty());                // vk-285-135
 	m_tile_row = HomeTileEligible(g);                                   // 2.12: the Home screen tile row (a game with a plain image file; the flag turns it on)
 	m_sheet.SetHomeTileRow(m_tile_row);
@@ -2566,6 +2567,15 @@ void App::UpdateSheet(double dt, const Input& in)
 		return;
 	}
 
+	// b185: "Reload PS2 Disc tile": Cross, Left or Right switch it.
+	if (row.kind == OptionsSheet::Kind::ReloadTile)
+	{
+		const bool horizontal = (in.left && !m_prev.left) || (in.right && !m_prev.right);
+		if (pressed(in.cross, m_prev.cross) || horizontal)
+			ReloadTileToggle(now);
+		return;
+	}
+
 	// 2.12: "Home screen tile": Cross, Left and Right put the game on the PS5 home screen (the helper makes the tile), Cross or Triangle take it off again.
 	if (row.kind == OptionsSheet::Kind::HomeTile)
 	{
@@ -2708,6 +2718,20 @@ void App::UpdateRowPress(const OptionsSheet::Row& row, double now)
 	Sound(started ? Sfx::Move : Sfx::Edge, 0.3f); // the row's value says "Checking..." and then the answer
 }
 
+// b185: the Reload PS2 Disc tile switched: the helper's flag file made (Off) or deleted (On); the helper does the rest within seconds.
+void App::ReloadTileToggle(double now)
+{
+	if (!m_cfg.reload_tile_on || !m_cfg.set_reload_tile)
+		return;
+	const bool on = !m_cfg.reload_tile_on();
+	const bool ok = m_cfg.set_reload_tile(on);
+	m_sheet_status = ok ? std::string(Tr(on ? Str::ReloadTileOn : Str::ReloadTileOff)) : std::string("Couldn't change /data/PCSX2/flags/disctile_noreload");
+	m_sheet_status_time = now;
+	std::printf("[options] reload tile: %s%s\n", on ? "on" : "off (flag disctile_noreload)", ok ? "" : " (failed)");
+	std::fflush(stdout);
+	Sound(ok ? Sfx::Move : Sfx::Edge, 0.3f);
+}
+
 std::string App::UpdateRowValue(const OptionsSheet::Row& row) const
 {
 	if (!m_cfg.updates)
@@ -2780,6 +2804,14 @@ void App::UpdateQuitTick()
 // should also be able to delete it, again, from the shelf". The row asks the PS5SX2 Disc Helper (one small file per press, in tiles_dir) to make a copy of this
 // app under a title ID of its own that starts this game from the home screen, and shows what the helper says about it. English like the rest of the sheet.
 // Nothing is read or written unless AppConfig::tiles_dir is set (on by default; the flag file flags/gametile_off clears it), and then only with the row shown or an ask pending.
+
+bool App::ReloadTileFocused() const
+{
+	if (!m_sheet_open)
+		return false;
+	const auto& rows = m_sheet.rows();
+	return m_sheet_row >= 0 && m_sheet_row < static_cast<int>(rows.size()) && rows[static_cast<size_t>(m_sheet_row)].kind == OptionsSheet::Kind::ReloadTile;
+}
 
 int App::TileFocused() const
 {
@@ -3511,6 +3543,8 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		const bool update_row = r.kind == OptionsSheet::Kind::SystemUpdate; // 180: no arrows (Cross looks and installs)
 		if (update_row || r.kind == OptionsSheet::Kind::LogUpload)
 			value = UpdateRowValue(r);
+		if (r.kind == OptionsSheet::Kind::ReloadTile && m_cfg.reload_tile_on) // b185
+			value = Tr(m_cfg.reload_tile_on() ? Str::ReloadTileOn : Str::ReloadTileOff);
 		// 2026-10-05: the HD texture pack row shows the pack, the download's progress or the installed pack.
 		const bool pack_row = r.kind == OptionsSheet::Kind::TexturePack && m_cfg.texture_packs && !m_games.empty();
 		TexturePackStatus pack;
@@ -3618,6 +3652,8 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 			help = HomeTileHelp();
 		if (focus_row.kind == OptionsSheet::Kind::SystemUpdate || focus_row.kind == OptionsSheet::Kind::LogUpload) // 180
 			help = UpdateRowHelp(focus_row);
+		if (focus_row.kind == OptionsSheet::Kind::ReloadTile) // b185
+			help = Tr(Str::ReloadTileHelp);
 		float hy = list_bottom + 110 * k;
 		for (const std::string& line : Wrap(*m_fonts, help, 32 * k, inner, 4))
 		{

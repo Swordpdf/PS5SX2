@@ -739,6 +739,8 @@ int main(int argc, char** argv)
 	std::string updates;
 	int updates_start = 0;
 	bool updates_no_installer = false;
+	// b185: --reload-tile: the sheet for all games' "Reload PS2 Disc tile" switch, over <data>/flags/disctile_noreload (the helper's flag on the PS5).
+	bool reload_tile = false;
 	int record_fps = 30;
 	for (int i = 1; i < argc; i++)
 	{
@@ -802,6 +804,8 @@ int main(int argc, char** argv)
 			updates_start = std::atoi(next().c_str());
 		else if (a == "--updates-no-installer") // installer-dl: the app has no installer; the stand-in release has one, fetched in 0.6 s
 			updates_no_installer = true;
+		else if (a == "--reload-tile") // b185
+			reload_tile = true;
 		else if (a == "--record-audio")
 			record_audio = next();
 		else if (a == "--record-fps")
@@ -1174,6 +1178,21 @@ int main(int argc, char** argv)
 		updater = std::make_unique<Updater>(up, build_tag, data + "/installer");
 		acfg.updates = updater->Service();
 	}
+	// b185: --reload-tile: the switch writes the flag file as fe_ps5.cpp does on the PS5 (there: /data/PCSX2/flags/disctile_noreload).
+	const std::string noreload = data + "/flags/disctile_noreload";
+	if (reload_tile)
+	{
+		acfg.reload_tile_on = [noreload] { return access(noreload.c_str(), F_OK) != 0; };
+		acfg.set_reload_tile = [noreload, data](bool on) {
+			if (on)
+				return unlink(noreload.c_str()) == 0 || errno == ENOENT;
+			mkdir((data + "/flags").c_str(), 0777);
+			FILE* f = std::fopen(noreload.c_str(), "wb");
+			if (f)
+				std::fclose(f);
+			return f != nullptr;
+		};
+	}
 	// 2.11: the settings page's search box (the "remote" step)
 	std::mutex remote_mutex;
 	std::string remote_text;
@@ -1333,6 +1352,8 @@ int main(int argc, char** argv)
 				                key == "updquit" ? upd_quit :       // 180: the app asked to close
 				                key == "updinstaller" ? (access((data + "/installer/PS5SX2Installer.elf").c_str(), F_OK) == 0 ? 1 : 0) : // installer-dl: fetched
 				                key == "logupload" ? (updater ? (updater->LogUpload() ? 1 : 0) : -1) : // 180: session logs on
+				                key == "reloadtile" ? (reload_tile ? (access(noreload.c_str(), F_OK) != 0 ? 1 : 0) : -1) : // b185: the Reload tile kept (no flag file)
+				                key == "reloadfocus" ? (app.ReloadTileFocused() ? 1 : 0) : // b185: the focused row is the Reload tile switch
 				                key == "tilephase" ? app.TilePhase() : // 2.12: the Home screen tile row's phase (fe_gametile.h; -1: no row on the sheet)
 				                key == "tilerow"   ? app.TileRowShown() : // 2.12: the sheet has the row
 				                key == "tilefocus" ? app.TileFocused() : // 2.12: the focused row is it
