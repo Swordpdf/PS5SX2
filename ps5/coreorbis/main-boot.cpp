@@ -2149,10 +2149,9 @@ static std::string orbis_menu_exec_path()
   if (s_tile_marker_seen && !s_tile_marker_drive.empty())
     printf("[menu] this process is a disc tile (drive %s) but its folder under /data/homebrew wasn't found: PPSA99203's eboot is used\n",
       s_tile_marker_drive.c_str());
-  std::string path = "/data/homebrew/PPSA99203/eboot.bin";
-  if (stat(path.c_str(), &st) != 0)
-    path = "/app0/eboot.bin";
-  return path;
+  // LoadExec resolves this after the current process exits. ShadowMount can
+  // remove the /data mount between this call's stat() and that new process.
+  return "/app0/eboot.bin";
 }
 
 // The note for the next start: the shelf opens, though the tile's marker (or the bootdisc flag) would start the disc again.
