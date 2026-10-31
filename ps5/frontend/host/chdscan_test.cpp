@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fcntl.h>
 #include <fstream>
 #include <sstream>
@@ -57,8 +58,54 @@ extern "C" int open(const char* path, int flags, ...)
 		g_hang_opens++;
 	return fd;
 }
+// b184 (the CHD tester's build-183 log ended at "no answer after 1 s yet": the waiter never reached its 6 s give-up, and the shelf's
+// thread stopped too): a read that holds something process-wide. When g_arm_trap is set, the first read that blocks sets g_trap: from
+// then, every allocation of the thread g_trap_tid (the one waiting for the read) waits until the test lets it go (g_trap cleared),
+// as if the blocked read held the allocator. The waiter must give up on the read and write its log line and bad-images.txt line
+// without allocating; g_first_trap says when it first tried to allocate.
+static std::atomic<bool> g_arm_trap{false}, g_trap{false};
+static std::atomic<long> g_trap_tid{0};
+static std::atomic<double> g_trap_t0{0}, g_first_trap{-1};
+static double MonoNow()
+{
+	timespec ts = {};
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) * 1e-9;
+}
+static void Trap()
+{
+	if (!g_trap.load(std::memory_order_relaxed) || syscall(SYS_gettid) != g_trap_tid.load())
+		return;
+	double none = -1;
+	g_first_trap.compare_exchange_strong(none, MonoNow() - g_trap_t0.load());
+	while (g_trap.load())
+		usleep(1000);
+}
+extern "C" void* __libc_malloc(size_t);
+extern "C" void* __libc_calloc(size_t, size_t);
+extern "C" void* __libc_realloc(void*, size_t);
+extern "C" void* malloc(size_t n)
+{
+	Trap();
+	return __libc_malloc(n);
+}
+extern "C" void* calloc(size_t a, size_t b)
+{
+	Trap();
+	return __libc_calloc(a, b);
+}
+extern "C" void* realloc(void* p, size_t n)
+{
+	Trap();
+	return __libc_realloc(p, n);
+}
 extern "C" ssize_t pread(int fd, void* buf, size_t n, off_t off)
 {
+	if (fd >= 0 && fd < 4096 && g_hang_fd[fd] && g_block && g_arm_trap.exchange(false))
+	{
+		g_trap_t0 = MonoNow();
+		g_trap = true;
+	}
 	while (fd >= 0 && fd < 4096 && g_hang_fd[fd] && g_block)
 		usleep(10000);
 	return static_cast<ssize_t>(syscall(SYS_pread64, fd, buf, n, off));
@@ -444,6 +491,86 @@ int main(int argc, char** argv)
 		Check(all.find("hang4.chd") != std::string::npos && all.find("hang5.chd") == std::string::npos && all.find("hang6.chd") == std::string::npos,
 			"... and they aren't in bad-images.txt: the next start reads them");
 		g_block = false;
+	}
+
+	// 5. b184: a read that never answers while it holds something process-wide (the build-183 log: "no answer after 1 s yet" and nothing
+	// after, no first frame). The waiting thread's allocations wait as long as the read hangs; the 1 s give-up line, the bad-images.txt
+	// record and the reading mark must still be there in time, and the scan goes on to the next images.
+	{
+		usleep(300000); // (the reads of section 4 have ended: only libchdr's own loop is still stuck)
+		const std::string big3 = work + "/big3/";
+		const std::string cache3 = work + "/cache3/chd-serials.txt";
+		std::system(("rm -rf '" + big3 + "' '" + work + "/cache3' && mkdir -p '" + big3 + "'").c_str());
+		for (int i = 0; i < 6; i++)
+		{
+			char name[64];
+			std::snprintf(name, sizeof(name), "Game %02d.chd", i < 3 ? i : i + 1);
+			std::system(("cp --sparse=always '" + fx + "/cd.chd' '" + big3 + name + "'").c_str());
+		}
+		std::system(("cp --sparse=always '" + fx + "/dvd4k.chd' '" + big3 + "Game 03 hang7.chd'").c_str());
+		fe::SetSerialReadLimit(1.0);
+		fe::SetSerialCacheFile(std::string());
+		fe::SetSerialCacheFile(cache3);
+		const std::string cap = work + "/stdout-b184.txt";
+		std::fflush(stdout);
+		const int saved = dup(1);
+		const int capfd = open(cap.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		dup2(capfd, 1);
+		close(capfd);
+		std::atomic<bool> mark_at_start{false}, line_in_time{false}, bad_in_time{false};
+		std::thread watch([&] {
+			while (!g_trap)
+				usleep(1000);
+			{
+				std::ifstream f(work + "/cache3/reading-image.txt");
+				std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+				mark_at_start = all.find("hang7.chd\t") != std::string::npos;
+			}
+			while (MonoNow() - g_trap_t0 < 1.0 + 0.7)
+				usleep(5000);
+			{
+				std::ifstream f(cap);
+				std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+				line_in_time = all.find("hang7.chd: reading it gave no answer in 1 s: skipped") != std::string::npos;
+			}
+			{
+				std::ifstream f(work + "/cache3/bad-images.txt");
+				std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+				bad_in_time = all.rfind("# PS5SX2: images whose reading never finished", 0) == 0 && all.find("hang7.chd\t") != std::string::npos;
+			}
+			g_trap = false; // the allocator answers again
+		});
+		g_first_trap = -1;
+		g_trap_tid = syscall(SYS_gettid);
+		g_block = true;
+		g_arm_trap = true;
+		int listed = 0, serials = 0, gave_up = 0;
+		const auto t0 = std::chrono::steady_clock::now();
+		for (fe::GameInfo& g : fe::ScanGames({big3.substr(0, big3.size() - 1)}, true))
+		{
+			listed++;
+			std::string what;
+			if (!fe::KnownSerial(g, g.serial, &what))
+				g.serial = fe::ReadSerial(g, &what);
+			serials += !g.serial.empty();
+			gave_up += what.rfind("not read", 0) == 0;
+		}
+		const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		watch.join();
+		g_arm_trap = false;
+		g_trap = false;
+		std::fflush(stdout);
+		dup2(saved, 1);
+		close(saved);
+		std::printf("blocked read + blocked allocator: %d listed, %d serials, %d given up on, %.1f s; the waiter first allocated %.2f s after the read "
+					"blocked\n", listed, serials, gave_up, secs, g_first_trap.load());
+		Check(mark_at_start, "the image is in reading-image.txt as soon as its read starts (not after a second)");
+		Check(line_in_time, "the 1 s give-up line is in the log while the read and the allocator are still blocked");
+		Check(bad_in_time, "bad-images.txt names the image while the read and the allocator are still blocked");
+		Check(g_first_trap.load() < 0 || g_first_trap.load() >= 0.95, "the waiting thread allocated nothing before it gave up on the read");
+		Check(listed == 7 && serials == 6 && gave_up == 1, "the scan goes on: the images after the blocked one are read and listed");
+		g_block = false;
+		usleep(300000);
 	}
 
 	std::printf("%s\n", fails ? "SOME FAILED" : "all passed");

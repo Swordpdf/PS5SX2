@@ -612,8 +612,13 @@ public:
 		const bool head = m_file.fd >= 0 && fstat(m_file.fd, &st) == 0 && ReadAt(m_file.fd, 0, m_file.header, sizeof(m_file.header));
 		// chd2: a v5 header no CHD has (hunks over 16 MB, over 64 GB of data): libchdr would allocate by it (a map of hundreds of MB, a
 		// hunk buffer of gigabytes). Damaged, not opened.
+		// b184: also a hunk count no PS2 disc has (over 8 million, 16 GB in 2 KB hunks: libchdr would allocate a map of 96 MB and more)
+		// and a unit size that is 0 or does not divide the hunk
+		const uint64_t v5_hunk = head ? chdv5::Be(m_file.header + 56, 4) : 0, v5_unit = head ? chdv5::Be(m_file.header + 60, 4) : 0;
 		if (head && std::memcmp(m_file.header, "MComprHD", 8) == 0 && chdv5::Be(m_file.header + 12, 4) == 5 &&
-			(chdv5::Be(m_file.header + 56, 4) > (16u << 20) || chdv5::Be(m_file.header + 32, 8) > (64ull << 30)))
+			(v5_hunk > (16u << 20) || chdv5::Be(m_file.header + 32, 8) > (64ull << 30) ||
+				(v5_hunk != 0 && chdv5::Be(m_file.header + 32, 8) / v5_hunk > (8ull << 20)) || v5_unit == 0 ||
+				(v5_hunk != 0 && v5_hunk % v5_unit != 0)))
 		{
 			char why[160];
 			std::snprintf(why, sizeof(why), "libchdr can't open it: invalid data (its header says %llu-byte hunks, %llu MB of data)",
@@ -1203,16 +1208,10 @@ std::string ImageSerial(const std::string& path, std::string* what = nullptr, bo
 
 // vk-285-108 (the CHDs), 2.02 (every format): the cache file first, else the image, and a serial found is kept. chdscan: and an image
 // found to have none (no-serial.txt). chd2: this is the read itself, on whatever thread calls it; KeyedSerial below runs it with a limit.
-std::string KeyedSerialNow(const std::string& path, const std::string& key, std::string* what = nullptr)
+// b184: what a read found goes into the cache files (the serial, or "none" when the read was conclusive). Called by the thread that waited
+// for the read, never by the read's own thread (KeyedSerial).
+void StoreReadResult(const std::string& key, const std::string& serial, const std::string& described, bool conclusive)
 {
-	std::string serial;
-	if (CachedSerial(key, serial) || CachedNone(key, what))
-		return serial;
-	bool conclusive = false;
-	std::string described;
-	serial = ImageSerial(path, &described, &conclusive);
-	if (what)
-		*what = described;
 	if (serial.empty() && conclusive && !key.empty())
 	{
 		std::lock_guard<std::mutex> lock(s_serial_mutex);
@@ -1236,6 +1235,19 @@ std::string KeyedSerialNow(const std::string& path, const std::string& key, std:
 			}
 		}
 	}
+}
+
+std::string KeyedSerialNow(const std::string& path, const std::string& key, std::string* what = nullptr)
+{
+	std::string serial;
+	if (CachedSerial(key, serial) || CachedNone(key, what))
+		return serial;
+	bool conclusive = false;
+	std::string described;
+	serial = ImageSerial(path, &described, &conclusive);
+	if (what)
+		*what = described;
+	StoreReadResult(key, serial, described, conclusive);
 	return serial;
 }
 
@@ -1246,7 +1258,12 @@ std::string KeyedSerialNow(const std::string& path, const std::string& key, std:
 // longer is left running and given up on: the image is listed without a serial and named in bad-images.txt beside the serials' file
 // (its path, size and mtime), and later starts don't read it again (until it changes, or the file is deleted). A read still going after a
 // second is named in reading-image.txt (cleared when it ends), so an app closed during it (the tester's 20 minutes) has that image put
-// in bad-images.txt at the next start. Once kMaxStuck reads have been given up on and are still running (the drive itself may not
+// in bad-images.txt at the next start. b184 (the same tester, build 183: the log ended at "no answer after 1 s yet" - no 6 s line, no
+// first frame: the waiter never got to its 6 s check, and the shelf's own thread stopped in its display setup at the same time): the
+// image is named in reading-image.txt BEFORE its read starts; the read's thread does the read alone (ImageSerial: no cache lookup, no
+// shared lock); and from the read's start until it ends or is given up on, the waiting thread allocates nothing and takes no shared
+// lock - its log lines and the bad-images.txt line are made beforehand and written with write(2) - so a read that holds something
+// process-wide (the drive's file, the allocator) can't keep the 6 s give-up and its record from happening. Once kMaxStuck reads have been given up on and are still running (the drive itself may not
 // answer), no more images are read in this run: they are listed without a serial and read at the next start.
 const char kBadHeader[] = "# PS5SX2: images whose reading never finished (skipped at each start; delete this file to read them again)";
 constexpr int kMaxStuck = 3;
@@ -1346,7 +1363,7 @@ void LoadBadLocked()
 				key.pop_back();
 			if (key.empty() || s_bad.count(key) || s_serials.count(key) || s_none.count(key))
 				continue;
-			std::printf("[scan] %s: the last run ended while this image was being read (over a second): skipped from now on "
+			std::printf("[scan] %s: the last run ended while this image was being read: skipped from now on "
 						"(cache/bad-images.txt; delete it to read it again)\n", key.substr(0, key.find('\t')).c_str());
 			StoreBadLocked(key, "the app ended while it was being read");
 		}
@@ -1374,9 +1391,10 @@ bool CachedBad(const std::string& key, std::string* what)
 
 struct LimitedRead
 {
-	std::mutex mutex;
-	bool done = false, abandoned = false;
-	std::string path, key, serial, what;
+	std::mutex mutex; // the fields below; the read's thread holds it only to hand its result over, never while it reads
+	std::atomic<bool> done{false};
+	bool abandoned = false, conclusive = false;
+	std::string path, serial, what;
 	double started = 0;
 };
 
@@ -1385,13 +1403,21 @@ void* LimitedReadMain(void* arg)
 	std::shared_ptr<LimitedRead>* holder = static_cast<std::shared_ptr<LimitedRead>*>(arg);
 	const std::shared_ptr<LimitedRead> job = *holder;
 	delete holder;
+	// b184: the read alone: no cache lookup and no s_serial_mutex on this thread (the waiter stores the result), so a read that never
+	// ends holds no lock anyone else needs.
 	std::string what;
-	const std::string serial = KeyedSerialNow(job->path, job->key, &what);
-	std::lock_guard<std::mutex> lock(job->mutex);
-	job->serial = serial;
-	job->what = what;
-	job->done = true;
-	if (job->abandoned)
+	bool conclusive = false;
+	const std::string serial = ImageSerial(job->path, &what, &conclusive);
+	bool abandoned = false;
+	{
+		std::lock_guard<std::mutex> lock(job->mutex);
+		job->serial = serial;
+		job->what = what;
+		job->conclusive = conclusive;
+		abandoned = job->abandoned;
+		job->done.store(true, std::memory_order_release);
+	}
+	if (abandoned)
 	{
 		s_stuck.fetch_sub(1);
 		std::printf("[scan] %s: the read given up on ended after %.1f s (%s)\n", job->path.c_str(), MonoSeconds() - job->started,
@@ -1399,6 +1425,38 @@ void* LimitedReadMain(void* arg)
 		std::fflush(stdout);
 	}
 	return nullptr;
+}
+
+// b184: `text` to the descriptor with write(2) only (no stdio lock, no allocation).
+void RawWrite(int fd, const char* text, size_t n)
+{
+	while (n > 0)
+	{
+		const ssize_t w = write(fd, text, n);
+		if (w <= 0)
+			return;
+		text += w;
+		n -= static_cast<size_t>(w);
+	}
+}
+
+// b184: a line added to bad-images.txt with open/write/close only (the header first in a new or empty file). False when it can't be.
+bool AppendBadRaw(const std::string& file, const std::string& line)
+{
+	if (file.empty())
+		return false;
+	const int fd = open(file.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0666);
+	if (fd < 0)
+		return false;
+	struct stat st = {};
+	if (fstat(fd, &st) == 0 && st.st_size == 0)
+	{
+		RawWrite(fd, kBadHeader, sizeof(kBadHeader) - 1);
+		RawWrite(fd, "\n", 1);
+	}
+	RawWrite(fd, line.data(), line.size());
+	close(fd);
+	return true;
 }
 
 void ReadingMark(const std::string& key, bool on)
@@ -1428,9 +1486,29 @@ std::string KeyedSerial(const std::string& path, const std::string& key, std::st
 			*what = "not read in this run: " + std::to_string(kMaxStuck) + " reads of other images never ended (the drive may not answer)";
 		return serial;
 	}
+	// b184: all the wait can need, made before the read starts (from then until the read ends or is given up on, nothing is allocated
+	// and no shared lock is taken here): the log lines, the bad-images.txt line and file, the descriptor of the log.
+	char limit[32];
+	std::snprintf(limit, sizeof(limit), "%g", s_read_limit_s);
+	const std::string why = std::string("reading it gave no answer in ") + limit + " s";
+	const std::string line_slow = "[scan] " + path + ": no answer after 1 s yet (waiting up to " + limit + " s)\n";
+	const std::string line_gave_up = "[scan] " + path + ": " + why +
+									 ": skipped, and skipped at the next starts too (cache/bad-images.txt; delete it to read it again); ";
+	const std::string bad_line = key + "\t" + why + "\n";
+	std::string bad_file;
+	{
+		// the image is named in reading-image.txt before its read starts: an app that hangs or is closed during the read skips it next time
+		std::lock_guard<std::mutex> lock(s_serial_mutex);
+		LoadBadLocked();
+		bad_file = CacheDirFileLocked("bad-images.txt");
+		if (std::find(s_reading.begin(), s_reading.end(), key) == s_reading.end())
+			s_reading.push_back(key);
+		WriteReadingLocked();
+	}
+	std::fflush(stdout);
+	const int out = fileno(stdout);
 	auto job = std::make_shared<LimitedRead>();
 	job->path = path;
-	job->key = key;
 	job->started = MonoSeconds();
 	pthread_attr_t attr;
 	pthread_attr_init(&attr);
@@ -1443,61 +1521,68 @@ std::string KeyedSerial(const std::string& path, const std::string& key, std::st
 	if (!started)
 	{
 		delete holder;
+		ReadingMark(key, false);
 		return KeyedSerialNow(path, key, what);
 	}
-	bool marked = false, mark_written = false;
+	bool slow = false, gave_up = false;
 	for (;;)
 	{
+		if (job->done.load(std::memory_order_acquire))
+			break;
+		const double took = MonoSeconds() - job->started;
+		if (took >= s_read_limit_s)
 		{
-			std::lock_guard<std::mutex> lock(job->mutex);
-			const double took = MonoSeconds() - job->started;
-			if (job->done)
 			{
-				if (what)
-					*what = job->what;
-				serial = job->serial;
-				if (marked)
-				{
-					std::printf("[scan] %s: read in %.1f s\n", path.c_str(), took);
-					std::fflush(stdout);
-				}
-				break;
+				std::lock_guard<std::mutex> lock(job->mutex); // (held by the read's thread only to hand over its result: never for long)
+				gave_up = !job->done.load(std::memory_order_acquire);
+				if (gave_up)
+					job->abandoned = true;
 			}
-			if (took >= s_read_limit_s)
+			if (!gave_up)
+				break;
+			char tail[96];
+			const int n = std::snprintf(tail, sizeof(tail), "%d read(s) given up on are still running\n", s_stuck.fetch_add(1) + 1);
+			RawWrite(out, line_gave_up.data(), line_gave_up.size());
+			RawWrite(out, tail, n > 0 ? std::min<size_t>(static_cast<size_t>(n), sizeof(tail) - 1) : 0);
+			const bool written = AppendBadRaw(bad_file, bad_line);
+			// the bookkeeping, now that the record is on disk
 			{
-				job->abandoned = true;
-				s_stuck.fetch_add(1);
-				char limit[32];
-				std::snprintf(limit, sizeof(limit), "%g", s_read_limit_s);
-				const std::string why = std::string("reading it gave no answer in ") + limit + " s";
-				std::printf("[scan] %s: %s: skipped, and skipped at the next starts too (cache/bad-images.txt; delete it to read it "
-							"again); %d read(s) given up on are still running\n", path.c_str(), why.c_str(), s_stuck.load());
-				std::fflush(stdout);
-				{
-					std::lock_guard<std::mutex> cache_lock(s_serial_mutex);
-					LoadBadLocked();
+				std::lock_guard<std::mutex> cache_lock(s_serial_mutex);
+				if (written)
+					s_bad[key] = why;
+				else
 					StoreBadLocked(key, why);
-				}
-				if (what)
-					*what = "not read: " + why + " (cache/bad-images.txt)";
-				break;
 			}
-			if (!marked && took >= 1.0)
-			{
-				marked = true;
-				std::printf("[scan] %s: no answer after 1 s yet (waiting up to %.0f s)\n", path.c_str(), s_read_limit_s);
-				std::fflush(stdout);
-			}
+			if (what)
+				*what = "not read: " + why + " (cache/bad-images.txt)";
+			break;
 		}
-		if (marked && !mark_written)
+		if (!slow && took >= 1.0)
 		{
-			ReadingMark(key, true);
-			mark_written = true;
+			slow = true;
+			RawWrite(out, line_slow.data(), line_slow.size());
 		}
 		usleep(2000);
 	}
-	if (mark_written)
-		ReadingMark(key, false);
+	ReadingMark(key, false);
+	if (gave_up)
+		return serial;
+	std::string got_what;
+	bool conclusive = false;
+	{
+		std::lock_guard<std::mutex> lock(job->mutex);
+		serial = job->serial;
+		got_what = job->what;
+		conclusive = job->conclusive;
+	}
+	if (slow)
+	{
+		std::printf("[scan] %s: read in %.1f s\n", path.c_str(), MonoSeconds() - job->started);
+		std::fflush(stdout);
+	}
+	StoreReadResult(key, serial, got_what, conclusive);
+	if (what)
+		*what = got_what;
 	return serial;
 }
 } // namespace
