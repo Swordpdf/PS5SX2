@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+# Helper 171l (build 184), AI-assisted: the host test of "the Reload tile removed by the person stays removed" AS IT SHIPS. Cuts the 171l block of
+# disctile.c (reload_tile_mark_shown .. reload_tile_watch) out as it is, puts a made-up world around it (files in a test folder, the home screen's rows,
+# a virtual clock) and checks: the tile seen then deleted -> the flag is made once; our own rebuild / a scan in progress / an unreadable database /
+# a tile never seen -> no flag. Usage: make_reload_test.py <disctile.c> <out.c>
+import sys
+
+src = open(sys.argv[1], encoding="utf-8").read()
+a = src.index("/* ---------------------------------------------------------------- 171l: the Reload tile removed by the person")
+b = src.index("/* ---------------------------------------------------------------- 171l end */", a)
+block = src[a:b]
+for name in ("reload_tile_mark_shown", "reload_tile_user_removed", "reload_tile_removed_by_user", "reload_tile_watch"):
+    assert ("static void %s(" % name) in block or ("static int %s(" % name) in block, name
+
+head = r'''
+#define _GNU_SOURCE
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+
+#define RT_DIR "/tmp/rt171l"
+#define WORK RT_DIR "/work"
+#define FLAGS_DIR RT_DIR "/flags"
+#define RELOAD_TID "PPSA99230"
+#define RELOAD_SHOWN WORK "/reload-tile-shown"
+/* the shipped code names /user/app/PPSA99230: the test's own folder stands for it */
+#define USER_APP RT_DIR "/user_app_" RELOAD_TID
+
+static volatile int g_reload_running;
+static volatile time_t g_reload_scan_at;
+static volatile time_t g_reload_ours_at;
+static int g_rows;          /* the home screen's rows of the tile; -1 = cannot be read */
+static int g_ensures, g_says;
+static char g_last[600];
+
+static int exists(const char *p) {
+    struct stat st;
+    if (strcmp(p, "/user/app/" RELOAD_TID) == 0) p = USER_APP;
+    return stat(p, &st) == 0;
+}
+static int write_file(const char *path, const void *data, size_t n) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    const int ok = fwrite(data, 1, n, f) == n;
+    return (fclose(f) == 0 && ok) ? 0 : -1;
+}
+static int flag(const char *name) {
+    char p[200];
+    snprintf(p, sizeof(p), FLAGS_DIR "/%s", name);
+    return exists(p);
+}
+static int db_has_title(const char *tid) { (void)tid; return g_rows; }
+static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void say(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(g_last, sizeof(g_last), fmt, ap);
+    va_end(ap);
+    g_says++;
+    if (getenv("RT_VERBOSE")) printf("  say: %s\n", g_last);
+}
+/* the flag's way in the shipped reload_tile_ensure: the folder taken away; counted here */
+static void reload_tile_ensure(void) { g_ensures++; }
+'''
+
+tail = r'''
+static int fails;
+#define CHECK(c, what) do { if (!(c)) { printf("FAIL: %s (line %d)\n", what, __LINE__); fails++; } else if (getenv("RT_VERBOSE")) printf("ok: %s\n", what); } while (0)
+
+static void reset(void) {
+    (void)!system("rm -rf " RT_DIR " && mkdir -p " WORK);
+    g_reload_running = 0; g_reload_scan_at = 0; g_reload_ours_at = 0; g_rows = 0; g_ensures = 0; g_says = 0;
+}
+static void installed(int yes) {
+    g_rows = yes ? 2 : 0;
+    if (yes) { FILE *f = fopen(USER_APP, "w"); if (f) fclose(f); } else unlink(USER_APP);
+}
+static time_t run(time_t from, int seconds) { for (time_t t = from; t < from + seconds; t++) reload_tile_watch(t); return from + seconds; }
+
+int main(void) {
+    time_t now = 100000;
+    /* 1. seen, then deleted by the person: the flag after two looks, the folder taken away once */
+    reset();
+    installed(1);
+    now = run(now, 12);
+    CHECK(exists(RELOAD_SHOWN), "a tile on the home screen is marked as seen");
+    CHECK(!flag("disctile_noreload"), "no flag while the tile is there");
+    installed(0);
+    now = run(now, 4);
+    CHECK(!flag("disctile_noreload"), "one look is not enough");
+    now = run(now, 12);
+    CHECK(flag("disctile_noreload"), "deleted by the person -> flag disctile_noreload made");
+    CHECK(g_ensures == 1, "the flag's way (reload_tile_ensure) ran once");
+    CHECK(strstr(g_last, "removed by the person") != NULL, "logged");
+    CHECK(!exists(RELOAD_SHOWN), "the seen mark is taken away");
+    now = run(now, 60);
+    CHECK(g_ensures == 1, "nothing more once the flag is there");
+
+    /* 2. never seen (ShadowMount+ never installed it): no flag */
+    reset();
+    installed(0);
+    now = run(now, 120);
+    CHECK(!flag("disctile_noreload"), "a tile never seen on the home screen is not taken for removed");
+
+    /* 3. our own rebuild of the folder (g_reload_ours_at) and a scan we wait for: no flag */
+    reset();
+    installed(1);
+    now = run(now, 10);
+    installed(0);
+    g_reload_ours_at = now;
+    now = run(now, 100);
+    CHECK(!flag("disctile_noreload"), "no flag within 120 s of our own rebuild");
+    g_reload_ours_at = 0;
+    g_reload_scan_at = now + 1000;
+    now = run(now, 60);
+    CHECK(!flag("disctile_noreload"), "no flag while we wait for the tile to appear");
+    g_reload_scan_at = 0;
+    g_reload_running = 1;
+    now = run(now, 60);
+    CHECK(!flag("disctile_noreload"), "no flag while a reload runs");
+    g_reload_running = 0;
+
+    /* 4. the database cannot be read (-1): not "no row" */
+    reset();
+    installed(1);
+    now = run(now, 10);
+    unlink(USER_APP);
+    g_rows = -1;
+    now = run(now, 60);
+    CHECK(!flag("disctile_noreload"), "an unreadable database is not a removal");
+
+    /* 5. rows gone but /user/app still there (the shell still removing it): no flag */
+    reset();
+    installed(1);
+    now = run(now, 10);
+    g_rows = 0;
+    now = run(now, 60);
+    CHECK(!flag("disctile_noreload"), "the /user/app folder still there: not removed yet");
+
+    /* 6. a blip: gone for one look only, then back */
+    reset();
+    installed(1);
+    now = run(now, 10);
+    installed(0);
+    reload_tile_watch(now); now += 5;
+    installed(1);
+    now = run(now, 30);
+    CHECK(!flag("disctile_noreload"), "gone for a single look and back: no flag");
+
+    /* 7. the start-up check (reload_tile_user_removed) */
+    reset();
+    installed(1);
+    now = run(now, 10);
+    installed(0);
+    CHECK(reload_tile_user_removed() == 1, "at the start: seen before and gone now -> removed");
+    unlink(RELOAD_SHOWN);
+    CHECK(reload_tile_user_removed() == 0, "at the start: never seen -> not removed");
+
+    (void)!system("rm -rf " RT_DIR);
+    printf("reload-tile removal test: %s (%d failure(s))\n", fails ? "FAILED" : "all passed", fails);
+    return fails ? 1 : 0;
+}
+'''
+
+open(sys.argv[2], "w", encoding="utf-8").write(head + block + tail)

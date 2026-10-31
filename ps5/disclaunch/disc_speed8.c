@@ -20,16 +20,27 @@
  *
  * No fork, no LoadExec, no exit; the thread stays resident and only ever writes its own 18 verified bytes into the shell.
  *
+ * 171l (build 184, 2026-10-31): two testers (one on fw 8.60) saw the app close hang on "closing the game" and L1+R1+Touch
+ * freeze the console. The shell patch was only ever verified on 11.40, so it now runs ONLY on fw 11.40 by default; on any
+ * other firmware SceShellCore is never attached (not even looked up) and only the 60 s drive pin runs, unless the flag
+ * /data/PCSX2/flags/disc_speed8_anyfw exists (read when the thread starts). Every detach is checked: the shell must not be
+ * left traced or stopped (a SIGSTOP of PT_ATTACH still pending at the detach would stop the untraced shell for good), so
+ * PT_DETACH is retried and SIGCONT sent until the process state says it runs; all of it is logged. A ucred restore that
+ * fails after a successful PT_ATTACH no longer hides the attach (it used to return -1 and skip the detach). No attach
+ * while the console shuts down or rests (kp_quiet).
+ *
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 swordpdf
  */
 #include "disc_speed8.h"
 #include "disc_compat.h" /* 171k: the pin only for a PS2 disc (the published claim of /dev/cd0) */
+#include "kp.h"          /* 171l: no shell attach while the console shuts down (kp_quiet) */
 
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -55,6 +66,7 @@
 
 #define LOG_PATH "/data/PCSX2/logs/disc-speed8.log"
 #define FLAG_OFF "/data/PCSX2/flags/disc_nospeed8"
+#define FLAG_ANYFW "/data/PCSX2/flags/disc_speed8_anyfw" /* 171l: the shell patch on a firmware other than 11.40 */
 
 #define AUTHID_DEBUGGER UINT64_C(0x4800000000010003)
 #define FW_1140 0x1140u
@@ -140,30 +152,90 @@ static int privileged_ptrace(int request, pid_t pid, void *address, int data) {
     const int result = ptrace(request, pid, (caddr_t)address, data);
     int restored = kernel_set_ucred_authid(self, saved_authid) == 0;
     restored = kernel_set_ucred_caps(self, saved_caps) == 0 && restored;
-    return restored ? result : -1;
+    /* 171l: the ptrace's own result, whatever the restore did - a PT_ATTACH that worked must be seen as attached, or the
+     * caller would never detach and the shell would stay stopped. */
+    if (!restored)
+        stepf("ptrace %d: the helper's rights could not be restored afterwards (the ptrace itself returned %d)", request,
+              result);
+    return result;
 }
 
-/* 1 when `pid` is stopped (SSTOP, ki_stat == 4), read through sysctl - the helper cannot import waitpid, so after
- * PT_ATTACH the stop is waited for by polling the process state (SIGSTOP is delivered in a few ms). */
-static int proc_stopped(pid_t pid) {
+/* 171l: the process state through sysctl: 1 with *stopped (SSTOP, ki_stat == 4) and *traced (P_TRACED) filled, 0 when the
+ * state could not be read. */
+#define DS8_P_TRACED 0x00800
+static int proc_state(pid_t pid, int *stopped, int *traced) {
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid};
     static unsigned char buf[8192];
     size_t len = sizeof(buf);
     if (sysctl(mib, 4, buf, &len, NULL, 0) != 0 || len == 0)
         return 0;
     const struct kinfo_proc *kp = (const struct kinfo_proc *)buf;
-    return kp->ki_pid == pid && kp->ki_stat == 4 /* SSTOP */;
+    if (kp->ki_pid != pid)
+        return 0;
+    *stopped = kp->ki_stat == 4 /* SSTOP */;
+    *traced = (kp->ki_flag & DS8_P_TRACED) != 0;
+    return 1;
+}
+
+/* 1 when `pid` is stopped (SSTOP, ki_stat == 4), read through sysctl - the helper cannot import waitpid, so after
+ * PT_ATTACH the stop is waited for by polling the process state (SIGSTOP is delivered in a few ms). */
+static int proc_stopped(pid_t pid) {
+    int stopped = 0, traced = 0;
+    return proc_state(pid, &stopped, &traced) && stopped;
+}
+
+static void ds8_sleep_ms(long ms) {
+    struct timespec ts = {ms / 1000, (ms % 1000) * 1000 * 1000};
+    nanosleep(&ts, NULL);
+}
+
+/* 171l: detach and make sure the shell runs again. PT_DETACH, then SIGCONT (it also drops a SIGSTOP of PT_ATTACH that is
+ * still pending: without a tracer that one would stop the shell for good), then the process state is read; while it
+ * still says traced or stopped, PT_DETACH and SIGCONT are sent again (up to 10 rounds, ~1 s). Logged when anything but
+ * the first PT_DETACH was needed. 1 = the shell runs untraced (or its state cannot be read after a good detach). */
+static int shell_release(pid_t pid, const char *why) {
+    if (pid <= 0)
+        return 1;
+    const int det = privileged_ptrace(PT_DETACH, pid, NULL, 0);
+    const int det_errno = det != 0 ? errno : 0;
+    const int cont = kill(pid, SIGCONT);
+    if (det != 0)
+        stepf("release (%s): PT_DETACH of pid %d failed (errno %d); SIGCONT rc %d", why, (int)pid, det_errno, cont);
+    for (int round = 0; round < 10; round++) {
+        ds8_sleep_ms(round == 0 ? 20 : 100);
+        int stopped = 0, traced = 0;
+        if (!proc_state(pid, &stopped, &traced)) {
+            if (round == 0 && det != 0)
+                stepf("release (%s): the state of pid %d cannot be read (gone?)", why, (int)pid);
+            return det == 0;
+        }
+        if (!stopped && !traced) {
+            if (round > 0 || det != 0)
+                stepf("release (%s): pid %d runs untraced after %d extra round(s)", why, (int)pid, round);
+            return 1;
+        }
+        stepf("release (%s): pid %d still %s%s - PT_DETACH and SIGCONT again (round %d)", why, (int)pid,
+              traced ? "traced" : "", stopped ? (traced ? " and stopped" : "stopped") : "", round + 1);
+        if (traced)
+            (void)privileged_ptrace(PT_DETACH, pid, NULL, 0);
+        (void)kill(pid, SIGCONT);
+    }
+    stepf("release (%s): pid %d is STILL traced or stopped after 10 rounds - the shell may hang", why, (int)pid);
+    return 0;
 }
 
 static int remote_attach(pid_t pid) {
-    if (pid <= 0 || privileged_ptrace(PT_ATTACH, pid, NULL, 0) != 0)
+    if (pid <= 0)
+        return 0;
+    /* A failed PT_ATTACH attached nothing (privileged_ptrace returns ptrace's own result since 171l); a shell traced by
+     * someone else then is theirs - not detached or continued here. */
+    if (privileged_ptrace(PT_ATTACH, pid, NULL, 0) != 0)
         return 0;
     /* wait for the SIGSTOP to land without waitpid: poll ki_stat, up to ~1 s. */
     for (int i = 0; i < 40; i++) {
         if (proc_stopped(pid))
             return 1;
-        struct timespec ts = {0, 25 * 1000 * 1000};
-        nanosleep(&ts, NULL);
+        ds8_sleep_ms(25);
     }
     /* It did not report stopped in time; the kernel write below does not need the stop, so go on but note it. */
     step("patch: the shell did not report stopped after PT_ATTACH; writing through the kernel map anyway");
@@ -171,7 +243,7 @@ static int remote_attach(pid_t pid) {
 }
 
 static int remote_detach(pid_t pid) {
-    return pid > 0 && privileged_ptrace(PT_DETACH, pid, NULL, 0) == 0;
+    return shell_release(pid, "after the patch"); /* 171l: detach + checked: never left traced or stopped */
 }
 
 static int remote_read(pid_t pid, uintptr_t address, void *buffer, size_t size) {
@@ -320,7 +392,7 @@ static void log_firmware(void) {
     const uint32_t fw = kernel_get_fw_version();
     const uint32_t major = ((((fw >> 24) & 0xffu) >> 4) & 0xfu) * 10u + ((fw >> 24) & 0xfu);
     const uint32_t minor = ((((fw >> 16) & 0xffu) >> 4) & 0xfu) * 10u + ((fw >> 16) & 0xfu);
-    stepf("fw %u.%02u (raw 0x%08x): 11.40's offset is the fast path, anything else goes through the signature scan",
+    stepf("fw %u.%02u (raw 0x%08x): 11.40's offset is the fast path; other firmwares (only with disc_speed8_anyfw) use the signature scan",
           major, minor, (unsigned)fw);
 }
 
@@ -464,7 +536,13 @@ static int patch_session(pid_t pid, uintptr_t base) {
     return result;
 }
 
+static int g_patch_on; /* 171l: the shell patch runs at all (fw 11.40, or the flag disc_speed8_anyfw) */
+
 static void patch_shell(void) {
+    if (!g_patch_on)
+        return;
+    if (kp_quiet()) /* 171l: never attach the shell while the console shuts down or rests; tried again later */
+        return;
     const pid_t pid = find_shellcore();
     if (pid <= 0) {
         step("SceShellCore not found yet");
@@ -599,10 +677,21 @@ void *ds8_thread(void *arg) {
         mkdir("/data/PCSX2/logs", 0777);
         g_log = open(LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     }
-    step("DiscSpeed8 (helper 171j): SceShellCore 8x patch + 60 s drive pin");
+    step("DiscSpeed8 (helper 171l): SceShellCore 8x patch (fw 11.40 only unless disc_speed8_anyfw) + 60 s drive pin");
 
     ensure_rights();
     log_firmware();
+    /* 171l: the shell patch only where it was verified (11.40); elsewhere SceShellCore is not touched at all */
+    const int is_1140 = ((kernel_get_fw_version() >> 16) & 0xffffu) == FW_1140;
+    const int anyfw = stat(FLAG_ANYFW, &st) == 0;
+    g_patch_on = is_1140 || anyfw;
+    if (is_1140)
+        step("shell patch: on (fw 11.40, the verified firmware)");
+    else if (anyfw)
+        step("shell patch: on for this firmware because the flag disc_speed8_anyfw exists (not verified here)");
+    else
+        step("shell patch: OFF on this firmware (only verified on 11.40; the flag disc_speed8_anyfw turns it on) - "
+             "SceShellCore is not attached; the 60 s drive pin still runs");
     patch_shell();
 
     time_t last_push = 0;
@@ -616,11 +705,13 @@ void *ds8_thread(void *arg) {
             return NULL;
         }
 
-        /* re-patch only when the shell restarted (new pid or new base) */
-        const pid_t pid = find_shellcore();
-        if (pid > 0 && (pid != g_shell_pid ||
-                        (uintptr_t)kernel_dynlib_mapbase_addr(pid, 0) != g_shell_base))
-            patch_shell();
+        /* re-patch only when the shell restarted (new pid or new base); 171l: not looked for at all when the patch is off */
+        if (g_patch_on && !kp_quiet()) {
+            const pid_t pid = find_shellcore();
+            if (pid > 0 && (pid != g_shell_pid ||
+                            (uintptr_t)kernel_dynlib_mapbase_addr(pid, 0) != g_shell_base))
+                patch_shell();
+        }
 
         /* re-send the 8x CDB every 60 s while a disc is in (an unpatched shell can reset the drive after us) */
         const int ps2 = dc_claim_of(0) == DC_PS2; /* 171k */
