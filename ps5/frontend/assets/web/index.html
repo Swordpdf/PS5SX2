@@ -80,11 +80,11 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 /* The cover flow: the shelf's 58-degree turn, in CSS 3D. */
 .flow-wrap { position: relative; margin: 18px -16px 0; perspective: 900px; }
 .flow { display: flex; gap: 0; overflow-x: auto; scroll-snap-type: x mandatory; padding: 26px 0 56px;
-        scrollbar-width: none; -webkit-overflow-scrolling: touch; transform-style: preserve-3d; }
+        scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
 .flow::-webkit-scrollbar { display: none; }
 .pad { flex: 0 0 calc(50% - 70px); }
 .case { flex: 0 0 140px; height: 200px; scroll-snap-align: center; position: relative; transform-style: preserve-3d;
-        cursor: pointer; transition: transform 0.08s linear; }
+        cursor: pointer; }
 .case .front { position: absolute; inset: 0; border-radius: 5px; overflow: hidden; background: #1c1a33;
                box-shadow: 0 10px 26px rgba(0,0,0,0.55); -webkit-box-reflect: below 6px linear-gradient(transparent 62%, rgba(255,255,255,0.22)); }
 .case .front img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -650,6 +650,8 @@ function buildFlow() {
     scrollToGame(i, true);
   }));
   flow.addEventListener("scroll", onScroll, { passive: true });
+  flow.addEventListener("touchstart", () => { touching = true; }, { passive: true });
+  flow.addEventListener("touchend", () => { touching = false; onScroll(); }, { passive: true });
   onScroll();
 }
 function caseCentre(el) { return el.offsetLeft + el.offsetWidth / 2; }
@@ -657,7 +659,7 @@ function scrollToGame(i, smooth) {
   const flow = $("flow"), el = flow.querySelectorAll(".case")[i];
   if (el) flow.scrollTo({ left: caseCentre(el) - flow.clientWidth / 2, behavior: smooth ? "smooth" : "auto" });
 }
-let settleTimer = 0;
+let settleTimer = 0, touching = false;
 function onScroll() {
   const flow = $("flow"), mid = flow.scrollLeft + flow.clientWidth / 2;
   let best = -1, bestD = 1e9;
@@ -665,14 +667,31 @@ function onScroll() {
     const w = el.offsetWidth, d = (caseCentre(el) - mid) / w, ad = Math.min(Math.abs(d), 3);
     const e = Math.min(ad, 1) * Math.min(ad, 1) * (3 - 2 * Math.min(ad, 1)); // smoothstep, as Pose()
     const s = d < 0 ? -1 : 1;
-    const turn = -s * 58 * e, z = -e * 70 - Math.max(ad - 1, 0) * 30, x = -s * e * w * 0.28;
-    el.style.transform = "translateX(" + x.toFixed(1) + "px) translateZ(" + z.toFixed(1) + "px) rotateY(" + turn.toFixed(1) + "deg)";
+    const turn = -s * 58 * e, z = -e * 70 - Math.max(ad - 1, 0) * 30, x = -s * (e * 0.28 + Math.max(ad - 1, 0) * 0.5) * w;
+    el.style.transform = "perspective(700px) translateX(" + x.toFixed(1) + "px) translateZ(" + z.toFixed(1) + "px) rotateY(" + turn.toFixed(1) + "deg)";
     el.style.zIndex = String(100 - Math.round(ad * 10));
     el.style.opacity = String(Math.max(0.35, 1 - Math.max(ad - 1, 0) * 0.25));
     if (Math.abs(d) < bestD) { bestD = Math.abs(d); best = +el.dataset.i; }
   });
+  const cases = flow.querySelectorAll(".case");
+  if (best >= 0 && games[best] && current !== "@global" && !cases[best].classList.contains("sel")) {
+    showInfo(games[best]);
+    cases.forEach((el) => el.classList.toggle("sel", el === cases[best]));
+    const img = cases[best].querySelector("img");
+    if (img && img.complete) glowFrom(img);
+  }
   clearTimeout(settleTimer);
-  settleTimer = setTimeout(() => { if (best >= 0 && games[best] && current !== games[best].id) select(games[best].id); }, 140);
+  settleTimer = setTimeout(() => {
+    if (best < 0 || !games[best]) return;
+    if (!touching && bestD > 0.01) scrollToGame(best, true);
+    if (current !== games[best].id) select(games[best].id);
+  }, 140);
+}
+
+function showInfo(g) {
+  $("gtitle").textContent = g.title;
+  const bits = [g.serial, g.region, (g.size / 1e9).toFixed(1) + " GB"].filter(Boolean).map(esc);
+  $("ginfo").innerHTML = bits.join(" · ") + g.badges.map((b) => ' <span class="pillb">' + esc(b) + "</span>").join("");
 }
 
 // ---- A game's settings.
@@ -686,9 +705,7 @@ async function select(id) {
   document.querySelectorAll(".case").forEach((el) => el.classList.toggle("sel", games[+el.dataset.i] && games[+el.dataset.i].id === id));
   const g = games.find((x) => x.id === id);
   if (g) {
-    $("gtitle").textContent = g.title;
-    const bits = [g.serial, g.region, (g.size / 1e9).toFixed(1) + " GB"].filter(Boolean).map(esc);
-    $("ginfo").innerHTML = bits.join(" · ") + g.badges.map((b) => ' <span class="pillb">' + esc(b) + "</span>").join("");
+    showInfo(g);
     const img = document.querySelector('.case.sel img');
     if (img) { if (img.complete) glowFrom(img); else img.onload = () => glowFrom(img); } else setGlow("140, 107, 255");
   } else {
