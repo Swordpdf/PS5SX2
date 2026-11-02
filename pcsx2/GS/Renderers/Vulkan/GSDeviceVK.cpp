@@ -30,6 +30,9 @@
 #include <mutex>
 #include <sstream>
 #ifdef ORBIS_VULKAN
+void OrbisLatProbePresent(); // 186 (orbis-shims/OrbisLatProbe.cpp)
+#endif
+#ifdef ORBIS_VULKAN
 #include <unistd.h> // vk-285-14: fsync, _exit (GPU-hang forensics)
 #include <chrono> // 2026-10-08: frame generation's pacing
 #include <string>
@@ -2643,6 +2646,9 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 			return;
 		}
 
+#ifdef ORBIS_VULKAN
+		OrbisLatProbePresent(); // 186: how long a presented frame waits for the display (flag latprobe; orbis-shims/OrbisLatProbe.cpp)
+#endif
 		// Grab the next image as soon as possible, that way we spend less time blocked on the next
 		// submission. Don't care if it fails, we'll deal with that at the presentation call site.
 		// Credit to dxvk for the idea.
