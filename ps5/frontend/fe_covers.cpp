@@ -1313,7 +1313,7 @@ void CoverService::RunDownloads()
 	timespec t1;
 	clock_gettime(CLOCK_MONOTONIC, &t1);
 	std::printf("[frontend] covers on disk: %d of %zu; %d to download%s%s (checked in %.0f ms)\n", have, n, wanted,
-		m_cfg.allow_download ? "" : " (downloads off here)", m_cfg.launchbox ? " (LaunchBox first)" : "",
+		m_cfg.allow_download ? "" : " (downloads off here)", m_cfg.launchbox ? (m_cfg.launchbox_front_first ? " (LaunchBox first)" : " (xlenore first, LaunchBox where it has none)") : "",
 		static_cast<double>(t1.tv_sec - t0.tv_sec) * 1000.0 + (t1.tv_nsec - t0.tv_nsec) / 1e6);
 	std::fflush(stdout);
 	{

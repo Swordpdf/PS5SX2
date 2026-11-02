@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Helper 171n (build 186), AI-assisted: the host test of the PS2 badge on PS5SX2's tiles AS IT SHIPS. Cuts the 171n functions out of disctile.c
-# (set_title_names, badge_title_names, write_param_json's naming, the pass over app.db / appinfo.db / the param.json copies) with the shipped database
+# (set_title_names, unbadge_title_names (171o), write_param_json's naming, the pass over app.db / appinfo.db / the param.json copies) with the shipped database
 # helpers they use, puts a made-up console around them (a test folder for /data/homebrew, /user/app, appmeta; two SQLite files shaped like the PS5's)
 # and checks: every name of PS5SX2's own title IDs gets the badge once, nobody else's does, TITLE_ID is left alone, a second pass changes nothing.
 # Usage: make_badge_test.py <disctile.c> <out.c>
@@ -28,8 +28,8 @@ def function(name):
 a = src.index("#define PS2_BADGE")
 b = src.index("/* sce_sys/param.json for a slot: PS5SX2's own")
 names = src[a:b]
-c = src.index("/* ---------------------------------------------------------------- 171n: the PS2 badge on the names already there")
-d = src.index("/* ---------------------------------------------------------------- 171n end */", c)
+c = src.index("/* ---------------------------------------------------------------- 171o: the PS2 badge taken back out of the names")
+d = src.index("/* ---------------------------------------------------------------- 171o end */", c)
 block = src[c:d]
 block = block.replace('"/system_data/priv/mms/appinfo.db"', 'BT_DIR "/appinfo.db"')
 block = block.replace('"/user/app/%s/sce_sys/param.json"', 'BT_DIR "/user_app/%s/sce_sys/param.json"')
@@ -155,58 +155,54 @@ int main(void) {
         free(a);
         CHECK(set_title_names("{\"title\": \"x\"}", "NEW") == NULL, "no titleName: NULL");
     }
-    /* 2. badge_title_names: once, and nothing the second time */
+    /* 2. unbadge_title_names (171o): 171n's badge and its space taken out, once; a name without it left alone */
     {
-        char *a = badge_title_names("{\"titleName\": \"PS5SX2\", \"titleName\": \"" B " Already\"}");
-        CHECK(a && strcmp(a, "{\"titleName\": \"" B " PS5SX2\", \"titleName\": \"" B " Already\"}") == 0, "the badge and a space in front of the name that had none");
-        char *b2 = a ? badge_title_names(a) : NULL;
+        char *a = unbadge_title_names("{\"titleName\": \"" B " PS5SX2\", \"titleName\": \"Plain\"}");
+        CHECK(a && strcmp(a, "{\"titleName\": \"PS5SX2\", \"titleName\": \"Plain\"}") == 0, "the badge and its space taken out, the other name left");
+        char *b2 = a ? unbadge_title_names(a) : NULL;
         CHECK(a && !b2, "a second pass changes nothing");
         free(a); free(b2);
     }
-    /* 3. write_param_json: the tile's title with the badge, from PS5SX2's param.json with or without the badge */
+    /* 3. write_param_json: the tile's own title (no badge since 171o), from PS5SX2's param.json whatever its name is */
     (void)!system("rm -rf " BT_DIR " && mkdir -p " BT_DIR "/out");
     put(APP_SRC "/sce_sys/param.json", "{\"titleId\": \"PPSA99203\", \"en-US\": {\"titleName\": \"" B " PS5SX2\"}, \"contentId\": \"UP9000-PPSA99203_00-PCSX2ORBIS00001\", \"conceptId\": \"99203\"}");
-    CHECK(write_param_json(BT_DIR "/out", 0, "PPSA99251", "Ratchet & Clank") && has(BT_DIR "/out/param.json", "\"titleName\": \"" B " Ratchet & Clank\""),
-          "a game tile's name: badge + title");
-    CHECK(has(BT_DIR "/out/param.json", "\"titleId\": \"PPSA99251\"") && !has(BT_DIR "/out/param.json", "PS5SX2\""), "its own title ID, PS5SX2's name gone");
-    CHECK(write_param_json(BT_DIR "/out", 0, "PPSA99231", B " Already") && has(BT_DIR "/out/param.json", "\"titleName\": \"" B " Already\"") &&
-          !has(BT_DIR "/out/param.json", B " " B), "a title that has the badge does not get it twice");
+    CHECK(write_param_json(BT_DIR "/out", 0, "PPSA99251", "Ratchet & Clank") && has(BT_DIR "/out/param.json", "\"titleName\": \"Ratchet & Clank\""),
+          "a game tile's name: its title, from a param.json with 171n's badge");
+    CHECK(has(BT_DIR "/out/param.json", "\"titleId\": \"PPSA99251\"") && !has(BT_DIR "/out/param.json", B), "its own title ID, no badge anywhere");
     put(APP_SRC "/sce_sys/param.json", "{\"en-US\": {\"titleName\": \"PS5SX2\"}}");
-    CHECK(write_param_json(BT_DIR "/out", 0, "PPSA99232", "Disc \"Two\"") && has(BT_DIR "/out/param.json", "\"titleName\": \"" B " Disc \\\"Two\\\"\""),
-          "2.20's param.json (no badge) works too, the title escaped");
+    CHECK(write_param_json(BT_DIR "/out", 0, "PPSA99232", "Disc \"Two\"") && has(BT_DIR "/out/param.json", "\"titleName\": \"Disc \\\"Two\\\"\""),
+          "2.20's param.json works too, the title escaped");
 
-    /* 4. the pass over the databases and the param.json copies */
+    /* 4. the pass over the databases and the param.json copies: 171n's badge taken out of ours, nobody else's touched */
     (void)!system("rm -rf " BT_DIR " && mkdir -p " BT_DIR);
     sql(APP_DB, "CREATE TABLE tbl_contentinfo(titleId TEXT, titleName TEXT);"
                 "CREATE TABLE tbl_iconinfo_0305952281(titleId TEXT, titleName TEXT, platform INTEGER);"
                 "CREATE TABLE tbl_concepticoninfo_0305952281(primaryTitleId TEXT, primaryTitleName TEXT);"
-                "INSERT INTO tbl_contentinfo VALUES('PPSA99203','PS5SX2'),('PPSA99251','Ratchet & Clank'),('CUSA00001','Other Game'),('PPSA99230','Reload PS2 Disc');"
-                "INSERT INTO tbl_iconinfo_0305952281 VALUES('PPSA99203','PS5SX2',0),('PPSA99251','Ratchet & Clank',0),('CUSA00001','Other Game',1);"
-                "INSERT INTO tbl_concepticoninfo_0305952281 VALUES('PPSA99203','PS5SX2'),('PPSA99251','Ratchet & Clank'),('CUSA00001','Other Game');");
+                "INSERT INTO tbl_contentinfo VALUES('PPSA99203','" B " PS5SX2'),('PPSA99251','" B " Ratchet & Clank'),('CUSA00001','" B " Other Game'),"
+                "('PPSA99252','Plain');"
+                "INSERT INTO tbl_iconinfo_0305952281 VALUES('PPSA99203','" B " PS5SX2',0),('PPSA99251','" B " Ratchet & Clank',0),('CUSA00001','Other Game',1);"
+                "INSERT INTO tbl_concepticoninfo_0305952281 VALUES('PPSA99203','" B " PS5SX2'),('PPSA99251','" B " Ratchet & Clank'),('CUSA00001','Other Game');");
     sql(BT_DIR "/appinfo.db", "CREATE TABLE tbl_appinfo(titleId TEXT, metaDataId TEXT, key TEXT, val TEXT);"
-                              "INSERT INTO tbl_appinfo VALUES('PPSA99203','m','TITLE','PS5SX2'),('PPSA99203','m','TITLE_01','PS5SX2'),"
-                              "('PPSA99203','m','TITLE_ID','PPSA99203'),('PPSA99251','m','TITLE','Ratchet & Clank'),('CUSA00001','m','TITLE','Other Game');");
-    put(HB "/PPSA99251/sce_sys/param.json", "{\"titleName\": \"Ratchet & Clank\"}");
-    put(BT_DIR "/user_app/PPSA99251/sce_sys/param.json", "{\"titleName\": \"Ratchet & Clank\"}");
-    put(BT_DIR "/appmeta/PPSA99203/param.json", "{\"titleName\": \"PS5SX2\"}");
-    put(HB "/PPSA99203/sce_sys/param.json", "{\"titleName\": \"PS5SX2\"}");
+                              "INSERT INTO tbl_appinfo VALUES('PPSA99203','m','TITLE','" B " PS5SX2'),('PPSA99203','m','TITLE_01','" B " PS5SX2'),"
+                              "('PPSA99203','m','TITLE_ID','PPSA99203'),('PPSA99251','m','TITLE','" B " Ratchet & Clank'),('CUSA00001','m','TITLE','" B " Other Game');");
+    put(HB "/PPSA99251/sce_sys/param.json", "{\"titleName\": \"" B " Ratchet & Clank\"}");
+    put(BT_DIR "/user_app/PPSA99251/sce_sys/param.json", "{\"titleName\": \"" B " Ratchet & Clank\"}");
+    put(BT_DIR "/appmeta/PPSA99203/param.json", "{\"titleName\": \"" B " PS5SX2\"}");
+    put(HB "/PPSA99203/sce_sys/param.json", "{\"titleName\": \"" B " PS5SX2\"}");
     badge_names_tick(1000);
-    CHECK(count(APP_DB, "SELECT COUNT(*) FROM tbl_contentinfo WHERE titleName='" B " PS5SX2'") == 1, "PS5SX2's own name in tbl_contentinfo");
-    CHECK(count(APP_DB, "SELECT COUNT(*) FROM tbl_iconinfo_0305952281 WHERE titleName LIKE '" B " %'") == 2, "PS5SX2 and the game tile in tbl_iconinfo");
-    CHECK(count(APP_DB, "SELECT COUNT(*) FROM tbl_concepticoninfo_0305952281 WHERE primaryTitleName='" B " Ratchet & Clank'") == 1, "the concept row too");
-    CHECK(count(APP_DB, "SELECT COUNT(*) FROM tbl_contentinfo WHERE titleName LIKE '%" B "%' AND titleId IN ('CUSA00001','PPSA99230')") == 0,
-          "nobody else's name, not the Reload tile's");
-    CHECK(count(BT_DIR "/appinfo.db", "SELECT COUNT(*) FROM tbl_appinfo WHERE val LIKE '" B " %'") == 3, "appinfo.db: TITLE and TITLE_01 of ours");
+    CHECK(count(APP_DB, "SELECT COUNT(*) FROM tbl_contentinfo WHERE titleName IN ('PS5SX2','Ratchet & Clank','Plain')") == 3, "ours plain again in tbl_contentinfo");
+    CHECK(count(APP_DB, "SELECT COUNT(*) FROM tbl_iconinfo_0305952281 WHERE titleName LIKE '%" B "%'") == 0, "and in tbl_iconinfo");
+    CHECK(count(APP_DB, "SELECT COUNT(*) FROM tbl_concepticoninfo_0305952281 WHERE primaryTitleName='Ratchet & Clank'") == 1, "the concept row too");
+    CHECK(count(APP_DB, "SELECT COUNT(*) FROM tbl_contentinfo WHERE titleId='CUSA00001' AND titleName='" B " Other Game'") == 1, "nobody else's name touched");
+    CHECK(count(BT_DIR "/appinfo.db", "SELECT COUNT(*) FROM tbl_appinfo WHERE val LIKE '" B "%'") == 1, "appinfo.db: ours plain, the other one's left");
     CHECK(count(BT_DIR "/appinfo.db", "SELECT COUNT(*) FROM tbl_appinfo WHERE key='TITLE_ID' AND val='PPSA99203'") == 1, "TITLE_ID left alone");
-    CHECK(has(HB "/PPSA99251/sce_sys/param.json", B " Ratchet") && has(BT_DIR "/user_app/PPSA99251/sce_sys/param.json", B " Ratchet") &&
-          has(BT_DIR "/appmeta/PPSA99203/param.json", B " PS5SX2"), "the param.json copies");
-    CHECK(has(HB "/PPSA99203/sce_sys/param.json", "\"PS5SX2\""), "PS5SX2's own folder is left to the package");
+    CHECK(has(HB "/PPSA99251/sce_sys/param.json", "\"Ratchet & Clank\"") && has(BT_DIR "/user_app/PPSA99251/sce_sys/param.json", "\"Ratchet & Clank\"") &&
+          has(BT_DIR "/appmeta/PPSA99203/param.json", "\"PS5SX2\"") && has(HB "/PPSA99203/sce_sys/param.json", "\"PS5SX2\""), "the param.json copies, PS5SX2's own too");
     const int says = g_says;
     badge_names_tick(1100);
     CHECK(g_says == says, "not again within 5 min");
     badge_names_tick(1400);
-    CHECK(g_says == says && count(APP_DB, "SELECT COUNT(*) FROM tbl_contentinfo WHERE titleName LIKE '%" B " " B "%'") == 0,
-          "5 min later: nothing missing, nothing written, never twice");
+    CHECK(g_says == says, "5 min later: nothing left, nothing written");
     if (getenv("BT_REAL_DIR")) {
         /* a copy of a console's app.db and appinfo.db (never the console's own files): what the pass would change there */
         char cmd[600];
@@ -215,7 +211,7 @@ int main(void) {
         int changed_app = 0, changed_info = 0;
         const int m1 = badge_db(APP_DB, &changed_app), m2 = badge_db(BT_DIR "/appinfo.db", &changed_info);
         printf("real copy: app.db %d missing, %d changed; appinfo.db %d missing, %d changed\n", m1, changed_app, m2, changed_info);
-        CHECK(badge_db(APP_DB, &changed_app) == 0 && badge_db(BT_DIR "/appinfo.db", &changed_info) == 0, "real copy: nothing missing afterwards");
+        CHECK(badge_db(APP_DB, &changed_app) == 0 && badge_db(BT_DIR "/appinfo.db", &changed_info) == 0, "real copy: no badge left afterwards");
         CHECK(count(APP_DB, "PRAGMA integrity_check") != -1, "real copy: still a database");
     }
     (void)!system("rm -rf " BT_DIR);
