@@ -150,6 +150,25 @@ namespace orbis_fg
 			return d;
 		}
 
+		// 186: a new cost (another upscale multiplier) starts the safety net over: no pause, the next one 10 s, no lowered floor.
+		// swordpdf, Ratchet & Clank (2026-11-03): paused five times at 6x (the pause grown to 160 s), then 4x in the menu, and none were
+		// generated for the rest of those 160 s ("it didn't even trigger"). Returns whether there was a pause or a longer next one to forget.
+		bool ForgetPauses()
+		{
+			const bool had = Paused() || m_next_pause > kFirstPause;
+			m_paused_until = 0.0;
+			m_next_pause = kFirstPause;
+			m_last_pause_end = 0.0;
+			m_floor = kSlowSpeed;
+			m_floor_until = 0.0;
+			m_slow = 0;
+			m_slow_sum = 0.0;
+			m_nofg_sum = 0.0;
+			m_nofg_n = 0;
+			m_reset = true;
+			return had;
+		}
+
 		Event TakeEvent()
 		{
 			const Event e = m_event;

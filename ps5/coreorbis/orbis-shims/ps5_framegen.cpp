@@ -592,6 +592,7 @@ namespace ps5::framegen
 			u32 ubo[2];
 			u32 ubo_count;
 			bool interpolation;
+			bool finest_search = false; // PS5SX2 186
 			// name -> resource, for each parity
 			std::vector<std::pair<const char*, res>> binds[2];
 		};
@@ -668,6 +669,7 @@ namespace ps5::framegen
 			search = &specs[n - (scale ? 3 : 2)];
 			filter = &specs[n - (scale ? 2 : 1)];
 			scale = scale ? &specs[n - 1] : nullptr;
+			search->finest_search = level == 0; // PS5SX2 186: set_half_res_flow skips it
 
 			for (u32 p = 0; p < 2; p++)
 			{
@@ -792,6 +794,7 @@ namespace ps5::framegen
 			d.groups[1] = s.groups[1];
 			d.groups[2] = s.groups[2];
 			d.interpolation = s.interpolation;
+			d.finest_search = s.finest_search;
 
 			for (u32 i = 0; i < s.ubo_count; i++)
 			{
@@ -1210,6 +1213,13 @@ namespace ps5::framegen
 		for (const dispatch_t& d : m_dispatches)
 		{
 			if (d.interpolation && reset)
+			{
+				continue;
+			}
+
+			// PS5SX2 186: level 1's upscale already wrote level 0's vectors where this search would have started from (the set the
+			// filter reads): without it they go through the filter as they are
+			if (d.finest_search && m_half_res_flow)
 			{
 				continue;
 			}

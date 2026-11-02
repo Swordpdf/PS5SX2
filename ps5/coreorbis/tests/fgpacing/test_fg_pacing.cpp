@@ -755,6 +755,32 @@ int main()
 		CHECK(std::fabs(r.p.PauseSeconds() - 10.0) < 1e-9);
 	}
 
+	// 186: another upscale (ForgetPauses): a pause grown to 40 s ends at once, frames are generated on the next frame, and the next
+	// pause is 10 s again.
+	{
+		Run r;
+		for (int i = 0; i < 120; i++)
+			r.Frame(1, kNtsc, kHz120);
+		for (int round = 0; round < 3; round++) // pauses of 10, 20 and 40 s, each with the game at full speed in it
+		{
+			while (!r.p.Paused() && r.frames < 100000)
+				r.Frame(1, kNtsc, kHz120, 80.0);
+			if (round < 2)
+				while (r.p.Paused())
+					r.Frame(1, kNtsc, kHz120);
+		}
+		CHECK(r.p.Paused() && std::fabs(r.p.PauseSeconds() - 40.0) < 1e-9);
+		CHECK(r.p.ForgetPauses());
+		CHECK(!r.p.Paused());
+		Decision d = r.Frame(1, kNtsc, kHz120);
+		CHECK(d.engaged && d.reset && d.presents == 1 && r.p.GetState() == State::Generating);
+		CHECK(std::fabs(r.p.NextPause() - 10.0) < 1e-9);
+		CHECK(!r.p.ForgetPauses()); // nothing left to forget
+		while (!r.p.Paused() && r.frames < 200000)
+			r.Frame(1, kNtsc, kHz120, 80.0);
+		CHECK(std::fabs(r.p.PauseSeconds() - 10.0) < 1e-9);
+	}
+
 	// Better without them but not at full speed (80% with, 84% without): not blamed on them, the pause doesn't grow.
 	{
 		Run r;

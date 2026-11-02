@@ -103,6 +103,13 @@ namespace ps5::framegen
 		// After the frame's images were used (copied for presenting): frame_image() becomes previous_image().
 		void advance();
 
+		// PS5SX2 186: the optical flow at half resolution: the search at the pyramid's level 0 (the full picture, three quarters of the
+		// search's work) is skipped, and level 0 gets level 1's vectors as the upscale pass passes them down (each 8x8 block picks the
+		// best of its 4 nearest level-1 vectors, doubled), still through level 0's filter. The interpolation reads the same 8x8 grid in
+		// pixels either way. Takes effect at the next record().
+		void set_half_res_flow(bool on) { m_half_res_flow = on; }
+		bool half_res_flow() const { return m_half_res_flow; }
+
 		// For tests: the optical flow at level 0 (R16G16_SINT, pixels), the vector field (R32_UINT x and y, packed), the SCD output.
 		VkImage debug_flow() const { return m_flow_out.image; }
 		VkImage debug_field_x() const { return m_field_x.image; }
@@ -157,6 +164,7 @@ namespace ps5::framegen
 			std::uint32_t ubo_count = 0;
 			std::uint32_t groups[3] = {1, 1, 1};
 			bool interpolation = false; // part of the interpolation (skipped on a reset frame)
+			bool finest_search = false; // PS5SX2 186: the level-0 search (skipped with set_half_res_flow)
 		};
 
 		bool make_image(image_t& img, VkFormat format, std::uint32_t w, std::uint32_t h, VkImageUsageFlags usage, std::string& error);
@@ -207,6 +215,7 @@ namespace ps5::framegen
 		bool m_cleared = false;               // the work images are in GENERAL, the counters were zeroed
 		bool m_prepared = false;              // the frames are in GENERAL
 		bool m_debug_view = false;
+		bool m_half_res_flow = false;         // PS5SX2 186
 
 		// m73b: the GPU timer (m74: three timestamps a constant slot)
 		VkQueryPool m_queries = VK_NULL_HANDLE;

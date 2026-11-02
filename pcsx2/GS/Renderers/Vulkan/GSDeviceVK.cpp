@@ -30,7 +30,8 @@
 #include <mutex>
 #include <sstream>
 #ifdef ORBIS_VULKAN
-void OrbisLatProbePresent(); // 186 (orbis-shims/OrbisLatProbe.cpp)
+void OrbisLatProbePresent(void* vk_device); // 186 (orbis-shims/OrbisLatProbe.cpp)
+void OrbisLatCapBeforePresent(void* vk_device); // 186: the display-queue cap (the same file)
 #endif
 #ifdef ORBIS_VULKAN
 #include <unistd.h> // vk-285-14: fsync, _exit (GPU-hang forensics)
@@ -2630,6 +2631,9 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 
 		present_swap_chain->ResetImageAcquireResult();
 
+#ifdef ORBIS_VULKAN
+		OrbisLatCapBeforePresent(m_device); // 186: at most 1 earlier frame still waiting for the display (orbis-shims/OrbisLatProbe.cpp)
+#endif
 		{
 			ORBIS_VKW(5);
 			res = vkQueuePresentKHR(m_present_queue, &present_info);
@@ -2647,7 +2651,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 		}
 
 #ifdef ORBIS_VULKAN
-		OrbisLatProbePresent(); // 186: how long a presented frame waits for the display (flag latprobe; orbis-shims/OrbisLatProbe.cpp)
+		OrbisLatProbePresent(m_device); // 186: how long a presented frame waits for the display (flag latprobe; orbis-shims/OrbisLatProbe.cpp)
 #endif
 		// Grab the next image as soon as possible, that way we spend less time blocked on the next
 		// submission. Don't care if it fails, we'll deal with that at the presentation call site.
@@ -4556,6 +4560,7 @@ namespace
 		std::chrono::steady_clock::time_point last_state_log{};
 		int logged_state = -1;   // the pacing's state the log last described
 		orbis_fg::Window win;    // 2.11: the vsyncs since the last "[fg] status" line (OrbisFrameGenGate.h)
+		float upscale = 0.0f;    // 186: the upscale multiplier the pacing's pauses were earned at
 	};
 
 	OrbisFrameGenState s_orbis_fg;
@@ -4777,6 +4782,17 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 	const orbis_fg::DisplayHz display = OrbisFrameGenDisplayHz();
 	s.hz = display.hz;
 	s.hz_source = display.source;
+	// 186: another upscale multiplier is another cost on the GPU: the pauses the old one earned are forgotten (OrbisFrameGenPacing.h).
+	if (s.upscale != GSConfig.UpscaleMultiplier)
+	{
+		if (s.upscale != 0.0f && s.pacing.ForgetPauses())
+		{
+			printf("[fg] the upscale went from %gx to %gx: the pauses so far are forgotten, frames are generated again\n", s.upscale,
+				GSConfig.UpscaleMultiplier);
+			fflush(stdout);
+		}
+		s.upscale = GSConfig.UpscaleMultiplier;
+	}
 	const orbis_fg::Decision decision = s.pacing.Frame(vsyncs, already, ps2_hz, s.hz, now_s, speed, nominal);
 	OrbisFrameGenLogEvent(s, s.pacing.TakeEvent());
 	OrbisFrameGenLogState(s, now, ps2_hz);
@@ -4840,10 +4856,15 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 			return 0;
 		}
 
+		// 186: the optical flow at half resolution above 2560x1440 (swordpdf, Ratchet & Clank at 6x on a 4K picture: 7.4 ms of GPU a
+		// generated frame, 6.0 of it the flow, and the game at 67% of its speed while frames were generated). Flags: fgfullflow keeps
+		// the full search, fghalfflow asks for half at any size.
+		s.fg->set_half_res_flow(OrbisFlag("fghalfflow") || (static_cast<u64>(w) * h > 2560u * 1440u && !OrbisFlag("fgfullflow")));
 		s.prepared = false;
 		s.reset_next = true;
-		printf("[fg] ready for %ux%u in %.0f ms; the display at %.2f Hz\n", w, h,
-			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), s.hz);
+		printf("[fg] ready for %ux%u in %.0f ms; the display at %.2f Hz; the optical flow at %s\n", w, h,
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), s.hz,
+			s.fg->half_res_flow() ? "half resolution (flag fgfullflow: full)" : "full resolution");
 		fflush(stdout);
 	}
 
