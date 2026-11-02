@@ -77,6 +77,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/OrbisDiscDrive.h"   // PR #34: PS2 discs played straight from a drive (flag bootdisc)
 #include "orbis-shims/ProsperoRelaunch.h" // 2.11: "back to the menu" closes the app and a payload starts it again (relaunch/relaunch.c)
 #include "orbis-shims/OrbisLeavePlan.h"   // 2.11: how the process is left (relaunch payload, the old exec, or the plain close), as pure logic
+#include "orbis-shims/OrbisSelfExec.h"    // 186: an exec of the app's own eboot names /app0/eboot.bin, the path the shell's spawn can see
 #include "orbis-shims/OrbisDiscTileStart.h" // fix180: a disc tile press: the dump by serial, else the disc, never the question
 #include "orbis-shims/OrbisDiscExec.h"    // 2.11 (dumpxmb): when the disc helper's exec signal is honoured; how old a disc-launch.txt may be
 #include "orbis-shims/OrbisVideoOutMode.h" // 2.11: the app's own 120 Hz output for frame generation (flag fg120)
@@ -2137,22 +2138,25 @@ static std::string orbis_own_tile_dir()
 }
 
 // The eboot "back to the menu" starts again: this app's own.
+// 186: named as the shell sees it, /app0/eboot.bin (orbis-shims/OrbisSelfExec.h: the /data/homebrew path is not in the sandbox the new process starts in,
+// errno 2, and nothing came back). A disc tile's /app0 is the tile's own folder. Only a tile whose folder was not found still names PPSA99203's eboot.
 static std::string orbis_menu_exec_path()
 {
   const std::string tile = orbis_own_tile_dir();
   struct stat st = {};
   if (!tile.empty() && stat((tile + "/eboot.bin").c_str(), &st) == 0)
   {
-    printf("[menu] this process is the disc tile %s (drive %s): its own eboot starts again\n", tile.c_str(), s_tile_marker_drive.c_str());
-    return tile + "/eboot.bin";
+    printf("[menu] this process is the disc tile %s (drive %s): its own eboot starts again (%s)\n", tile.c_str(), s_tile_marker_drive.c_str(),
+      orbis_self_exec::kOwnEbootPath);
+    return orbis_self_exec::kOwnEbootPath;
   }
   if (s_tile_marker_seen && !s_tile_marker_drive.empty())
+  {
     printf("[menu] this process is a disc tile (drive %s) but its folder under /data/homebrew wasn't found: PPSA99203's eboot is used\n",
       s_tile_marker_drive.c_str());
-  std::string path = "/data/homebrew/PPSA99203/eboot.bin";
-  if (stat(path.c_str(), &st) != 0)
-    path = "/app0/eboot.bin";
-  return path;
+    return "/data/homebrew/PPSA99203/eboot.bin";
+  }
+  return orbis_self_exec::kOwnEbootPath;
 }
 
 // The note for the next start: the shelf opens, though the tile's marker (or the bootdisc flag) would start the disc again.
@@ -2450,15 +2454,17 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
   }
   // The old way (a disc tile's own eboot, then the app's; the main app's): "It doesn't come back when it works; allow for one that returns first and ends the process later."
   const std::string path = orbis_menu_exec_path();
+  // 186: /app0/eboot.bin in a tile whose folder was found is the tile's own eboot (OrbisSelfExec.h)
+  const bool tile_own_eboot = tile_found && path == orbis_self_exec::kOwnEbootPath;
   // fix180: the note names the title this eboot is (the tile's own, else the main app's)
-  orbis_mark_open_shelf(tile_found && path == tile + "/eboot.bin" ? own_tile.c_str() : orbis_leave::kMainTitle);
+  orbis_mark_open_shelf(tile_own_eboot ? own_tile.c_str() : orbis_leave::kMainTitle);
   printf("[menu] re-executing %s\n", path.c_str());
   orbis_leave_note("exec: eboot issued");
   fflush(stdout);
   int exec_rc = orbis_exec_for_menu(path);
   // Only a LoadExec that was REFUSED tries the next eboot: one that was accepted (rc 0) has the kill under way, and a second ExitSpawn on top of it would be
   // two spawns at once (the same rule as for the close above).
-  if (orbis_leave::AfterExecReturn(exec_rc) == orbis_leave::AfterExec::FallBack && path != "/data/homebrew/PPSA99203/eboot.bin" && path != "/app0/eboot.bin")
+  if (orbis_leave::AfterExecReturn(exec_rc) == orbis_leave::AfterExec::FallBack && tile_own_eboot)
   {
     printf("[menu] the tile's own eboot didn't take: PPSA99203's is tried\n"); // 2.11
     fflush(stdout);
@@ -3857,8 +3863,9 @@ int main()
         ps5::debug::set_line(2, "NEW BUILD - RESTARTING");
         sleep(1);
         orbis_output_default();
-        int rc = sceSystemServiceLoadExec(path, nullptr);
-        printf("[boot] LoadExec failed rc=%d, staying on current build\n", rc);
+        // 186: the file watched is the /data path; the exec names it as the shell sees it (OrbisSelfExec.h: the /data path is not in the sandbox)
+        int rc = sceSystemServiceLoadExec(orbis_self_exec::kOwnEbootPath, nullptr);
+        printf("[boot] LoadExec(%s) failed rc=%d, staying on current build\n", orbis_self_exec::kOwnEbootPath, rc);
         fflush(stdout);
         st0 = st2;
       }

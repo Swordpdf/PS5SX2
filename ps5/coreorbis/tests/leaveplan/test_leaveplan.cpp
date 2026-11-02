@@ -88,8 +88,8 @@ int main()
 	static_assert(orbis_leave::AfterExecReturn(0) == AfterExec::KeepWaiting, "constexpr");
 	// The 176 default. Flipping it is a decision of the owner, not a tidy-up: change this line with it (everything below follows the constant).
 	// The owner chose the instant exec for the main app (2026-10-16, in chat); fix181: the relay, after the owner's "always the shelf" and 181's logs (the exec
-	// never came back in time).
-	static_assert(!orbis_leave::kMainAppExecByDefault, "the main app leaves by the relay unless menufast is there (fix181)");
+	// never came back in time); 186: the exec again, after the owner's "straight to the shelf" (2026-11-02, in chat) and the cause found (OrbisSelfExec.h).
+	static_assert(orbis_leave::kMainAppExecByDefault, "the main app leaves by its own exec (/app0/eboot.bin) with the guard behind it unless menurelaunch is there (186)");
 	const bool by_default = orbis_leave::kMainAppExecByDefault;
 	static_assert(orbis_leave::kSettleDefaultMs == 1000 && orbis_leave::kSettleMaxMs == 5000, "the settle's default and limit");
 	static_assert(orbis_leave::kMinExitMs == 1600 && orbis_leave::kRetryMs == 400, "the payload's earliest launch after the exit, and the pause between refused launches");
@@ -328,10 +328,15 @@ int main()
 			Check(!orbis_leave::WantGuard(in), tag + ": menuclose (the home screen asked for): no guard");
 	}
 	{
+		// 186: the main app with no flags leaves by its own exec again, guarded (fix181 to 185: the relay)
 		In main_default = {};
-		Check(orbis_leave::WantRelay(main_default) && !orbis_leave::WantGuard(main_default), "fix181: the main app with no flags wants the relay");
-		main_default.relay_started = true;
-		Check(orbis_leave::Decide(main_default) == How::Relaunch, "fix181: and leaves by it when it is up");
+		Check(!orbis_leave::WantRelay(main_default) && orbis_leave::WantGuard(main_default), "186: the main app with no flags wants the guarded exec");
+		Check(orbis_leave::Decide(main_default) == How::ExecMain, "186: and leaves by its own exec");
+		In main_relaunch = {};
+		main_relaunch.flag_menurelaunch = true;
+		Check(orbis_leave::WantRelay(main_relaunch) && !orbis_leave::WantGuard(main_relaunch), "menurelaunch: the relay, as fix181 to 185 did");
+		main_relaunch.relay_started = true;
+		Check(orbis_leave::Decide(main_relaunch) == How::Relaunch, "menurelaunch: and leaves by it when it is up");
 		In fast = {};
 		fast.flag_menufast = true;
 		Check(orbis_leave::WantGuard(fast) && orbis_leave::Decide(fast) == How::ExecMain, "menufast: the exec, guarded");

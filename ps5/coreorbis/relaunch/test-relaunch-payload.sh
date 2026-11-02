@@ -541,8 +541,9 @@ GUARD = "guard_ms=2000\nhard_ms=5000\n"
 
 
 def case_guard_came_back():
-    # the exec works: the old process goes at 0.5 s and the new one says so at 1.5 s: nothing is launched, the payload ends at once
-    r = Run("guard_back", app_seconds=0.5, wait="PPSA99203", settle_ms=100, extra=GUARD)
+    # the exec works: the old process goes at 0.5 s and the new one says so at 1.5 s: nothing is launched, the payload ends at once. 186: the shell keeps
+    # listing the app meanwhile (a working exec spawns the new process under the same app id), so this is not a dropped app
+    r = Run("guard_back", app_seconds=0.5, wait="PPSA99203", settle_ms=100, extra=GUARD, forget_at=None)
     r.sleep_until(1.5)
     check("guard_back", not r.launches(), "nothing launched while the guard waits", r.relaunch_log()[-300:])
     open(r.state + ".alive", "w").write("1\n")
@@ -565,14 +566,33 @@ def case_guard_alive_before_gone():
 
 
 def case_guard_not_back():
-    # the 180 case: the exec is accepted, the old process goes at 0.5 s and nothing comes: the launch follows guard_ms (2 s) + the settle after the exit
+    # the 180 case as the owner's console showed it (186): the exec is accepted, its new process can't be made, and the shell drops the app as the old process
+    # goes (0.5 s): nothing can come back, so the launch follows two looks at the app id and the settle, not guard_ms (2 s)
     r = Run("guard_not_back", app_seconds=0.5, wait="PPSA99203", settle_ms=100, extra=GUARD)
     r.finish()
     ls = r.launches()
     check("guard_not_back", len(ls) == 1 and ls[0]["title"] == "PPSA99203", "PPSA99203 launched once", str(ls))
-    timing_after(r, r.app_end(), 2.0 + 0.1, "guard_not_back", "after the guard and the settle, not before", slack=1.2)
+    timing_after(r, r.app_end(), 0.1, "guard_not_back", "after the settle, without the guard's wait", slack=0.9)
     check("guard_not_back", r.status() == "launched", "done says launched", str(r.read(".done")))
-    check("guard_not_back", "no new process said it is up" in r.relaunch_log(), "the log says why it launched", r.relaunch_log()[-400:])
+    check("guard_not_back", "the shell dropped the app" in r.relaunch_log(), "the log says why it launched", r.relaunch_log()[-400:])
+
+
+def case_guard_not_back_listed():
+    # the shell goes on listing the app (as for an exec whose new process is coming) but no new process says it is up: the launch follows guard_ms (2 s);
+    # the title goes at 2.6 s (before that the launch would only answer "already running")
+    r = Run("guard_listed", app_seconds=0.5, wait="PPSA99203", settle_ms=100, extra=GUARD, forget_at=None)
+
+    def forget(path=r.appfile, when=r.app_end() + 2.6):
+        time.sleep(max(0.0, when - time.time()))
+        if os.path.exists(path):
+            os.unlink(path)
+    threading.Thread(target=forget, daemon=True).start()
+    r.finish()
+    ls = r.launches()
+    check("guard_listed", len(ls) == 1 and ls[0]["title"] == "PPSA99203", "PPSA99203 launched once", str(ls))
+    timing_after(r, r.app_end(), 2.6 + 0.1, "guard_listed", "after the guard, the title going and the settle", slack=1.2)
+    check("guard_listed", "no new process said it is up" in r.relaunch_log(), "the log says why it launched", r.relaunch_log()[-400:])
+    check("guard_listed", "the shell dropped the app" not in r.relaunch_log(), "not taken for a dropped app", r.relaunch_log()[-400:])
 
 
 def case_guard_slow_new_app():
@@ -603,8 +623,9 @@ def case_guard_cancelled():
 
 
 def case_guard_clamped():
-    # a guard of 5 ms is 1 s, not 0 (no guard would launch at once on top of an exec that works)
-    r = Run("guard_clamp", app_seconds=0.3, wait="PPSA99203", settle_ms=100, extra="guard_ms=5\n")
+    # a guard of 5 ms is 1 s, not 0 (no guard would launch at once on top of an exec that works). 186: with no title to watch (a tile whose folder was not
+    # found sends none) nothing tells a dropped app, so the guard alone holds the launch back
+    r = Run("guard_clamp", app_seconds=0.3, wait="", settle_ms=100, nosig_ms=100, extra="guard_ms=5\n")
     r.finish()
     timing_after(r, r.app_end(), 1.0 + 0.1, "guard_clamp", "5 ms became 1 s", slack=1.2)
 

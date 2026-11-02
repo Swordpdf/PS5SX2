@@ -13,7 +13,7 @@
 // outside the process can be instant. The system closes the app, shows the home screen, and only then can a payload start the app again (2-3 s of shell
 // launch lead time on top of the close). Only the old exec is instant, because the shell answers it with a spawn into the same title. So the MAIN app
 // (not a disc tile: the shelf lives in the main title, a tile cannot reach it by an exec) has a gate of its own, MainAppExec(): flag menufast = the old
-// exec, flag menurelaunch = the payload, and kMainAppExecByDefault below for neither. It is TRUE: the owner chose the instant exec for the main app
+// exec, flag menurelaunch = the payload, and kMainAppExecByDefault below for neither. It is TRUE (false in fix181 to 185): the owner chose the instant exec for the main app
 // (2026-10-16, in chat, knowing that the exec is what "sometimes crashed the console" in the reports; the cause was never proven). A disc tile never execs
 // into the main app, it keeps the payload. If testers' leave.txt shows crashes after "back to the menu", set this back to false (one line plus the pin in
 // tests/leaveplan) or tell them to put the flag file menurelaunch into /data/PCSX2/flags/.
@@ -35,7 +35,12 @@ namespace orbis_leave
 // the guard, 180, nothing came at all). The relay from a game tile on the same build: PPSA99203 running 2.3 s after the exit, the shelf 3.5 s after the
 // press, every time. So the main app leaves by the relay too (a moment of the home screen, then the shelf), and the exec is the fall back when the
 // payload can't be sent (and the flag menufast, which keeps the guard).
-constexpr bool kMainAppExecByDefault = false;
+// 186 (owner, 2026-11-02: "hitting L1 + R1 + Touchpad briefly returns me to the home screen and then the shelf. I want to go straight to the shelf"): TRUE
+// again. Why the exec never came back is known now (OrbisSelfExec.h): it named /data/homebrew/PPSA99203/eboot.bin, which is not in the sandbox the shell
+// starts the new process in ("Exit spawn failed : 0x80aa001a", errno 2, in the owner's klog). Named /app0/eboot.bin, the same exec on the same console:
+// the new process under the same app id in the second of the kill ("EXEC /app0/eboot.bin", no home screen). The guard stays behind it, and since 186 it
+// starts the app at once when the shell drops the app (relaunch_guard.h), so an exec that still fails costs the relay's time, not the guard's 7 s.
+constexpr bool kMainAppExecByDefault = true;
 
 // 176: the payload's timing. The settle is how long it waits after the shell has forgotten the closing title (175 had a fixed 1500 ms; the flag menusettle
 // sets it, 0..kSettleMaxMs). kMinExitMs: it never launches earlier than this long after the closing PROCESS exited, whatever the settle is: ShadowMount+

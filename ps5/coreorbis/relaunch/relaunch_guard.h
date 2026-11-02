@@ -27,10 +27,16 @@ enum
 
 // alive: "<state>.alive" exists. other: another app process (eboot.bin, not the old pid) is running: 1 yes, 0 no, -1 cannot tell. since_gone_ms: how long
 // ago the old process was seen gone. guard_ms / hard_ms: the request's (hard_ms below guard_ms counts as guard_ms).
-static inline int rg_step(int alive, int other, long long since_gone_ms, int guard_ms, int hard_ms)
+// 186: app_gone: the shell no longer lists the closing title (its app id is gone). An exec that works keeps the app: the shell spawns the new process under
+// the same app id. One whose new process could not be made drops it at once (the owner's console, 2026-11-02: "Exit spawn failed : 0x80aa001a" and
+// "AppId=0x8017 deleted" in the same second as the kill). Nothing can come back then: the launch follows without the guard's wait (the caller still
+// keeps the settle and the time after the exit that ShadowMount+ needs).
+static inline int rg_step(int alive, int other, int app_gone, long long since_gone_ms, int guard_ms, int hard_ms)
 {
 	if (alive)
 		return RG_CAME_BACK;
+	if (app_gone && other != 1)
+		return RG_LAUNCH;
 	if (since_gone_ms < guard_ms)
 		return RG_WAIT;
 	if (other == 1 && since_gone_ms < hard_ms)

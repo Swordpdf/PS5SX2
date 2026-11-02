@@ -567,19 +567,26 @@ int main(void)
 			usleep(100000);
 		}
 		int said_other = 0;
+		int gone_polls = 0; // 186: polls in a row that found the closing title's app id gone (two make it so: one odd answer is not enough)
 		for (;;)
 		{
 			if (cancelled())
 				cancel_exit();
 			const int alive = exists_with(".alive");
 			const int other = alive ? 0 : rl_other_app(r.pid);
+			gone_polls = !alive && have_signal && id_gone(&r, big_start, use_title, use_big) ? gone_polls + 1 : 0;
 			const long long since = now_ms() - g_gone_at;
-			const int step = rg_step(alive, other, since, r.guard_ms, r.hard_ms);
+			const int step = rg_step(alive, other, gone_polls >= 2, since, r.guard_ms, r.hard_ms);
 			if (step == RG_CAME_BACK)
 			{
 				char detail[96];
 				snprintf(detail, sizeof(detail), "the app's own exec brought it back %lld ms after the old process went: nothing launched", since);
 				finish("came-back", detail);
+			}
+			if (step == RG_LAUNCH && gone_polls >= 2 && since < r.guard_ms)
+			{
+				note("guard: the shell dropped the app %lld ms after the old process went (its exec made no new process): %s is launched now", since, r.launch);
+				break;
 			}
 			if (step == RG_LAUNCH)
 			{

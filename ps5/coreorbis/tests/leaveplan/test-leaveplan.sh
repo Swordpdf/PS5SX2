@@ -47,6 +47,21 @@ if grep -qF 'orbis_mark_open_shelf();' "$main"; then
 	echo "FAIL  main-boot.cpp writes an open-shelf note without a title again"
 	missing=1
 fi
+# 186 (orbis-shims/OrbisSelfExec.h): an exec of the app's own eboot names /app0/eboot.bin. The /data/homebrew path is not in the sandbox the shell starts
+# the new process in (the owner's klog: "Exit spawn failed : 0x80aa001a", errno 2), so an exec naming it never comes back.
+if ! grep -qF 'constexpr const char* kOwnEbootPath = "/app0/eboot.bin";' "$here/../../orbis-shims/OrbisSelfExec.h"; then
+	echo "FAIL  OrbisSelfExec.h no longer names /app0/eboot.bin"
+	missing=1
+fi
+if [ "$(grep -cF 'return orbis_self_exec::kOwnEbootPath;' "$main")" != 2 ]; then
+	echo "FAIL  orbis_menu_exec_path() no longer returns /app0/eboot.bin for the main app and a tile's own eboot"
+	missing=1
+fi
+pin 'int rc = sceSystemServiceLoadExec(orbis_self_exec::kOwnEbootPath, nullptr);'
+if [ "$(grep -cF 'const char* path = orbis_self_exec::kOwnEbootPath;' "$here/../../orbis-shims/ProsperoDiscDump.cpp")" != 2 ]; then
+	echo "FAIL  ProsperoDiscDump.cpp's two execs (re-foreground, disc-launch-exec.txt) no longer name /app0/eboot.bin"
+	missing=1
+fi
 [ "$missing" = 0 ] || exit 1
 echo "leaveplan glue: main-boot.cpp feeds the header as the test assumes"
 "$work/test_leaveplan"

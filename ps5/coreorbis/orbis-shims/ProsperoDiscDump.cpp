@@ -74,6 +74,7 @@
 #include "OrbisDiscEject.h"
 #include "OrbisDiscPlaying.h"
 #include "OrbisDiscExec.h" // 2.11 (dumpxmb): when the disc helper's exec signal is honoured
+#include "OrbisSelfExec.h" // 186: an exec of the app's own eboot names /app0/eboot.bin
 #include "OrbisDiscResume.h"
 #include "ProsperoNotify.h"
 
@@ -934,10 +935,7 @@ namespace
 			fclose(f);
 		}
 		OrbisNotifyPlain("PS2 disc: bringing PS5SX2 back to the front");
-		const char* path = "/data/homebrew/PPSA99203/eboot.bin";
-		struct stat st{};
-		if (stat(path, &st) != 0)
-			path = "/app0/eboot.bin";
+		const char* path = orbis_self_exec::kOwnEbootPath; // 186: as the shell sees it (OrbisSelfExec.h: the /data path is not in the sandbox)
 		fflush(stdout);
 		const int rc = sceSystemServiceLoadExec(path, nullptr);
 		Log("re-foreground: LoadExec(%s) returned 0x%08x%s at %lld", path, static_cast<unsigned>(rc),
@@ -1057,10 +1055,7 @@ namespace
 							fprintf(rf, "disc-auto %lld\n", static_cast<long long>(time(nullptr)));
 							fclose(rf);
 						}
-						const char* path = "/data/homebrew/PPSA99203/eboot.bin";
-						struct stat st{};
-						if (stat(path, &st) != 0)
-							path = "/app0/eboot.bin";
+						const char* path = orbis_self_exec::kOwnEbootPath; // 186: as the shell sees it (OrbisSelfExec.h)
 						fflush(stdout);
 						const int rc = sceSystemServiceLoadExec(path, nullptr);
 						Log("disc-launch-exec.txt: LoadExec(%s) returned 0x%08x%s", path, static_cast<unsigned>(rc),
