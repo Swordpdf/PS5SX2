@@ -5,9 +5,13 @@
 # disctile.c (reload_tile_mark_shown .. reload_tile_watch) out as it is, puts a made-up world around it (files in a test folder, the home screen's rows,
 # a virtual clock) and checks: the tile seen then deleted -> the flag is made once; our own rebuild / a scan in progress / an unreadable database /
 # a tile never seen -> no flag. Usage: make_reload_test.py <disctile.c> <out.c>
+import re
 import sys
 
 src = open(sys.argv[1], encoding="utf-8").read()
+# 171n (build 186): the tile is off unless the flag disctile_reload asks for it; the shipped reload_tile_off is put in the test as it is, and the cases
+# of 171l/171m run with that flag there (as someone who wants the tile has it)
+off = re.search(r"static int reload_tile_off\(void\) \{[^\n]*\}\n", src).group(0)
 a = src.index("/* ---------------------------------------------------------------- 171l: the Reload tile removed by the person")
 b = src.index("/* ---------------------------------------------------------------- 171l end */", a)
 block = src[a:b]
@@ -56,6 +60,7 @@ static int flag(const char *name) {
     return exists(p);
 }
 static int db_has_title(const char *tid) { (void)tid; return g_rows; }
+@OFF@
 static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void say(const char *fmt, ...) {
     va_list ap;
@@ -69,7 +74,7 @@ static void say(const char *fmt, ...) {
  * Counted here (g_ensures with the flag, g_makes without). */
 static int g_makes;
 static void reload_tile_ensure(void) {
-    if (flag("disctile_noreload")) { g_ensures++; unlink(RELOAD_SHOWN); }
+    if (reload_tile_off()) { g_ensures++; unlink(RELOAD_SHOWN); }
     else g_makes++;
 }
 '''
@@ -79,7 +84,7 @@ static int fails;
 #define CHECK(c, what) do { if (!(c)) { printf("FAIL: %s (line %d)\n", what, __LINE__); fails++; } else if (getenv("RT_VERBOSE")) printf("ok: %s\n", what); } while (0)
 
 static void reset(void) {
-    (void)!system("rm -rf " RT_DIR " && mkdir -p " WORK);
+    (void)!system("rm -rf " RT_DIR " && mkdir -p " WORK " " FLAGS_DIR " && touch " FLAGS_DIR "/disctile_reload");
     g_reload_running = 0; g_reload_scan_at = 0; g_reload_ours_at = 0; g_rows = 0; g_ensures = 0; g_says = 0; g_makes = 0; g_noreload_seen = -1;
 }
 static void installed(int yes) {
@@ -97,6 +102,17 @@ static void set_flag(int on) {
 
 int main(void) {
     time_t now = 100000;
+    /* 0. 171n: off unless disctile_reload is there; disctile_noreload turns it off even then */
+    reset();
+    unlink(FLAGS_DIR "/disctile_reload");
+    CHECK(reload_tile_off(), "171n: no disctile_reload -> the tile is off");
+    set_flag(1);
+    CHECK(reload_tile_off(), "171n: disctile_noreload alone -> off");
+    (void)!system("touch " FLAGS_DIR "/disctile_reload");
+    CHECK(reload_tile_off(), "171n: both flags -> off");
+    set_flag(0);
+    CHECK(!reload_tile_off(), "171n: disctile_reload alone -> on");
+
     /* 1. seen, then deleted by the person: the flag after two looks, the folder taken away once */
     reset();
     installed(1);
@@ -182,7 +198,7 @@ int main(void) {
     set_flag(1);                              /* Off */
     now = run(now, 4);
     CHECK(g_ensures == 1, "171m: flag made in the settings -> the tile taken away within 3 s");
-    CHECK(strstr(g_last, "made while running") != NULL, "171m: logged");
+    CHECK(strstr(g_last, "switched off while running") != NULL, "171m: logged");
     CHECK(!exists(RELOAD_SHOWN), "171m: the seen mark forgotten (taken away by the flag, not by the person)");
     installed(0);                             /* ShadowMount+ uninstalled it */
     now = run(now, 30);
@@ -190,7 +206,7 @@ int main(void) {
     set_flag(0);                              /* On again */
     now = run(now, 4);
     CHECK(g_makes == 1, "171m: flag deleted -> the tile made again within 3 s");
-    CHECK(strstr(g_last, "deleted while running") != NULL, "171m: logged");
+    CHECK(strstr(g_last, "switched on while running") != NULL, "171m: logged");
     now = run(now, 60);                       /* the tile not on the home screen yet: not a removal by the person */
     CHECK(!flag("disctile_noreload"), "171m: switching it back on is not taken for a removal (no flag made again)");
     installed(1);
@@ -217,4 +233,4 @@ int main(void) {
 }
 '''
 
-open(sys.argv[2], "w", encoding="utf-8").write(head + block + tail)
+open(sys.argv[2], "w", encoding="utf-8").write(head.replace("@OFF@", off) + block + tail)

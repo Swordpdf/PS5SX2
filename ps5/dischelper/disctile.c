@@ -82,7 +82,7 @@ static void write_helper_status(void); /* 179: forward decl; defined lower, used
 #define MAX_DRIVES 4
 #define NSLOTS     8
 #define POLL_US    250000
-#define PAYLOAD_REV "171m" /* written in the log's first line, so that a log says which payload made it: 171m = 171l + the Reload tile switched from PS5SX2's settings (the flag disctile_noreload looked at every 3 s while running: made -> the tile taken away at once, deleted -> made again; the seen mark forgotten whenever the flag takes the tile away, so switching it back on is not taken for a removal by the person); 171l = 171k + the Reload tile removed by the person stays removed (flag disctile_noreload made for them), DiscSpeed8's shell patch on fw 11.40 only (flag disc_speed8_anyfw) and every detach of the shell checked (never left traced or stopped); 171k = 171j + next to the PS5SX3 helper (disc_compat.h: a drive with a disc that is not a PS2 disc is left alone until the disc goes - not opened, not asked, not pinned to 8x - and ps5sx2-helper.txt says so (compat=1, cd0..cd3=, usb=), so that the PS5SX3 helper takes the drive without stopping this one; the system's disc tile put back at a stop only for a PS2 disc; a removed tile's concept rows that another title uses stay; flag disc_noyield = 171j's way); 171j = 171i + DiscSpeed8 SceShellCore 8x patch and 60 s drive pin (disc_speed8.c; flag disc_nospeed8), game tiles ON by default (gametile_off switches off); 171i = 171h + the flag kp_log looked at every 10 s (not only at the start); 171h = disc speed (the copies of disc_launch.c read in bigger pieces, a drive the watcher reads is not opened here, every 3 s while PS5SX2 copies), 171 = the first reload build, 171b = cover/art refresh on reload, clean slots first,
+#define PAYLOAD_REV "171n" /* written in the log's first line, so that a log says which payload made it: 171n = 171m + no Reload tile (off unless the flag disctile_reload; one that is there is taken away) and the PS2 badge (U+F8BC) in front of every PS5SX2 tile's name (new tiles from their param.json; the names already on the home screen in app.db, appinfo.db and the param.json copies, flag disctile_nobadge); 171m = 171l + the Reload tile switched from PS5SX2's settings (the flag disctile_noreload looked at every 3 s while running: made -> the tile taken away at once, deleted -> made again; the seen mark forgotten whenever the flag takes the tile away, so switching it back on is not taken for a removal by the person); 171l = 171k + the Reload tile removed by the person stays removed (flag disctile_noreload made for them), DiscSpeed8's shell patch on fw 11.40 only (flag disc_speed8_anyfw) and every detach of the shell checked (never left traced or stopped); 171k = 171j + next to the PS5SX3 helper (disc_compat.h: a drive with a disc that is not a PS2 disc is left alone until the disc goes - not opened, not asked, not pinned to 8x - and ps5sx2-helper.txt says so (compat=1, cd0..cd3=, usb=), so that the PS5SX3 helper takes the drive without stopping this one; the system's disc tile put back at a stop only for a PS2 disc; a removed tile's concept rows that another title uses stay; flag disc_noyield = 171j's way); 171j = 171i + DiscSpeed8 SceShellCore 8x patch and 60 s drive pin (disc_speed8.c; flag disc_nospeed8), game tiles ON by default (gametile_off switches off); 171i = 171h + the flag kp_log looked at every 10 s (not only at the start); 171h = disc speed (the copies of disc_launch.c read in bigger pieces, a drive the watcher reads is not opened here, every 3 s while PS5SX2 copies), 171 = the first reload build, 171b = cover/art refresh on reload, clean slots first,
                             * tile-gone timing; 171c = the Reload tile kept next to the disc tile, the uninstall on its own thread asked every 0.4 s, half a second of debounce at eject;
                             * 171d = a tile's game closed when its disc goes out, the leftover database rows of a removed tile deleted, concept rows for the order, a title card when there is no cover;
                             * 171e = kp.c: quiet while the console shuts down or rests (no drive, file, database, ShadowMount+ or notification access), the log files off in a KP test build,
@@ -689,8 +689,12 @@ static int table_exists(sqlite3 *db, const char *name) {
     return db_int(db, sql, 0) > 0;
 }
 
+/* 171n (build 186; the owner, 2026-11-02: "i also wanna get rid of the reload disc tile"): the Reload tile is off unless the flag disctile_reload asks
+ * for it (disctile_noreload still turns it off then). Off, it is never made, and one that is there is taken away at the start (reload_tile_ensure). */
+static int reload_tile_off(void) { return !flag("disctile_reload") || flag("disctile_noreload"); }
+
 static int reload_row_front(const char *why) {
-    if (flag("disctile_noorder") || flag("disctile_noreload")) return 0;
+    if (flag("disctile_noorder") || reload_tile_off()) return 0;
     sqlite3 *db = open_db();
     if (!db) return 0;
     static char tabs[16][64];
@@ -1529,7 +1533,78 @@ static const char kParamFallback[] =
     "  \"versionFileUri\": \"\"\n"
     "}\n";
 
-/* sce_sys/param.json for a slot: PS5SX2's own, with the tile's title, content ID, concept ID and title ID. Written over any file there. */
+/* 171n (build 186; the owner, 2026-11-02: "i also wanna add the ps2 badge to all related ps5sx2 tiles", "i also want ps5sx2 itself to have the ps2 badge"):
+ * the PS5's system font has the PS2 logo as a character, U+F8BC (/system_ex/common_ex/font2/PS4Icon.ttf; the PS3 badge the owner pointed at is U+F8E4).
+ * Every tile's name starts with it and a space: PS5SX2's own (its param.json in the package), the disc tiles' and the game tiles'. */
+#define PS2_BADGE "\xEF\xA2\xBC" /* U+F8BC in UTF-8 */
+
+/* The param.json text with every "titleName" value replaced by `value` (JSON-escaped already); NULL when there is none or no memory. */
+static char *set_title_names(const char *pj, const char *value) {
+    const size_t vl = strlen(value);
+    size_t cap = strlen(pj) + 1, len = 0;
+    char *out = (char *)malloc(cap);
+    if (!out) return NULL;
+    int found = 0;
+    const char *p = pj;
+    for (;;) {
+        const char *key = strstr(p, "\"titleName\"");
+        const char *q = key ? strchr(key + 11, ':') : NULL;
+        q = q ? strchr(q, '"') : NULL;
+        const char *e = q ? q + 1 : NULL;
+        while (e && *e && *e != '"') e += (*e == '\\' && e[1]) ? 2 : 1;
+        if (!e || *e != '"') break;
+        const size_t keep = (size_t)(q + 1 - p);
+        if (len + keep + vl + 1 > cap) {
+            cap = len + keep + vl + strlen(e) + 1;
+            char *grown = (char *)realloc(out, cap);
+            if (!grown) { free(out); return NULL; }
+            out = grown;
+        }
+        memcpy(out + len, p, keep); len += keep;
+        memcpy(out + len, value, vl); len += vl;
+        p = e; /* the closing quote and what follows */
+        found = 1;
+    }
+    const size_t rest = strlen(p);
+    if (len + rest + 1 > cap) {
+        char *grown = (char *)realloc(out, len + rest + 1);
+        if (!grown) { free(out); return NULL; }
+        out = grown;
+    }
+    memcpy(out + len, p, rest + 1);
+    if (!found) { free(out); return NULL; }
+    return out;
+}
+
+/* The param.json text with PS2_BADGE and a space put in front of every "titleName" value that does not start with it; NULL when none needed it. */
+static char *badge_title_names(const char *pj) {
+    size_t n = 0;
+    for (const char *k = strstr(pj, "\"titleName\""); k; k = strstr(k + 11, "\"titleName\"")) n++;
+    char *out = (char *)malloc(strlen(pj) + n * 4 + 1);
+    if (!out) return NULL;
+    size_t len = 0;
+    int changed = 0;
+    const char *p = pj;
+    for (;;) {
+        const char *key = strstr(p, "\"titleName\"");
+        const char *q = key ? strchr(key + 11, ':') : NULL;
+        q = q ? strchr(q, '"') : NULL;
+        if (!q) break;
+        const size_t keep = (size_t)(q + 1 - p);
+        memcpy(out + len, p, keep); len += keep;
+        p = q + 1;
+        if (strncmp(p, PS2_BADGE, 3) != 0) {
+            memcpy(out + len, PS2_BADGE " ", 4); len += 4;
+            changed = 1;
+        }
+    }
+    memcpy(out + len, p, strlen(p) + 1);
+    if (!changed) { free(out); return NULL; }
+    return out;
+}
+
+/* sce_sys/param.json for a slot: PS5SX2's own, with the tile's title, content ID, concept ID and title ID. Written over any file there.
+ * 171n: the title with the PS2 badge in front (PS2_BADGE); PS5SX2's own name is replaced whatever it is (2.20's "PS5SX2", 186's with the badge). */
 static int write_param_json(const char *sys_dir, int slot, const char *tid, const char *title) {
     char *pj = read_file(APP_SRC "/sce_sys/param.json", NULL);
     if (!pj) {
@@ -1539,12 +1614,13 @@ static int write_param_json(const char *sys_dir, int slot, const char *tid, cons
         if (!pj) return 0;
         memcpy(pj, kParamFallback, sizeof(kParamFallback));
     }
-    char esc[700], tname[760], content[64], concept[16], p[300];
-    json_escape(esc, sizeof(esc), title);
-    snprintf(tname, sizeof(tname), "\"titleName\": \"%s\"", esc);
+    char named[640], esc[700], content[64], concept[16], p[300];
+    if (strncmp(title, PS2_BADGE, 3) == 0) snprintf(named, sizeof(named), "%s", title);
+    else snprintf(named, sizeof(named), PS2_BADGE " %s", title);
+    json_escape(esc, sizeof(esc), named);
     snprintf(content, sizeof(content), "UP9000-%s_00-PS5SX2DISCTILE%02d", tid, slot + 1);
     snprintf(concept, sizeof(concept), "\"%s\"", tid + 4);
-    char *a = replace_all(pj, "\"titleName\": \"PS5SX2\"", tname);
+    char *a = set_title_names(pj, esc);
     char *b = a ? replace_all(a, "UP9000-PPSA99203_00-PCSX2ORBIS00001", content) : NULL;
     char *c = b ? replace_all(b, "\"99203\"", concept) : NULL;
     char *e = c ? replace_all(c, "PPSA99203", tid) : NULL;
@@ -1553,6 +1629,110 @@ static int write_param_json(const char *sys_dir, int slot, const char *tid, cons
     free(a); free(b); free(c); free(e); free(pj);
     return ok;
 }
+
+/* ---------------------------------------------------------------- 171n: the PS2 badge on the names already there
+ * Tiles made before 171n, and PS5SX2 itself until the package's param.json reaches the console, keep the name they were registered with. The home
+ * screen reads it from app.db (tbl_contentinfo.titleName, tbl_iconinfo_<user>.titleName, tbl_concepticoninfo_<user>.primaryTitleName) and appinfo.db
+ * (tbl_appinfo TITLE and TITLE_nn), and a later registration from the param.json copies (the folder's, /user/app's, appmeta's). For PS5SX2's own title
+ * IDs only (BADGE_IDS: PPSA99203, the disc tiles', the game tiles'), a name without the badge gets it in all of them; values of the kind the shell
+ * writes itself, no trigger and no change to any table. At the start, then every 5 min a read-only look that writes only when a name lacks it. Main
+ * loop only (SQLite). Flag disctile_nobadge turns it off (new tiles still get the badge from their param.json). */
+#define APPINFO_DB "/system_data/priv/mms/appinfo.db"
+#define BADGE_IDS "('PPSA99203','PPSA99231','PPSA99232','PPSA99233','PPSA99234','PPSA99235','PPSA99236','PPSA99237','PPSA99238'," \
+                  "'PPSA99251','PPSA99252','PPSA99253','PPSA99254','PPSA99255','PPSA99256','PPSA99257','PPSA99258','PPSA99259','PPSA99260')"
+static const char *const kBadgeIds[] = {"PPSA99203", "PPSA99231", "PPSA99232", "PPSA99233", "PPSA99234", "PPSA99235", "PPSA99236", "PPSA99237",
+                                        "PPSA99238", "PPSA99251", "PPSA99252", "PPSA99253", "PPSA99254", "PPSA99255", "PPSA99256", "PPSA99257",
+                                        "PPSA99258", "PPSA99259", "PPSA99260"};
+
+/* one param.json: the badge put in front of its names, written in place (the folder it is in is not changed: ShadowMount+ judges folders by their
+ * change time). 1 when it was changed. */
+static int badge_param_file(const char *path) {
+    if (!exists(path)) return 0;
+    char *pj = read_file(path, NULL);
+    if (!pj) return 0;
+    char *b = badge_title_names(pj);
+    const int ok = b && write_file(path, b, strlen(b)) == 0;
+    if (b) say("%s: the PS2 badge put in front of its name%s", path, ok ? "" : " - COULD NOT be written");
+    free(b);
+    free(pj);
+    return ok;
+}
+
+/* The rows of BADGE_IDS whose name lacks the badge, in one database (`count` only: nothing written). */
+static int badge_rows(sqlite3 *db, int write, int *changed) {
+    char sql[1400];
+    int missing = 0;
+    char tabs[16][64];
+    const int nt = icon_tables(db, tabs, 16);
+    struct { char table[80]; const char *col, *key; } t[40];
+    int n = 0;
+    if (table_exists(db, "tbl_contentinfo")) { snprintf(t[n].table, sizeof(t[n].table), "tbl_contentinfo"); t[n].col = "titleName"; t[n].key = "titleId"; n++; }
+    for (int i = 0; i < nt && n + 2 < 40; i++) {
+        snprintf(t[n].table, sizeof(t[n].table), "%.63s", tabs[i]); t[n].col = "titleName"; t[n].key = "titleId"; n++;
+        char concept[80];
+        if (concept_table_for(db, tabs[i], concept, sizeof(concept))) {
+            snprintf(t[n].table, sizeof(t[n].table), "%.79s", concept); t[n].col = "primaryTitleName"; t[n].key = "primaryTitleId"; n++;
+        }
+    }
+    if (table_exists(db, "tbl_appinfo")) { snprintf(t[n].table, sizeof(t[n].table), "tbl_appinfo"); t[n].col = "val"; t[n].key = "titleId"; n++; }
+    for (int i = 0; i < n; i++) {
+        const int appinfo = strcmp(t[i].table, "tbl_appinfo") == 0;
+        const char *only = appinfo ? " AND (key='TITLE' OR key GLOB 'TITLE_[0-9][0-9]')" : "";
+        if (!write) {
+            snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %.79s WHERE %s IN " BADGE_IDS " AND %s IS NOT NULL AND %s<>'' AND substr(%s,1,1)<>'" PS2_BADGE "'%s",
+                     t[i].table, t[i].key, t[i].col, t[i].col, t[i].col, only);
+            missing += (int)db_int(db, sql, 0);
+            continue;
+        }
+        snprintf(sql, sizeof(sql), "UPDATE %.79s SET %s='" PS2_BADGE " '||%s WHERE %s IN " BADGE_IDS " AND %s IS NOT NULL AND %s<>'' AND substr(%s,1,1)<>'" PS2_BADGE "'%s",
+                 t[i].table, t[i].col, t[i].col, t[i].key, t[i].col, t[i].col, t[i].col, only);
+        if (exec(db, sql)) *changed += sqlite3_changes(db);
+    }
+    return missing;
+}
+
+static int badge_db(const char *path, int *changed) {
+    if (kp_quiet()) return -1;
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return -1;
+    }
+    sqlite3_busy_timeout(db, 600);
+    const int missing = badge_rows(db, 0, changed);
+    if (missing > 0 && exec(db, "BEGIN IMMEDIATE")) {
+        badge_rows(db, 1, changed);
+        if (!exec(db, "COMMIT")) exec(db, "ROLLBACK");
+    }
+    sqlite3_close(db);
+    return missing;
+}
+
+static void badge_names_tick(time_t now) {
+    static time_t next;
+    static int files_done;
+    if (now < next || flag("disctile_nobadge")) return;
+    next = now + 300;
+    int changed_app = 0, changed_info = 0;
+    const int missing_app = badge_db(APP_DB, &changed_app);
+    const int missing_info = badge_db(APPINFO_DB, &changed_info);
+    if (missing_app > 0 || missing_info > 0)
+        say("PS2 badge: %d name(s) in app.db and %d in appinfo.db had none: %d and %d given it", missing_app, missing_info, changed_app, changed_info);
+    if (files_done && missing_app <= 0 && missing_info <= 0) return;
+    files_done = 1;
+    for (size_t i = 0; i < sizeof(kBadgeIds) / sizeof(kBadgeIds[0]); i++) {
+        char path[200];
+        if (strcmp(kBadgeIds[i], "PPSA99203") != 0) { /* PS5SX2's own folder: its param.json comes with the package */
+            snprintf(path, sizeof(path), HB "/%s/sce_sys/param.json", kBadgeIds[i]);
+            badge_param_file(path);
+        }
+        snprintf(path, sizeof(path), "/user/app/%s/sce_sys/param.json", kBadgeIds[i]);
+        badge_param_file(path);
+        snprintf(path, sizeof(path), "/system_data/priv/appmeta/%s/param.json", kBadgeIds[i]);
+        badge_param_file(path);
+    }
+}
+/* ---------------------------------------------------------------- 171n end */
 
 /* icon0.png and pic0.dds for the disc, into sys_dir. The files are written over (fopen "wb" keeps the file, only its content goes), so that a
  * folder they are already in is not changed: ShadowMount+ judges a folder by its change time. */
@@ -2761,14 +2941,14 @@ static int reload_tile_build(void) {
 /* at the start, and from a reload: the folder is there and whole (else it is made), and the home screen is looked at in a moment (no sqlite here:
  * this may run on the reload thread). Flag disctile_noreload: no reload tile (an earlier one is taken away). */
 static void reload_tile_ensure(void) {
-    if (flag("disctile_noreload")) {
+    if (reload_tile_off()) {
         unlink(RELOAD_SHOWN); /* 171m: taken away by the flag, not by the person: a later "on" makes it again and waits to see it first */
         if (exists(RELOAD_DIR)) {
             char reply[300];
             rm_tree(RELOAD_DIR);
             unlink(RELOAD_MARK);
             const int code = smp_post("/api/v1/games/uninstall", "{\"title_id\":\"" RELOAD_TID "\"}", reply, sizeof(reply));
-            say("the reload tile is off (flag disctile_noreload): taken away, uninstall HTTP %d %.80s", code, code > 0 ? reply : "");
+            say("the reload tile is off (171n: off unless the flag disctile_reload is there): taken away, uninstall HTTP %d %.80s", code, code > 0 ? reply : "");
         }
         return;
     }
@@ -2819,7 +2999,7 @@ static void reload_tile_watch(time_t now) {
     static int strikes;
     if (now < next) return;
     next = now + 5;
-    if (flag("disctile_noreload") || g_reload_running || g_reload_scan_at != 0 || now - g_reload_ours_at < 120) { strikes = 0; return; }
+    if (reload_tile_off() || g_reload_running || g_reload_scan_at != 0 || now - g_reload_ours_at < 120) { strikes = 0; return; }
     if (!exists(RELOAD_SHOWN)) {
         if (db_has_title(RELOAD_TID) > 0) reload_tile_mark_shown();
         strikes = 0;
@@ -2836,11 +3016,11 @@ static void reload_tile_flag_tick(time_t now) {
     static time_t next;
     if (now < next) return;
     next = now + 3;
-    const int off = flag("disctile_noreload");
+    const int off = reload_tile_off();
     if (g_noreload_seen == -1) { g_noreload_seen = off; return; } /* the start took care of the state it found */
     if (off == g_noreload_seen || g_reload_running) return;       /* a reload in progress: looked at again when it is over */
     g_noreload_seen = off;
-    say("flag disctile_noreload %s while running (PS5SX2's settings or by hand): the reload tile is %s", off ? "made" : "deleted",
+    say("the reload tile switched %s while running (flags disctile_reload / disctile_noreload): it is %s", off ? "off" : "on",
         off ? "taken away" : "made again");
     reload_tile_ensure();
 }
@@ -2852,7 +3032,7 @@ static void reload_tile_recheck(time_t now) {
     static time_t next;
     if (now < next || g_reload_running) return;
     next = now + 30;
-    if (flag("disctile_noreload") || reload_tile_current()) return;
+    if (reload_tile_off() || reload_tile_current()) return;
     if (reload_tile_user_removed()) return; /* 171l: removed by the person: reload_tile_watch makes the flag, nothing is made again */
     reload_tile_ensure();
 }
@@ -3251,9 +3431,9 @@ static int payload_run(int hosted) {
     /* All the tile IDs go into the whitelist now, before any helper is started after us: a helper that reads the file only at its start
      * then knows them (load DiscTile first, then the helper). A hosting helper has the eight slots built in; the reload tile's ID is added in any case. */
     if (!hosted) for (int s = 0; s < NSLOTS; s++) whitelist_add(kSlots[s]);
-    if (!flag("disctile_noreload") && reload_tile_user_removed()) reload_tile_removed_by_user("at the start"); /* 171l: before it is asked for again */
-    else if (!flag("disctile_noreload") && db_has_title(RELOAD_TID) > 0) reload_tile_mark_shown(); /* 171l: a tile from 2.20 that is there counts as seen */
-    if (!flag("disctile_noreload")) whitelist_add(RELOAD_TID);
+    if (!reload_tile_off() && reload_tile_user_removed()) reload_tile_removed_by_user("at the start"); /* 171l: before it is asked for again */
+    else if (!reload_tile_off() && db_has_title(RELOAD_TID) > 0) reload_tile_mark_shown(); /* 171l: a tile from 2.20 that is there counts as seen */
+    if (!reload_tile_off()) whitelist_add(RELOAD_TID);
     warm_init(); /* can folders be staged beforehand? (see the staged tiles above) */
     reload_tile_ensure(); /* the "Reload PS2 Disc" tile: made when it is missing or out of date */
     { /* what is in the app sandboxes at the start: the log shows whether a stale one is there */
@@ -3362,6 +3542,7 @@ static int payload_run(int hosted) {
         reload_tile_watch(now); /* 171l: a removal by the person sticks */
         reload_tile_flag_tick(now); /* 171m: the flag switched in PS5SX2's settings: the tile taken away or made again now */
         reload_tile_recheck(now);
+        badge_names_tick(now); /* 171n: the PS2 badge on the names of PS5SX2's tiles already on the home screen */
         heal_tick(now);
         gone_tick();
         reload_finish_tick(now);
