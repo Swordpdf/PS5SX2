@@ -970,11 +970,13 @@ std::vector<std::string> CoverService::FrontUrls(const CoverConfig& cfg, const s
 	std::vector<std::string> urls;
 	const LaunchboxArt* art = cfg.launchbox && !serial.empty() ? cfg.launchbox->Find(serial) : nullptr;
 	const bool lb = art && !art->front.empty();
-	if (lb && art->front_exact)
+	// 186: LaunchBox's own-region scan first only with launchbox_front_first; else after the configured source, as for the other regions'
+	const bool lb_first = lb && art->front_exact && cfg.launchbox_front_first;
+	if (lb_first)
 		urls.push_back(LaunchboxIndex::Url(art->front));
 	if (!cfg.url_template.empty())
 		urls.push_back(FillSerial(cfg.url_template, serial));
-	if (lb && !art->front_exact)
+	if (lb && !lb_first)
 		urls.push_back(LaunchboxIndex::Url(art->front));
 	return urls;
 }
@@ -1767,6 +1769,8 @@ bool CoverService::DownloadDisc(const std::string& serial, CoverImage& out)
 // A cached cover the index has a sure match for (title matched as it stands, the front from the serial's own region), not LaunchBox's yet.
 bool CoverService::WantsUpgrade(int index, const char* source) const
 {
+	if (!m_cfg.launchbox_front_first)
+		return WantsRevert(index, source); // 186: the old fronts first: a LaunchBox one goes back instead
 	if (!m_cfg.launchbox || !m_cfg.launchbox_upgrade || !m_cfg.allow_download || !m_download || std::strcmp(source, "cache") != 0)
 		return false;
 	const GameInfo& g = m_games[static_cast<size_t>(index)];
@@ -1779,6 +1783,8 @@ bool CoverService::WantsUpgrade(int index, const char* source) const
 // for again for two weeks.
 bool CoverService::UpgradeCover(int index, CoverImage& out)
 {
+	if (!m_cfg.launchbox_front_first)
+		return RevertCover(index, out); // 186
 	const GameInfo& g = m_games[static_cast<size_t>(index)];
 	const LaunchboxArt* art = m_cfg.launchbox ? m_cfg.launchbox->Find(g.serial) : nullptr;
 	if (!art || !LaunchboxIndex::CanUpgrade(*art) || Offline() || m_stop || LbPaused())
@@ -1819,6 +1825,78 @@ bool CoverService::UpgradeCover(int index, CoverImage& out)
 		Mark404(m_cfg.cache_dir + "/" + g.serial + "_lb.missing"); // gone, or not a picture the shelf can use
 	NoteResult(url, status, decoded);
 	std::printf("[frontend] cover upgrade %s: %s -> %d%s\n", g.serial.c_str(), url.c_str(), status, ok ? " (replaced; the old one is kept as .jpg.old)" : "");
+	std::fflush(stdout);
+	return ok;
+}
+
+// 186: a cached front that is LaunchBox's (cache/<serial>.lb) while LaunchBox no longer comes first for fronts: switched back once (RevertCover), from the
+// file it replaced when that is still there, else from the configured source unless that had none for it in the last two weeks.
+bool CoverService::WantsRevert(int index, const char* source) const
+{
+	if (std::strcmp(source, "cache") != 0)
+		return false;
+	const GameInfo& g = m_games[static_cast<size_t>(index)];
+	if (g.serial.empty() || !LbFileExists(m_cfg.cache_dir + "/" + g.serial + ".lb"))
+		return false;
+	if (LbFileExists(m_cfg.cache_dir + "/" + g.serial + ".jpg.old"))
+		return true;
+	return m_cfg.allow_download && m_download && !m_cfg.url_template.empty() && !RecentlyMissing(m_cfg.cache_dir, g.serial + "_x");
+}
+
+// 186: switches a cached LaunchBox front back: the cover UpgradeCover replaced (<serial>.jpg.old) when it is there, else the configured source's
+// (xlenore's). LaunchBox's is kept once as <serial>.jpg.lbfront. A source with none for the game (gone, or not a picture): LaunchBox's stays, and the
+// source is not asked again for two weeks (<serial>_x.missing).
+bool CoverService::RevertCover(int index, CoverImage& out)
+{
+	const GameInfo& g = m_games[static_cast<size_t>(index)];
+	const std::string cached = m_cfg.cache_dir + "/" + g.serial + ".jpg";
+	const std::string old = cached + ".old", kept = cached + ".lbfront";
+	std::vector<uint8_t> bytes;
+	if (LbFileExists(old))
+	{
+		rename(cached.c_str(), kept.c_str());
+		if (rename(old.c_str(), cached.c_str()) != 0)
+		{
+			rename(kept.c_str(), cached.c_str()); // put LaunchBox's back: nothing changed
+			return false;
+		}
+		MarkLaunchbox(m_cfg.cache_dir, g.serial, false);
+		const bool ok = ReadFile(cached, bytes) && Decode(bytes, 1024, out, 0, FitFor(m_cfg, CoverFit::Face));
+		if (ok)
+			out.source = "cache";
+		std::printf("[frontend] cover %s: back to the one LaunchBox's had replaced (.jpg.old; LaunchBox's kept as .jpg.lbfront)%s\n", g.serial.c_str(),
+			ok ? "" : ", which does not decode");
+		std::fflush(stdout);
+		return ok;
+	}
+	if (Offline() || m_stop || m_cfg.url_template.empty())
+		return false;
+	const std::string url = FillSerial(m_cfg.url_template, g.serial);
+	const std::string fresh = cached + ".xnew";
+	const int status = m_download(url, bytes);
+	const bool decoded = status == 200 && Decode(bytes, 1024, out, 4096, FitFor(m_cfg, CoverFit::Face));
+	bool ok = false;
+	if (decoded && WriteFileAtomic(fresh, bytes))
+	{
+		// LaunchBox's is kept first; only then the new one takes its place (a full disk or a kill half way leaves a cover there)
+		rename(cached.c_str(), kept.c_str());
+		if (rename(fresh.c_str(), cached.c_str()) == 0)
+		{
+			ok = true;
+			MarkLaunchbox(m_cfg.cache_dir, g.serial, false);
+			out.source = "download";
+		}
+		else
+		{
+			rename(kept.c_str(), cached.c_str());
+			unlink(fresh.c_str());
+		}
+	}
+	else if (status == 200 || Gone(status))
+		Mark404(m_cfg.cache_dir + "/" + g.serial + "_x.missing"); // none there: LaunchBox's stays, not asked again for two weeks
+	NoteResult(url, status, decoded);
+	std::printf("[frontend] cover %s back to the old source: %s -> %d%s\n", g.serial.c_str(), url.c_str(), status,
+		ok ? " (replaced; LaunchBox's kept as .jpg.lbfront)" : decoded ? " (could not be written)" : " (LaunchBox's stays)");
 	std::fflush(stdout);
 	return ok;
 }

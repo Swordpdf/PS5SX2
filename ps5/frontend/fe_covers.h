@@ -71,6 +71,11 @@ struct CoverConfig
 	// 2.11: a cached cover the index has a sure match for (LaunchboxIndex::CanUpgrade) is replaced by LaunchBox's once, when its game comes near
 	// the selection; the old file is kept as <serial>.jpg.old. Off with the flag file flags/nolbupgrade (fe_ps5.cpp).
 	bool launchbox_upgrade = true;
+	// 186 (the owner, 2026-11-02: "switch back to the old covers (only for the front cover)"): false = the configured source (url_template, xlenore's
+	// ps2-covers) comes first for fronts again and LaunchBox only for a game it has none for; a cached front that is LaunchBox's (cache/<serial>.lb) is
+	// switched back once when its game comes near the selection (RevertCover). Backs, spines and disc art stay LaunchBox's. True (the flag file
+	// flags/lbfront, fe_ps5.cpp): 2.11's order, LaunchBox's own-region scan first, with its upgrades.
+	bool launchbox_front_first = false;
 	// 2.11: a front, back or spine picture is made the shape of its face of the case (fe_coverfit.h) as it is decoded. Off with the flag file
 	// flags/nocoverfit (fe_ps5.cpp): every picture then fills its face as it did before, whatever its proportions.
 	bool fit_covers = true;
@@ -261,6 +266,8 @@ private:
 	bool FindLocalDisc(const std::string& serial, CoverImage& out);
 	bool WantsUpgrade(int index, const char* source) const;
 	bool UpgradeCover(int index, CoverImage& out);
+	bool WantsRevert(int index, const char* source) const; // 186: the same pass, the other way (launchbox_front_first false)
+	bool RevertCover(int index, CoverImage& out);
 	int NextBackDownload() const; // m_mutex held: the game nearest the selection whose back cover is to be downloaded, or -1
 	int NextUpgrade() const;      // m_mutex held: the same for a cached cover to improve
 	// vk-285-110: the covers on disk for every game first, then the downloads, so a slow or failing

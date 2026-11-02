@@ -215,6 +215,7 @@ static void Units()
 	shared->Add("SLUS-00001 f=front-exact.jpg* b=back-exact.jpg* d=disc.png* s=spine-1.jpg* m=1\n"
 				"SLUS-00002 f=front-other.jpg b=back-other.jpg d=disc2.png m=1\n");
 	CoverConfig cfg;
+	cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	cfg.url_template = "https://example.test/covers/${serial}.jpg";
 	cfg.back_url_template = "https://example.test/backs/${serial}.jpg";
 	cfg.launchbox = shared;
@@ -288,6 +289,7 @@ static void BackInline(Fonts& fonts)
 			CopyFixture("back.jpg", base + "_back.jpg");
 	}
 	CoverConfig cfg;
+	cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	cfg.manual_dir = dir + "/covers";
 	cfg.cache_dir = cache;
 	cfg.allow_download = false;
@@ -362,6 +364,7 @@ static void BackGate(Fonts& fonts)
 		net.files[kLbHost + "lb-b" + std::to_string(i) + "-back.jpg"] = "back.jpg";
 	}
 	CoverConfig cfg;
+	cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	cfg.manual_dir = dir + "/covers";
 	cfg.cache_dir = cache;
 	cfg.allow_download = true;
@@ -447,6 +450,7 @@ static void BackRing(Fonts& fonts)
 		WriteText(base + ".lb", "1\n");
 	}
 	CoverConfig cfg;
+	cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	cfg.manual_dir = dir + "/covers";
 	cfg.cache_dir = cache;
 	cfg.allow_download = true;
@@ -520,6 +524,7 @@ static void BackNegatives(Fonts& fonts)
 	// game 0: a 404 (nothing served). Game 3's back is on disk already (the player's, in covers/).
 	CopyFixture("back.jpg", dir + "/covers/" + games[3].serial + "_back.jpg");
 	CoverConfig cfg;
+	cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	cfg.manual_dir = dir + "/covers";
 	cfg.cache_dir = cache;
 	cfg.allow_download = true;
@@ -598,6 +603,7 @@ static void BackPauses(Fonts& fonts)
 		}
 		net.status[kLbHost + "lb-g0-back.jpg"] = 429; // slow down
 		CoverConfig cfg;
+		cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 		cfg.manual_dir = dir + "/covers";
 		cfg.cache_dir = cache;
 		cfg.allow_download = true;
@@ -630,6 +636,7 @@ static void BackPauses(Fonts& fonts)
 		net.status[kOther + games[0].serial + ".jpg"] = -1; // the configured source: no answer
 		net.files[kLbHost + "lb-g11-back.jpg"] = "back.jpg";
 		CoverConfig cfg;
+		cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 		cfg.manual_dir = dir + "/covers";
 		cfg.cache_dir = cache;
 		cfg.allow_download = true;
@@ -664,6 +671,7 @@ static void BackPauses(Fonts& fonts)
 		net.once[kLbHost + "lb-g20-back.jpg"] = 429; // a rate limit, the first time only
 		net.files[kLbHost + "lb-g20-back.jpg"] = "back.jpg";
 		CoverConfig cfg;
+		cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 		cfg.manual_dir = dir + "/covers";
 		cfg.cache_dir = cache;
 		cfg.allow_download = true;
@@ -697,6 +705,7 @@ static void BackPauses(Fonts& fonts)
 		net.files[kLbHost + "lb-g30-back.jpg"] = "back.jpg";
 		net.status[kLbHost + "lb-g31-back.jpg"] = -1; // always
 		CoverConfig cfg;
+		cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 		cfg.manual_dir = dir + "/covers";
 		cfg.cache_dir = cache;
 		cfg.allow_download = true;
@@ -736,6 +745,7 @@ static void PauseNoMark(Fonts& fonts)
 	net.files[kOther + games[0].serial + ".jpg"] = "front_b.jpg";
 	// the second game: LaunchBox is not asked (paused), the configured source has nothing (404)
 	CoverConfig cfg;
+	cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	cfg.manual_dir = dir + "/covers";
 	cfg.cache_dir = cache;
 	cfg.url_template = kOther + "${serial}.jpg";
@@ -771,6 +781,7 @@ static void BackNote(Fonts& fonts)
 	// game 0: no source at all. Game 1: LaunchBox has its back. Game 2: marked as having none (a 404 last week). Game 3: LaunchBox lists one that is gone.
 	WriteText(cache + "/" + games[2].serial + "_back.missing", "404 lb\n");
 	CoverConfig cfg;
+	cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	cfg.manual_dir = dir + "/covers";
 	cfg.cache_dir = cache;
 	cfg.allow_download = true;
@@ -869,6 +880,7 @@ int main(int argc, char** argv)
 	}
 
 	CoverConfig cfg;
+	cfg.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	cfg.manual_dir = covers_dir;
 	cfg.cache_dir = cache_dir;
 	cfg.url_template = kOther + "${serial}.jpg";
@@ -1045,6 +1057,7 @@ int main(int argc, char** argv)
 	n4.files[kOther + serial + ".jpg"] = "front_b.jpg";
 	}
 	CoverConfig c4;
+	c4.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	c4.manual_dir = covers_dir;
 	c4.cache_dir = cache4;
 	c4.url_template = kOther + "${serial}.jpg";
@@ -1078,6 +1091,7 @@ int main(int argc, char** argv)
 	n5.files[kLb + "lb-c.jpg"] = "huge.jpg";            // a picture the shelf can't use
 	n5.files[kLb + "lb-d.jpg"] = "front_a.jpg";
 	CoverConfig c5;
+	c5.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	c5.manual_dir = covers_dir;
 	c5.cache_dir = cache5;
 	c5.allow_download = true;
@@ -1105,6 +1119,7 @@ int main(int argc, char** argv)
 	Net n6;
 	n6.files[kLb + "lb-up.jpg"] = "front_a.jpg";
 	CoverConfig c6;
+	c6.launchbox_front_first = true; // 186: 2.11's LaunchBox-first order (flag lbfront)
 	c6.manual_dir = covers_dir;
 	c6.cache_dir = cache6;
 	c6.allow_download = true;
@@ -1118,6 +1133,63 @@ int main(int argc, char** argv)
 	CHECK(ReadFileBytes(cache6 + "/SLUS-30001.jpg.old", old_kept) && old_kept == old_bytes);
 	CHECK(!Exists(cache6 + "/SLUS-30001.jpg.lbnew"));
 	CHECK(s6.Stop(5000));
+	}
+	// 7. (186; the owner: "switch back to the old covers (only for the front cover)") launchbox_front_first false, the default: the configured source's
+	//    front first, LaunchBox's only where it has none; a cached LaunchBox front goes back once: to the file it replaced, else to the configured source's,
+	//    LaunchBox's kept as .jpg.lbfront; a source with none leaves LaunchBox's and is not asked again.
+	{
+	const std::string cache7 = g_work + "/cache7";
+	system(("rm -rf '" + cache7 + "' && mkdir -p '" + cache7 + "'").c_str());
+	std::vector<uint8_t> lb_bytes, old_bytes;
+	CHECK(ReadFileBytes(g_fix + "/front_a.jpg", lb_bytes) && ReadFileBytes(g_fix + "/front_b.jpg", old_bytes));
+	auto put = [&](const std::string& name, const std::vector<uint8_t>& b) {
+		std::ofstream(cache7 + "/" + name, std::ios::binary).write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
+	};
+	put("SLUS-40001.jpg", lb_bytes); // upgraded by 2.11: LaunchBox's, the old one kept
+	put("SLUS-40001.jpg.old", old_bytes);
+	WriteText(cache7 + "/SLUS-40001.lb", "1\n");
+	put("SLUS-40002.jpg", lb_bytes); // LaunchBox's from the start
+	WriteText(cache7 + "/SLUS-40002.lb", "1\n");
+	put("SLUS-40003.jpg", lb_bytes); // LaunchBox's, and the configured source has none
+	WriteText(cache7 + "/SLUS-40003.lb", "1\n");
+	std::vector<GameInfo> g7 = {MakeGame("SLUS-40001", "Old"), MakeGame("SLUS-40002", "Back"), MakeGame("SLUS-40003", "Stays"), MakeGame("SLUS-40004", "New")};
+	auto idx7 = std::make_shared<LaunchboxIndex>();
+	idx7->Add("SLUS-40001 f=lb-o1.jpg* m=1\nSLUS-40002 f=lb-o2.jpg* m=1\nSLUS-40003 f=lb-o3.jpg* m=1\nSLUS-40004 f=lb-o4.jpg* m=1\n");
+	Net n7;
+	n7.files[kOther + "SLUS-40002.jpg"] = "front_b.jpg";
+	n7.files[kOther + "SLUS-40004.jpg"] = "front_b.jpg";
+	n7.files[kLb + "lb-o4.jpg"] = "front_a.jpg";
+	CoverConfig c7; // launchbox_front_first stays false: the default
+	c7.manual_dir = covers_dir;
+	c7.cache_dir = cache7;
+	c7.url_template = kOther + "${serial}.jpg";
+	c7.allow_download = true;
+	c7.launchbox = idx7;
+	CHECK(!c7.launchbox_front_first);
+	CoverService s7;
+	s7.Start(g7, &fonts, c7, [&n7](const std::string& url, std::vector<uint8_t>& out) { return n7.Get(url, out); });
+	for (int i = 0; i < 4; i++)
+		s7.Want(i);
+	CHECK(Wait(s7, 10.0, [](CoverImage&) {}, [&] {
+		return !Exists(cache7 + "/SLUS-40001.lb") && !Exists(cache7 + "/SLUS-40002.lb") && Exists(cache7 + "/SLUS-40003_x.missing") && Exists(cache7 + "/SLUS-40004.jpg");
+	}));
+	std::vector<uint8_t> b1, b1k, b2, b2k, b3, b4;
+	CHECK(ReadFileBytes(cache7 + "/SLUS-40001.jpg", b1) && b1 == old_bytes); // the one it replaced is back
+	CHECK(ReadFileBytes(cache7 + "/SLUS-40001.jpg.lbfront", b1k) && b1k == lb_bytes && !Exists(cache7 + "/SLUS-40001.jpg.old"));
+	CHECK(n7.Count("SLUS-40001.jpg") == 0); // no download for it
+	CHECK(ReadFileBytes(cache7 + "/SLUS-40002.jpg", b2) && b2 == old_bytes); // the configured source's
+	CHECK(ReadFileBytes(cache7 + "/SLUS-40002.jpg.lbfront", b2k) && b2k == lb_bytes && !Exists(cache7 + "/SLUS-40002.jpg.xnew"));
+	CHECK(ReadFileBytes(cache7 + "/SLUS-40003.jpg", b3) && b3 == lb_bytes && Exists(cache7 + "/SLUS-40003.lb")); // none there: LaunchBox's stays
+	CHECK(ReadFileBytes(cache7 + "/SLUS-40004.jpg", b4) && b4 == old_bytes && !Exists(cache7 + "/SLUS-40004.lb")); // a new game: the configured source's
+	CHECK(n7.Count("lb-o4.jpg") == 0 && n7.Count("lb-o1.jpg") == 0 && n7.Count("lb-o2.jpg") == 0); // LaunchBox's fronts not asked for
+	const int asked3 = n7.Count("SLUS-40003.jpg");
+	CHECK(s7.Stop(5000));
+	CoverService s7b; // the next start: the source that had none is not asked again
+	s7b.Start(g7, &fonts, c7, [&n7](const std::string& url, std::vector<uint8_t>& out) { return n7.Get(url, out); });
+	s7b.Want(2);
+	Wait(s7b, 1.5, [](CoverImage&) {}, [] { return false; });
+	CHECK(n7.Count("SLUS-40003.jpg") == asked3 && asked3 == 1);
+	CHECK(s7b.Stop(5000));
 	}
 	// 8. (2.11) The back covers: who asks, who answers, the neighbours ahead of the flip, the order of the queue, the pauses, the card and its note.
 	BackInline(fonts);

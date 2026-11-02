@@ -1857,6 +1857,7 @@ int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budge
 	cc.cache_dir = paths.cache_dir;
 	cc.url_template = kCoverUrl;
 	cc.launchbox = LaunchboxArtIndex(paths.cache_dir); // 2.11
+	cc.launchbox_front_first = OrbisFlag("lbfront"); // 186: the old fronts first, as on the shelf
 	const std::vector<int> missing = CoverService::MissingCovers(games, cc);
 	std::printf("[frontend] prefetch: %zu of %zu covers to fetch (%d from the USB list; checked in %.0f ms)\n", missing.size(),
 		games.size(), listed, (Now() - t0) * 1000.0);
@@ -2200,30 +2201,71 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		return {};
 	}
 
+	// 186 (swordpdf, 2026-11-02, on opening PS5SX2 from the home screen: "it can be faster"): the fonts' glyphs and the key sounds need no display, so
+	// they are made on a thread of their own while the display comes up (in turn they were ~130 ms of display, ~50 ms of glyphs and ~35 ms of sound
+	// before the first frame; the system's launch screen covers the app until that frame).
+	Fonts* fonts = new Fonts();
+	bool fonts_ok = false;
+	Mixer* mixer = nullptr;
+	AudioOut* audio = nullptr;
+	std::thread beside([&] {
+		fonts_ok = fonts->Init(fe_font_text, static_cast<size_t>(fe_font_text_end - fe_font_text), fe_font_icons,
+			static_cast<size_t>(fe_font_icons_end - fe_font_icons), fe_font_brands, static_cast<size_t>(fe_font_brands_end - fe_font_brands));
+		// The key sounds (vk-285-47). Without an audio port the shelf is simply quiet.
+		if (paths.sound)
+		{
+			const double s0 = Now();
+			mixer = new Mixer();
+			mixer->Build();
+			audio = new AudioOut();
+			if (!audio->Start(mixer))
+			{
+				delete audio;
+				audio = nullptr;
+				delete mixer;
+				mixer = nullptr;
+			}
+			std::printf("[frontend] sound %s (%.0f ms, beside the display)\n", audio ? "on" : "off", (Now() - s0) * 1000.0);
+		}
+		else
+			std::printf("[frontend] sound off (nomenusound)\n");
+	});
+	auto stop_sound = [&] {
+		if (audio)
+		{
+			audio->Stop();
+			delete audio;
+			audio = nullptr;
+			delete mixer;
+			mixer = nullptr;
+		}
+	};
 	// Heap objects, so a download still running at the end can be left to finish on its own.
 	Display* display = new Display();
 	const bool display_ok = display->Init();
 	phase("display (Vulkan instance, device, mode, swapchain) ready");
+	beside.join();
+	phase("fonts and sound ready (made beside the display)");
 	if (!display_ok)
 	{
 		display->Destroy();
 		delete display;
+		delete fonts;
+		stop_sound();
 		scePadClose(pad);
 		return {};
 	}
-	Fonts* fonts = new Fonts();
 	Renderer renderer;
-	if (!fonts->Init(fe_font_text, static_cast<size_t>(fe_font_text_end - fe_font_text), fe_font_icons,
-			static_cast<size_t>(fe_font_icons_end - fe_font_icons), fe_font_brands,
-			static_cast<size_t>(fe_font_brands_end - fe_font_brands)) ||
+	if (!fonts_ok ||
 		!renderer.Init(&display->vk, display->pd, display->device, display->qf, display->queue, display->extent.width,
 			display->extent.height, VK_FORMAT_B8G8R8A8_UNORM, display->images, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR))
 	{
-		std::printf("[frontend] renderer: %s\n", renderer.error().c_str());
+		std::printf("[frontend] renderer: %s\n", fonts_ok ? renderer.error().c_str() : "the fonts could not be read");
 		renderer.Shutdown();
 		display->Destroy();
 		delete display;
 		delete fonts;
+		stop_sound();
 		scePadClose(pad);
 		return {};
 	}
@@ -2237,7 +2279,8 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	cc.allow_download = paths.allow_download;
 	cc.download_usb_only = true; // vk-285-110: the rest came from the prefetch, before the jailbreak
 	cc.launchbox = LaunchboxArtIndex(paths.cache_dir); // 2.11: LaunchBox's scans, backs and disc art
-	cc.launchbox_upgrade = !OrbisFlag("nolbupgrade");
+	cc.launchbox_front_first = OrbisFlag("lbfront"); // 186: the old fronts (xlenore's) first again, unless the flag file lbfront asks for 2.11's order
+	cc.launchbox_upgrade = cc.launchbox_front_first && !OrbisFlag("nolbupgrade");
 	cc.back_prefetch = !OrbisFlag("nobackprefetch"); // 2.11: the flag file stops the backs of the cases beside the picked one being fetched ahead
 	if (cc.launchbox && cc.back_prefetch)
 	{
@@ -2282,26 +2325,6 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		covers->Start(games, fonts, cc, CoverGet); // 2026-10-10: was libSceHttp2 (g_http), which fails after the jailbreak; chdscan: or once the scan is done
 
 	phase("cover service started");
-	// The key sounds (vk-285-47). Without an audio port the shelf is simply quiet.
-	Mixer* mixer = nullptr;
-	AudioOut* audio = nullptr;
-	if (paths.sound)
-	{
-		const double s0 = Now();
-		mixer = new Mixer();
-		mixer->Build();
-		audio = new AudioOut();
-		if (!audio->Start(mixer))
-		{
-			delete audio;
-			audio = nullptr;
-			delete mixer;
-			mixer = nullptr;
-		}
-		std::printf("[frontend] sound %s (%.0f ms)\n", audio ? "on" : "off", (Now() - s0) * 1000.0);
-	}
-	else
-		std::printf("[frontend] sound off (nomenusound)\n");
 
 	App app;
 	AppConfig acfg;
@@ -2455,34 +2478,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		std::printf("[tiles] game tiles: on by default (flag gametile_off removes them); the helper and the shelf talk through %s\n", acfg.tiles_dir.c_str());
 		std::fflush(stdout);
 	}
-	// b185 (AI-assisted; the owner: "allow people to actually delete the reload disc tile, and it won't come back"): the switch for the helper's
-	// Reload PS2 Disc tile is the helper's own flag file, /data/PCSX2/flags/disctile_noreload (disctile.c FLAGS_DIR; read directly, not through
-	// OrbisFlag's start-up snapshot). The helper (171m) takes the tile off within seconds when the file appears and puts it back when it goes; a
-	// tile deleted on the home screen makes the file too (171l), so the row shows Off then. Not in a game tile's copy.
-	if (acfg.own_tile_game.empty())
-	{
-		static const char* const kNoReload = "/data/PCSX2/flags/disctile_noreload";
-		acfg.reload_tile_on = [] {
-			struct stat st = {};
-			return stat(kNoReload, &st) != 0;
-		};
-		acfg.set_reload_tile = [](bool on) {
-			bool ok;
-			if (on)
-				ok = unlink(kNoReload) == 0 || errno == ENOENT;
-			else
-			{
-				mkdir("/data/PCSX2/flags", 0777);
-				const int fd = open(kNoReload, O_WRONLY | O_CREAT, 0666);
-				ok = fd >= 0;
-				if (fd >= 0)
-					close(fd);
-			}
-			std::printf("[options] reload tile %s: flags/disctile_noreload %s%s\n", on ? "on" : "off", on ? "deleted" : "made", ok ? "" : " FAILED");
-			std::fflush(stdout);
-			return ok;
-		};
-	}
+	// b185: the sheet's "Reload PS2 Disc tile" switch (the helper's flag file flags/disctile_noreload). 186 (the owner, 2026-11-02: "i also wanna get rid
+	// of the reload disc tile"): helper 171n makes no Reload tile (one that is there is taken away; the flag disctile_reload brings it back for whoever
+	// wants it), so acfg.reload_tile_on and set_reload_tile stay empty and the sheet has no row for it.
 	// 180 (AI-assisted; the owner: an in-app updater like PS5SX3's, and nothing to load by hand but ShadowMount and kstuff): the sheet for all games'
 	// PS5SX2 group (fe_update.h). System update looks at the latest GitHub release over its own HTTPS client and, asked twice, sends the installer the
 	// app ships (OrbisInstallerStart.cpp) and closes; Session logs writes the installer's no-log-upload switch. Not in a game tile's copy: the
@@ -2661,6 +2659,8 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	double last_t = Now(), report_t = last_t;
 	unsigned frames = 0, slot = 0;
 	double worst = 0;
+	// 186: each frame's steps (s), said for a frame of over 100 ms in the shelf's first 10 s (every start from the home screen had one of ~0.9 s)
+	double st_start = 0, st_build = 0, st_wait = 0, st_acquire = 0, st_render = 0, st_present = 0;
 	bool first_shown = false;
 	std::string launch_path; // vk-285-144: a disc's game, asked for from outside
 	auto set_no_bios = [&app] { // bioscheck
@@ -2704,6 +2704,10 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		const double dt = now - last_t;
 		last_t = now;
 		worst = std::max(worst, dt);
+		if (dt > 0.1 && st_present > 0 && now - t0 < 10.0)
+			std::printf("[frontend] slow frame: %.0f ms at +%.0f ms (update and build %.0f, slot %.0f, acquire %.0f, render %.0f, present %.0f, after it %.0f)\n",
+				dt * 1000.0, (now - t0) * 1000.0, (st_build - st_start) * 1000.0, (st_wait - st_build) * 1000.0, (st_acquire - st_wait) * 1000.0,
+				(st_render - st_acquire) * 1000.0, (st_present - st_render) * 1000.0, (now - st_present) * 1000.0);
 		PadData pd;
 		std::memset(&pd, 0, sizeof(pd));
 		pd.lx = pd.ly = pd.rx = pd.ry = 128;
@@ -2735,13 +2739,16 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 			covers->Start(games, fonts, cc, CoverGet);
 			app.SetGames(games, preselect);
 		}
+		st_start = Now();
 		app.Update(dt, in);
 		app.Build(frame, Clock());
+		st_build = Now();
 		if (!renderer.WaitForSlot())
 		{
 			ok = false;
 			break;
 		}
+		st_wait = Now();
 		uint32_t index = 0;
 		VkResult r = display->vk.vkAcquireNextImageKHR(display->device, display->swapchain, UINT64_MAX,
 			display->acquired[slot], VK_NULL_HANDLE, &index);
@@ -2751,6 +2758,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 			ok = false;
 			break;
 		}
+		st_acquire = Now();
 		if (!renderer.Render(frame, index, display->acquired[slot], display->rendered[slot]))
 		{
 			std::printf("[frontend] render: %s\n", renderer.error().c_str());
@@ -2763,7 +2771,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		pi.swapchainCount = 1;
 		pi.pSwapchains = &display->swapchain;
 		pi.pImageIndices = &index;
+		st_render = Now();
 		r = display->vk.vkQueuePresentKHR(display->queue, &pi);
+		st_present = Now();
 		if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR)
 		{
 			std::printf("[frontend] vkQueuePresentKHR: %d\n", static_cast<int>(r));
@@ -2778,14 +2788,21 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 			// vk-285-53: the launch screen (sce_sys/pic1.dds) covers the app until it is hidden; with
 			// it, 52 stayed on the launch screen with the shelf running behind it. Hidden once the
 			// shelf's first frame is up, so the screen goes from one straight to the other.
-			const int hide = orbis_hide_splash();
+			// 186 (swordpdf, 2026-11-02: "it can be faster"): on a thread of its own. Every start from the home screen had a frame of ~0.9 s right
+			// after the first ("251 frames in 5.0 s, worst 870.5 ms"; none after "back to the menu", which has no launch screen), the covers waiting
+			// for it: the call is taken to last as long as the system's change from the launch screen to the app. Its time is logged to tell.
+			std::thread([] {
+				const double h0 = Now();
+				const int hide = orbis_hide_splash();
+				std::printf("[frontend] launch screen hidden (%d) in %.0f ms (on its own thread)\n", hide, (Now() - h0) * 1000.0);
+				std::fflush(stdout);
+			}).detach();
 			// 176: a start that "back to the menu" made says how long after the press its first frame came (the whole gap the player sees)
 			const long long since_press = orbis_leave_press_age_ms();
 			char after_press[96] = "";
 			if (since_press >= 0)
 				std::snprintf(after_press, sizeof(after_press), "; %lld ms after the press of back to the menu", since_press);
-			std::printf("[frontend] first frame on screen %.0f ms after start; launch screen hidden (%d)%s\n", (Now() - t0) * 1000.0,
-				hide, after_press);
+			std::printf("[frontend] first frame on screen %.0f ms after start; launch screen being hidden%s\n", (Now() - t0) * 1000.0, after_press);
 			std::fflush(stdout);
 			if (since_press >= 0)
 			{

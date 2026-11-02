@@ -1687,8 +1687,10 @@ void App::Build(FrameDesc& f, const std::string& clock)
 		f.halo.color[3] = settle * (0.50f + 0.08f * std::sin(t * 2.2f)) * (1.0f - std::min(1.0f, std::fabs(m_flip) * 2.0f)); // 2.11: gone as it turns over
 	}
 
-	// Fade in at start, out when launching.
-	f.fade = std::min(1.0f, t / 0.35f);
+	// Fade out when launching. 186 (swordpdf, 2026-11-02, on opening PS5SX2 from the home screen: "it can be faster"): no fade in at start any more. The
+	// system's launch screen (sce_sys/pic1.dds) is up until the first frame, and after "back to the menu" the screen is black: either way the 0.35 s fade
+	// from black only put a dark moment between them and the shelf.
+	f.fade = 1.0f;
 	if (m_launching)
 		f.fade *= 1.0f - Smoothstep(0.1f, 0.6f, static_cast<float>(m_time - m_launch_time));
 
