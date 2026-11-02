@@ -115,7 +115,11 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 .row .head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .row .label { font-size: 16px; }
 .row .from { font-size: 12px; color: var(--faint); white-space: nowrap; }
-.row .from button { background: none; border: 0; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; padding: 0 0 0 6px; }
+.row .from button { background: none; border: 0; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; padding: 4px; margin: -4px -4px -4px 2px; vertical-align: middle; }
+.row .from button svg { display: block; transition: transform 0.35s ease; }
+.row .from button:hover svg, .row .from button:focus-visible svg { transform: rotate(-200deg); }
+.row .from button.fresh { animation: resetin 0.3s ease; }
+@keyframes resetin { from { opacity: 0; transform: scale(0.6) rotate(90deg); } }
 .row .hint { font-size: 13px; color: var(--faint); margin-top: 4px; }
 .tag { font-size: 11px; color: #ffcf7a; border: 1px solid rgba(255,207,122,0.4); border-radius: 99px; padding: 1px 7px;
        margin-left: 6px; vertical-align: 1px; white-space: nowrap; display: inline-block; }
@@ -164,6 +168,9 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 .prow .pick { width: 56%; flex: 0 0 auto; margin-top: 0; padding: 8px 10px; }
 .pick.moved { border-color: rgba(var(--glow),0.75); box-shadow: 0 0 10px rgba(var(--glow),0.25); }
 .pick.inh { color: var(--dim); }
+.rng { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
+.rng input { flex: 1; min-width: 0; accent-color: rgb(var(--glow)); }
+.rng span { min-width: 44px; text-align: right; font-weight: 700; }
 .btnrow.center { justify-content: center; margin-top: 14px; }
 .pair { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px; margin-top: 10px; }
 .pair .pick { margin-top: 0; padding: 8px 10px; }
@@ -289,7 +296,8 @@ footer a { color: var(--dim); }
 // "def" is PCSX2's own default, shown when neither the game nor gs.ini sets it.
 const CROP_PX = [["0","Off"],["2","2 px"],["4","4 px"],["6","6 px"],["8","8 px"],["10","10 px"],["12","12 px"],["16","16 px"],
                  ["24","24 px"],["32","32 px"]];
-const CROP_HINT = "Cuts this many PS2 pixels off this side of the picture, for games with garbage at a border (Shadow of the Colossus). The picture keeps its proportions.";
+const RESET_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>';
+const CROP_HINT = "Cuts PS2 pixels off each side of the picture, for games with garbage at a border (Shadow of the Colossus). The picture keeps its proportions.";
 // 2026-10-08 (AI-assisted): PCSX2's texture offsets, in thousandths of a texel, as the sheet's TexOffsetChoices().
 const TC_OFFSETS = [["0","Off"],["100","100"],["200","200"],["250","250"],["300","300"],["400","400"],["500","500"],["525","525"],
                     ["550","550"],["600","600"],["700","700"],["750","750"],["800","800"],["900","900"],["1000","1000"]];
@@ -482,12 +490,11 @@ const GROUPS = [
   // picture is scaled to the screen, GSRenderer.cpp CalculateDrawSrcRect). Asked for to hide Shadow of the Colossus's
   // garbage at the borders. Applied while the game runs. 2026-10-08: the Settings tab's last
   // group, as testers asked. The line is on the first row only (the sheet shows it on each).
-  { title: "Crop", items: [
-    { key: "CropLeft", label: "Crop left", type: "seg", def: "0", short: "Crop left %", cols: 5, options: CROP_PX,
-      hint: CROP_HINT },
-    { key: "CropTop", label: "Crop top", type: "seg", def: "0", short: "Crop top %", cols: 5, options: CROP_PX },
-    { key: "CropRight", label: "Crop right", type: "seg", def: "0", short: "Crop right %", cols: 5, options: CROP_PX },
-    { key: "CropBottom", label: "Crop bottom", type: "seg", def: "0", short: "Crop bottom %", cols: 5, options: CROP_PX },
+  { title: "Crop", hint: CROP_HINT, items: [
+    { key: "CropLeft", label: "Crop left", type: "range", def: "0", short: "Crop left %", options: CROP_PX },
+    { key: "CropTop", label: "Crop top", type: "range", def: "0", short: "Crop top %", options: CROP_PX },
+    { key: "CropRight", label: "Crop right", type: "range", def: "0", short: "Crop right %", options: CROP_PX },
+    { key: "CropBottom", label: "Crop bottom", type: "range", def: "0", short: "Crop bottom %", options: CROP_PX },
   ]},
   // vk-285-116 (AI-assisted): the Controls tab: the remapping, (vk-285-117) the save and load combos and their hold time
   // (main-boot.cpp orbis_ps5opts_from, orbis-shims/OrbisPadMap.h), the sticks, rumble, the keyboard and mouse.
@@ -875,7 +882,16 @@ function renderAchievements() {
   nextImage(); nextImage();
 }
 
+let resetsAt = new Map(), resetsNow = new Set();
+function resetBtn(attrs, key) {
+  resetsNow.add(key);
+  if (!resetsAt.has(key)) resetsAt.set(key, Date.now());
+  const age = Date.now() - resetsAt.get(key);
+  return "<button " + attrs + (age < 300 ? ' class="fresh" style="animation-delay:-' + age + 'ms"' : "") + ' aria-label="Reset" title="Reset">' + RESET_ICON + "</button>";
+}
 function render() {
+  for (const k of resetsAt.keys()) if (!resetsNow.has(k)) resetsAt.delete(k);
+  resetsNow = new Set();
   if (tab === "achievements") { renderAchievements(); return; }
   ++achievementImageGeneration;
   const isGlobal = data.id === "@global";
@@ -922,11 +938,9 @@ function render() {
     for (const it of grp.items) {
       const eff = effective(it);
       let from = "";
-      if (eff.from === "own" && !isGlobal) from = 'this game <button data-reset="' + esc(it.key) + '">reset</button>';
-      else if (eff.from === "own") from = 'set <button data-reset="' + esc(it.key) + '">reset</button>';
+      if (eff.from === "own") from = resetBtn('data-reset="' + esc(it.key) + '"', it.key);
       else if (eff.from === "global") from = "all games";
       else if (eff.from === "game") from = "the game's own fix"; // 2026-10-08
-      else from = "default";
       const tag = it.restart ? '<span class="tag">next launch</span>' : "";
       if (it.type === "toggle") {
         html += '<div class="row"><div class="toggle"><div><div class="label">' + esc(it.label) + tag + '</div>' +
@@ -939,8 +953,8 @@ function render() {
         const nx = grp.items[grp.items.indexOf(it) + 1], effn = effective(nx);
         const same = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
         const own = eff.from === "own" || effn.from === "own";
-        const pfrom = own ? (isGlobal ? "set" : "this game") + ' <button data-reset="' + esc(it.key) + '" data-reset2="' + esc(nx.key) + '">reset</button>'
-                          : (eff.from === "global" || effn.from === "global") ? "all games" : "default";
+        const pfrom = own ? resetBtn('data-reset="' + esc(it.key) + '" data-reset2="' + esc(nx.key) + '"', it.key)
+                          : (eff.from === "global" || effn.from === "global") ? "all games" : "";
         const sel = (item, e) => {
           let opts = "";
           for (const o of item.options) opts += '<option value="' + esc(o[0]) + '"' + (same(o[0], e.v) ? " selected" : "") + ">" + esc(o[1]) + "</option>";
@@ -964,6 +978,11 @@ function render() {
           from + "</div>" + (it.hint ? '<div class="hint">' + esc(it.hint) + "</div>" : "") + // 2026-10-08: the hardware fixes' lists have one
           '</div><select class="pick' + (same(eff.v, it.def) ? "" : " moved") + (eff.from === "own" ? "" : " inh") +
           '" data-pickkey="' + esc(it.key) + '" aria-label="' + esc(it.label) + '">' + opts + "</select></div>";
+      } else if (it.type === "range") {
+        const i = Math.max(0, it.options.findIndex((o) => o[0] === String(eff.v)));
+        html += '<div class="row"><div class="head"><div class="label">' + esc(it.label) + tag + '</div><div class="from">' + from + '</div></div>' +
+          (it.hint ? '<div class="hint">' + esc(it.hint) + "</div>" : "") + '<div class="rng"><input type="range" min="0" max="' + (it.options.length - 1) +
+          '" value="' + i + '" data-rangekey="' + esc(it.key) + '" aria-label="' + esc(it.label) + '"><span>' + esc(it.options[i][1]) + "</span></div></div>";
       } else if (it.type === "text") {
         html += '<div class="row"><div class="head"><div class="label">' + esc(it.label) + tag + '</div><div class="from">' + from + '</div></div>';
         if (it.hint) html += '<div class="hint">' + esc(it.hint) + "</div>";
@@ -1028,6 +1047,11 @@ function render() {
     change(el.dataset.textkey, v === "" ? null : v);
   }));
   $("settings").querySelectorAll("[data-pickkey]").forEach((el) => el.addEventListener("change", () => change(el.dataset.pickkey, el.value)));
+  $("settings").querySelectorAll("[data-rangekey]").forEach((el) => {
+    const opts = GROUPS.flatMap((g) => g.items).find((x) => x.key === el.dataset.rangekey).options;
+    el.addEventListener("input", () => { el.nextElementSibling.textContent = opts[el.value][1]; });
+    el.addEventListener("change", () => change(el.dataset.rangekey, opts[el.value][0]));
+  });
   $("settings").querySelectorAll("[data-elfdisc]").forEach((el) => el.addEventListener("change", () => change("PS5SX2/ElfDisc", el.value || null)));
   $("settings").querySelectorAll("[data-cheatdisc]").forEach((el) => el.addEventListener("change", () => change("PS5SX2/CheatDisc", el.value || null)));
   $("settings").querySelectorAll("[data-tile]").forEach((b) => b.addEventListener("click", () => tileAct(b.dataset.tile)));
@@ -1091,8 +1115,8 @@ function memcardsHtml(isGlobal) {
     const inherited = (isGlobal ? "Default" : "Same as all games") + " (" + (truthy(gOn) ? gFile : "no card") + ")";
     const cur = own ? (none ? "@none" : fe.v) : "";
     const listed = cards.cards.some((c) => c.name === cur);
-    let from = own ? (isGlobal ? "set" : "this game") + ' <button data-mcdreset="' + s.n + '">reset</button>'
-                   : (fe.from === "global" || oe.from === "global") ? "all games" : "default";
+    let from = own ? resetBtn('data-mcdreset="' + s.n + '"', "mcd" + s.n)
+                   : (fe.from === "global" || oe.from === "global") ? "all games" : "";
     let opts = '<option value=""' + (cur === "" ? " selected" : "") + ">" + esc(inherited) + "</option>" +
       '<option value="@none"' + (cur === "@none" ? " selected" : "") + ">No card</option>";
     for (const c of cards.cards)
@@ -1242,7 +1266,8 @@ async function refreshGames() {
   try {
     const list = await api("/api/games");
     list.forEach((g) => { const old = games.find((x) => x.id === g.id); if (old) Object.assign(old, g); });
-    if (current && current !== "@global") select(current);
+    const g = games.find((x) => x.id === current);
+    if (g) showInfo(g);
   } catch (e) {}
 }
 
