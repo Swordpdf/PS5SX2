@@ -101,3 +101,18 @@ static __fi void OrbisTidEret()
 	t.ex_seq = 0;
 	t.ex_tid = false;
 }
+
+// 187: a VM reset (cpuReset) or a savestate load (SaveState.cpp PreLoadPrep) puts another run's registers and thread in place without an
+// exception or an ERET, so a cache valid before kept answering: the loaded run got the previous thread's id until its next thread switch,
+// and an exception in flight at the load (its EPC and stack pointer, a GetThreadId to record) was the old run's too. All dropped: valid_seq
+// 0 never matches (seq starts at 1 and only grows), so the next call goes to the kernel. EE thread only (a load runs there, at a vsync).
+static __fi void OrbisTidInvalidate()
+{
+	OrbisTidCache& t = g_orbis_tid;
+	t.seq++;
+	t.valid_seq = 0;
+	t.ex_seq = 0;
+	t.ex_tid = false;
+	t.tid_pending = false;
+	t.check = false;
+}

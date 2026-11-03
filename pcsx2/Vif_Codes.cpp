@@ -548,6 +548,11 @@ vifOp(vifCode_Nop)
 	return 1;
 }
 
+// 187 (vtlb.cpp): a burst's first lines, then one count line a second. Mercenaries logged ~1,320 'Unknown VifCmd' lines a second
+// for 30 s, 0.4-0.7 ms each on the EE thread. One key for VIF0 and VIF1.
+bool OrbisLogBurst(const char* what, s64 value);
+static const char kUnknownVifCmd[] = "Unknown VifCmd";
+
 // ToDo: Review Flags
 vifOp(vifCode_Null)
 {
@@ -557,7 +562,8 @@ vifOp(vifCode_Null)
 		// if ME1, then force the vif to interrupt
 		if (!(vifXRegs.err.ME1))
 		{ // Ignore vifcode and tag mismatch error
-			Console.WriteLn("Vif%d: Unknown VifCmd! [%x]", idx, vifX.cmd);
+			if (OrbisLogBurst(kUnknownVifCmd, vifX.cmd)) // 187: see above
+				Console.WriteLn("Vif%d: Unknown VifCmd! [%x]", idx, vifX.cmd);
 			vifXRegs.stat.ER1 = true;
 			vifX.vifstalled.enabled = VifStallEnable(vifXch);
 			vifX.vifstalled.value = VIF_IRQ_STALL;

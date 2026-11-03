@@ -67,6 +67,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "CDVD/CDVD.h"                  // vk-285-48: cdvdSaveNVRAM
 #include "SPU2/spu2.h"                  // vk-285-48: SPU2::SetOutputPaused
 #include "VUmicro.h"                    // vk-285-76: CpuVU0/CpuVU1->Reset() after a VU codegen switch
+#include "DebugTools/Breakpoints.h"     // 187: CBreakPoints (a breakpoint's pause is not the error pause)
 #include "OrbisEEDiag.h"                // vk-285-100: OrbisCoreCyclesPerTsc
 #include "OrbisDeferredLog.h"            // vk-285-104: orbis_log_drain (the ticker)
 #include "orbis-shims/OrbisTextureRoots.h" // vk-285-113: a game's texture pack on a USB drive
@@ -2556,6 +2557,64 @@ static void orbis_back_to_menu()
   VMManager::SetState(VMState::Running);
 }
 
+// 187: the last error PCSX2 reported, "<title>: <message>" (Host::ReportErrorAsync in StubHost.cpp hands it here; any thread), for the
+// error pause's note below. Empty until one is reported.
+static std::mutex s_host_error_mutex;
+static std::string s_host_error;
+void OrbisNoteHostError(std::string_view title, std::string_view message)
+{
+  std::lock_guard<std::mutex> lock(s_host_error_mutex);
+  s_host_error.assign(title.data(), title.size()).append(": ").append(message.data(), message.size());
+}
+
+static std::string orbis_last_host_error()
+{
+  std::lock_guard<std::mutex> lock(s_host_error_mutex);
+  return s_host_error;
+}
+
+// 187: a guest exception (recError, iopRecError, a TLB miss with PauseOnTLBMiss) pauses the VM for good: the picture froze with nothing
+// said, L1+R1+Touch waited for a vsync that never came, and the PS button lost the last memory card writes and the NVRAM. main()'s loop
+// calls this every 10 ms of that pause (`first`: once). It is said once, and L1+R1+Touch stops the VM for orbis_back_to_menu (true then),
+// which writes them back; other requests are dropped (a save would put the broken state over slot 1). flags/noerrmenu: as before.
+static bool orbis_error_pause(bool first)
+{
+  static bool s_menu = true;
+  if (first)
+  {
+    s_menu = !orbis_flag("noerrmenu");
+    const std::string err = orbis_last_host_error();
+    printf("[pause] the game stopped on an emulation error (EE pc %08x, IOP pc %08x)%s%s; %s\n", cpuRegs.pc, psxRegs.pc,
+      err.empty() ? "" : ": ", err.c_str(), s_menu ? "L1+R1+touchpad click goes back to the shelf" : "flags/noerrmenu: left as it is");
+    fflush(stdout);
+    orbis_eventf("the game stopped on an emulation error (EE pc %08x, IOP pc %08x)%s%s", cpuRegs.pc, psxRegs.pc, err.empty() ? "" : ": ",
+      err.c_str());
+    if (s_menu)
+    {
+      const std::string note = "PS5SX2: the game stopped on an emulation error" + (err.empty() ? std::string(".") : ":\n" + err) +
+        "\nL1+R1 + touchpad click: back to the shelf (your memory card saves are kept)";
+      sys_notify(note.c_str());
+    }
+  }
+  if (!s_menu)
+    return false;
+  const int req = g_orbis_state_request.exchange(0, std::memory_order_acq_rel);
+  if (req == 3)
+  {
+    printf("[pause] L1+R1+touchpad click: back to the menu from the error pause\n");
+    fflush(stdout);
+    g_orbis_menu_request.store(false); // no leave runs while paused: one the pause overtook (Stopping, then the error) left it set
+    OrbisBackToMenuCpu();
+    return true;
+  }
+  if (req != 0)
+  {
+    printf("[pause] request %d dropped: the game stopped on an error (only L1+R1+touchpad click is taken)\n", req);
+    fflush(stdout);
+  }
+  return false;
+}
+
 #ifdef ORBIS_VULKAN
 // Test build 1 (vk-285-55): the folders games are listed from, looked up before the jailbreak
 // (for the cover prefetch; the sandbox may not show the drives yet) and again after it.
@@ -3525,6 +3584,12 @@ int main()
       "%lu ms of static initialisers after it",
       at_main / 1000UL, g_first_ctor_us / 1000UL, (at_main - g_first_ctor_us) / 1000UL);
   }
+  // 187: the bring-up benchmarks (this one, the BIOS folder listing and the [boot] bench lines before the first Execute) run only with
+  // flags/bootbench: nothing reads their lines, and on every start they cost 0.3-0.45 s of black screen (500 flushed printf lines took
+  // 217-365 ms, the 10M-iteration loops 70-80 ms in console logs) and ~37 KB of boot.log. Read here, before the jailbreak: a console that
+  // shows /data only after it doesn't see the flag for this one.
+  const bool vzu_bench = orbis_flag("bootbench");
+  if (vzu_bench)
   {
     // vk-285-91: what VZEROUPPER costs on this CPU. The GS thread's profiles (vk-285-89/90) had 5-7% of
     // their samples on the instruction right after one, so the eboot is now built with -mno-vzeroupper
@@ -3556,7 +3621,7 @@ int main()
 #ifdef ORBIS_VULKAN
   orbis_event_log_init(OrbisLogPath("settings.log")); // vk-285-51
 #endif
-  orbis_boot_phase("vzeroupper benchmark and event log done");
+  orbis_boot_phase(vzu_bench ? "vzeroupper benchmark and event log done" : "event log done");
   orbis_eventf("app start: %s (pid %d)", orbis_build_label().c_str(), (int)getpid());
   {
     // vk-285-51: the crash printer (orbis-shims/ProsperoCrash.cpp) from the start, so the shelf and
@@ -4969,6 +5034,8 @@ int main()
   });
   watchdog.detach();
 
+  const bool boot_bench = orbis_flag("bootbench"); // 187: this listing and the [boot] bench lines below (see vzu_bench)
+  if (boot_bench)
   {
     printf("[boot] BIOS dir scan:\n");
     fflush(stdout);
@@ -5194,7 +5261,8 @@ int main()
   if (!orbis_flag("nousbkbm"))
     OrbisKbdMouseStart();
   orbis_prof_start();
-  // Benchmark raw memory reads + arithmetic (isolates interpreter slowness).
+  // Benchmark raw memory reads + arithmetic (isolates interpreter slowness). 187: only with flags/bootbench (see vzu_bench).
+  if (boot_bench)
   {
     volatile unsigned long long acc = 0;
     auto b0 = std::chrono::steady_clock::now();
@@ -5482,11 +5550,13 @@ int main()
     (void)t0;
     // Orbis: re-enter forever. Execute() returns on every JIT exit (game reset, new ELF, pause);
     // stopping after a fixed window froze the game on New Game / load.
+    bool error_pause_seen = false; // 187: this pause's first pass is done (orbis_error_pause)
     for (;;)
     {
       const VMState st = VMManager::GetState();
       if (st == VMState::Running)
       {
+        error_pause_seen = false;
         VMManager::Execute();
         exits++;
         if (exits < 200 || (exits % 1000) == 0)
@@ -5501,6 +5571,16 @@ int main()
       }
       if (st == VMState::Shutdown || st == VMState::Stopping)
         break;
+      // 187: a pause no breakpoint made is a guest exception's: L1+R1+Touch leaves it for the shelf (orbis_error_pause). The port's other
+      // SetPaused(true) callers can't run: the hotkeys (pause, frame advance) get no input events here, nothing starts an input recording,
+      // and there is no debugger (its breakpoints, and their pauses, are told apart all the same).
+      if (st == VMState::Paused && !CBreakPoints::GetBreakpointTriggered() && !CBreakPoints::GetCorePaused())
+      {
+        const bool first = !error_pause_seen;
+        error_pause_seen = true;
+        if (orbis_error_pause(first))
+          continue; // stopped for the menu: the branch above takes it
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(10)); // paused / resetting
     }
     printf("[boot] execute loop done exits=%u\n", exits);

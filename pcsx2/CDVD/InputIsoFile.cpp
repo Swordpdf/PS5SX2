@@ -19,7 +19,6 @@
 #include "fmt/format.h"
 
 #include <chrono>
-#include <cstdio>
 
 // PS5 port (2.02, AI-assisted): the boot watchdog (main-boot.cpp) names the step a stuck start is in. 2.01's
 // "black screen at every start, PS5 crashes when closed" log stopped at "Opening CDVD..." with nothing after it:
@@ -108,17 +107,7 @@ int InputIsoFile::FinishRead3(u8* dst, uint mode)
 
 	if (m_read_inprogress)
 	{
-		const auto t0 = std::chrono::steady_clock::now();
 		const int ret = m_reader->FinishRead();
-		const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-		static unsigned cdvd_probe = 0;
-		static double cdvd_total_ms = 0;
-		cdvd_total_ms += ms;
-		if ((++cdvd_probe % 50) == 0)
-		{
-			if (0) printf("[dbg] cdvdwait[%u]: last=%.2fms avg=%.2fms\n", cdvd_probe, ms, cdvd_total_ms / cdvd_probe);
-			fflush(stdout);
-		}
 		m_read_inprogress = false;
 
 		if (ret <= 0)

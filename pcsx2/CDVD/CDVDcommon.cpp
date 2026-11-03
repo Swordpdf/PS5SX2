@@ -18,8 +18,6 @@
 #include "common/StringUtil.h"
 
 #include <array>
-#include <chrono>
-#include <cstdio>
 #include <ctype.h>
 #include <exception>
 #include <memory>
@@ -490,17 +488,7 @@ s32 DoCDVDreadTrack(u32 lsn, int mode)
 
 	//DevCon.Warning("CDVD readTrack(lsn=%d,mode=%d)",params lsn, lastReadSize);
 	lastLSN = lsn;
-	// Orbis: CDVD read profiler (suspect for per-slice IOP stalls).
-	static unsigned cd_n = 0; static double cd_ms = 0;
-	const auto cd_t0 = std::chrono::steady_clock::now();
-	s32 ret = CDVD->readTrack(lsn, mode);
-	cd_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cd_t0).count();
-	if ((++cd_n % 200) == 0)
-	{
-		if (0) printf("[dbg] cdvd: reads=%u total_ms=%.1f avg_ms=%.3f\n", cd_n, cd_ms, cd_ms / (double)cd_n);
-		fflush(stdout);
-	}
-	return ret;
+	return CDVD->readTrack(lsn, mode);
 }
 
 s32 DoCDVDgetBuffer(u8* buffer)

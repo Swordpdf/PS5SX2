@@ -36,6 +36,7 @@
 #include <map>
 #include <unordered_set>
 #include <unordered_map>
+#include <x86intrin.h> // 187: __rdtsc for OrbisLogBurst
 
 #define FASTMEM_LOG(...)
 //#define FASTMEM_LOG(...) Console.WriteLn(__VA_ARGS__)
@@ -516,6 +517,79 @@ void GoemonUnloadTlb(u32 key)
 	}
 }
 
+// 187: log spam stopped where it starts. A game that runs into a bus error, a bad DMA address or an unknown VIF command in
+// a loop logged every one, and each line costs the EE thread 0.4-0.7 ms (emulog.txt is written and flushed line by line):
+// 44,401 'Bus Error' lines (Harry Potter and the Chamber of Secrets), ~1,385 'DMA error' a second for 14 s (God of War),
+// ~1,320 'Unknown VifCmd' a second for 30 s (Mercenaries). Now a burst prints its first kBurstLines lines as before, then
+// one '[log] ... more left out' line a second at most, and 10 s without the message ends the burst (the next one prints its
+// first lines again). `what` is the message's key and name: a string literal of the caller's (Dmac.cpp and Vif_Codes.cpp
+// call this too), `value` its address or command for the count line (-1: none). EE thread; a left-out message costs a TSC
+// read and a few compares. True: print this one. The switch file log_nolimit (looked at when a burst begins) prints every line.
+bool OrbisFlag(const char* name) __attribute__((weak)); // OrbisPaths.h
+bool OrbisLogBurst(const char* what, s64 value)
+{
+	struct Burst
+	{
+		const char* what;
+		u64 last;       // TSC of the last message
+		u64 counted;    // TSC of the last count line (or of the burst's start)
+		u64 total;      // messages in this burst
+		u32 printed;    // ... printed
+		u32 left_out;   // ... left out since the last count line
+		bool unlimited; // the switch file log_nolimit was there when the burst began
+	};
+	static Burst s_bursts[16];
+	constexpr u32 kBurstLines = 50; // as vtlb_Miss's spamStop
+	constexpr u64 kTscHz = 1596300000ull; // the PS5's TSC (GSRenderer.cpp's kOrbisTscPerMs)
+	Burst* b = nullptr;
+	for (Burst& e : s_bursts)
+	{
+		if (e.what == what || !e.what)
+		{
+			b = &e;
+			break;
+		}
+	}
+	if (!b)
+		return true; // (more keys than places: printed as before)
+	const u64 now = __rdtsc();
+	if (!b->what)
+		b->what = what;
+	if (b->total && now - b->last >= 10 * kTscHz)
+	{
+		if (b->left_out)
+			Console.Warning("[log] %s: %u more left out at the end of the last burst (%llu in it)", what, b->left_out,
+				static_cast<unsigned long long>(b->total));
+		b->total = 0;
+		b->printed = 0;
+		b->left_out = 0;
+	}
+	if (b->total == 0)
+	{
+		b->counted = now;
+		b->unlimited = OrbisFlag && OrbisFlag("log_nolimit");
+	}
+	b->last = now;
+	b->total++;
+	if (b->printed < kBurstLines || b->unlimited || IsDevBuild)
+	{
+		b->printed++;
+		return true;
+	}
+	b->left_out++;
+	if (now - b->counted >= kTscHz)
+	{
+		char last[24] = "";
+		if (value >= 0)
+			std::snprintf(last, sizeof(last), "; the last: 0x%llx", static_cast<unsigned long long>(value));
+		Console.Warning("[log] %s: %u more left out in the last %.1f s (%llu in this burst so far%s)", what, b->left_out,
+			static_cast<double>(now - b->counted) / static_cast<double>(kTscHz), static_cast<unsigned long long>(b->total), last);
+		b->left_out = 0;
+		b->counted = now;
+	}
+	return false;
+}
+
 // Generates a tlbMiss Exception
 static __ri void vtlb_Miss(u32 addr, u32 mode)
 {
@@ -555,17 +629,19 @@ static __ri void vtlb_Miss(u32 addr, u32 mode)
 // time of the exception.
 static __ri void vtlb_BusError(u32 addr, u32 mode)
 {
-	const std::string message(fmt::format("Bus Error, addr=0x{:x} [{}]", addr, mode ? "store" : "load"));
 	if (EmuConfig.Cpu.Recompiler.PauseOnTLBMiss)
 	{
 		// Pause, let the user try to figure out what went wrong in the debugger.
+		const std::string message(fmt::format("Bus Error, addr=0x{:x} [{}]", addr, mode ? "store" : "load"));
 		Host::ReportErrorAsync("R5900 Exception", message);
 		VMManager::SetPaused(true);
 		Cpu->ExitExecution();
 		return;
 	}
 
-	Console.Error(message);
+	// 187: the first lines of a burst, then a count (OrbisLogBurst above); the line is only formatted when it is printed
+	if (OrbisLogBurst("Bus Error", addr))
+		Console.Error("Bus Error, addr=0x%x [%s]", addr, mode ? "store" : "load");
 }
 
 // clang-format off

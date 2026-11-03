@@ -16,6 +16,7 @@
 #include "Host.h"
 #include "MTGS.h"
 #include "MTVU.h"
+#include "OrbisEEHle.h" // 187: OrbisTidInvalidate
 #include "Patch.h"
 #include "R3000A.h"
 #include "SIO/Multitap/MultitapProtocol.h"
@@ -64,6 +65,10 @@ static void PreLoadPrep()
 	mmap_ResetBlockTracking();
 
 	VMManager::Internal::ClearCPUExecutionCaches();
+
+	// 187: and the GetThreadId cache (OrbisEEHle.h): the loaded registers are another run's. Here rather than in PostLoadPrep, so a load
+	// that fails half-way leaves no stale entry either (its VMManager::Reset, in a running game, only marks the VM Resetting).
+	OrbisTidInvalidate();
 }
 
 static void PostLoadPrep()

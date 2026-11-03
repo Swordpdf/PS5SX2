@@ -438,6 +438,121 @@ int vtlb_DynGenReadNonQuad(u32 bits, bool sign, bool xmm, int addr_reg, vtlb_Rea
 	return x86_dest_reg;
 }
 
+// 187-VTLB-BEGIN (ps5/coreorbis/tests/eerec builds the lines up to 187-VTLB-END with the real emitter)
+// 187: constant-address loads and stores of host memory (above 4 GiB on the PS5, so a movabs; see the Orbis notes
+// below) without the push and pop of a scratch register around them: in two dumped build-184 blocks the pushes and
+// pops alone cost 27% and 6% of the block (audit emu-core-8). A GPR load puts the address in its own destination and
+// loads through it. Stores, xmm loads and the destinations the base-only form cannot address use rax (rcx when the
+// stored value is in rax): the EE register allocator never hands out rax/rcx/rdx
+// (iCore.cpp: _isAllocatableX86reg), and no caller can keep a value there across these functions, which call a C++
+// handler (clobbering both) whenever the constant address is not direct memory. flags/rec_vtlb_pushpop, read at the
+// EE recompiler's reset (iR5900.cpp), brings back the push/pop sequences.
+bool g_orbis_vtlb_pushpop = false;
+
+// The emitter encodes [reg] without a SIB byte or a displacement, which means something else for rsp/rbp/r12/r13
+// (low bits 100/101; the NOTE in vtlb_DynGenReadNonQuad_Const). Those cannot hold the address themselves.
+static bool OrbisConstBaseOK(int reg)
+{
+	return (reg & 7) != 4 && (reg & 7) != 5;
+}
+
+static void OrbisConstLoadGPR(u32 bits, bool sign, int dest, uptr host)
+{
+	const bool pushpop = g_orbis_vtlb_pushpop;
+	const xAddressReg addr = (!pushpop && OrbisConstBaseOK(dest)) ? xAddressReg(dest) : ((dest == rax.GetId()) ? rcx : rax);
+	if (pushpop)
+		xPUSH(addr);
+	xMOV64(addr, (sptr)host);
+	switch (bits)
+	{
+		case 8:
+			sign ? xMOVSX(xRegister64(dest), ptr8[addr]) : xMOVZX(xRegister32(dest), ptr8[addr]);
+			break;
+
+		case 16:
+			sign ? xMOVSX(xRegister64(dest), ptr16[addr]) : xMOVZX(xRegister32(dest), ptr16[addr]);
+			break;
+
+		case 32:
+			sign ? xMOVSX(xRegister64(dest), ptr32[addr]) : xMOV(xRegister32(dest), ptr32[addr]);
+			break;
+
+		case 64:
+			xMOV(xRegister64(dest), ptr64[addr]);
+			break;
+	}
+	if (pushpop)
+		xPOP(addr);
+}
+
+// bits 32 (movss, or movd with movd set) or 128 (movaps).
+static void OrbisConstLoadXMM(u32 bits, int dest, uptr host, bool movd)
+{
+	const bool pushpop = g_orbis_vtlb_pushpop;
+	if (pushpop)
+		xPUSH(rax);
+	xMOV64(rax, (sptr)host);
+	if (bits == 128)
+		xMOVAPS(xRegisterSSE(dest), ptr128[rax]);
+	else if (movd)
+		xMOVDZX(xRegisterSSE(dest), ptr32[rax]);
+	else
+		xMOVSSZX(xRegisterSSE(dest), ptr32[rax]);
+	if (pushpop)
+		xPOP(rax);
+}
+
+static void OrbisConstStore(u32 bits, bool xmm, int value_reg, uptr host)
+{
+	// Scratch must never be the value register itself.
+	const bool pushpop = g_orbis_vtlb_pushpop;
+	const xAddressReg scratch = (!xmm && value_reg == rax.GetId()) ? rcx : rax;
+	if (pushpop)
+		xPUSH(scratch);
+	xMOV64(scratch, (sptr)host);
+	if (!xmm)
+	{
+		switch (bits)
+		{
+			case 8:
+				xMOV(ptr8[scratch], xRegister8(xRegister32(value_reg)));
+				break;
+
+			case 16:
+				xMOV(ptr16[scratch], xRegister16(value_reg));
+				break;
+
+			case 32:
+				xMOV(ptr32[scratch], xRegister32(value_reg));
+				break;
+
+			case 64:
+				xMOV(ptr64[scratch], xRegister64(value_reg));
+				break;
+
+				jNO_DEFAULT
+		}
+	}
+	else
+	{
+		switch (bits)
+		{
+			case 32:
+				xMOVSS(ptr32[scratch], xRegisterSSE(value_reg));
+				break;
+
+			case 128:
+				xMOVAPS(ptr128[scratch], xRegisterSSE(value_reg));
+				break;
+
+				jNO_DEFAULT
+		}
+	}
+	if (pushpop)
+		xPOP(scratch);
+}
+// 187-VTLB-END
+
 // ------------------------------------------------------------------------
 // Recompiled input registers:
 //   ecx - source address to read from
@@ -462,40 +577,17 @@ int vtlb_DynGenReadNonQuad_Const(u32 bits, bool sign, bool xmm, u32 addr_const, 
 		// emitter's ModRM-only path misencodes r12/r13/rsp/rbp (low 3 bits
 		// 100/101) as disp32, silently reading the wrong address. rax/rcx
 		// (ids 0/1) are always safe.
+		// 187: the movabs and the access, without the push/pop, are in OrbisConstLoadGPR/XMM above.
 		const uptr ppf = vmv.assumePtr(addr_const);
 		if (!xmm)
 		{
 			x86_dest_reg = dest_reg_alloc ? dest_reg_alloc() : (_freeX86reg(eax), eax.GetId());
-			const xAddressReg scratch = (x86_dest_reg == rax.GetId()) ? rcx : rax;
-			xPUSH(scratch);
-			xMOV64(scratch, (sptr)ppf);
-			switch (bits)
-			{
-			case 8:
-				sign ? xMOVSX(xRegister64(x86_dest_reg), ptr8[scratch]) : xMOVZX(xRegister32(x86_dest_reg), ptr8[scratch]);
-				break;
-
-			case 16:
-				sign ? xMOVSX(xRegister64(x86_dest_reg), ptr16[scratch]) : xMOVZX(xRegister32(x86_dest_reg), ptr16[scratch]);
-				break;
-
-			case 32:
-				sign ? xMOVSX(xRegister64(x86_dest_reg), ptr32[scratch]) : xMOV(xRegister32(x86_dest_reg), ptr32[scratch]);
-				break;
-
-			case 64:
-				xMOV(xRegister64(x86_dest_reg), ptr64[scratch]);
-				break;
-			}
-			xPOP(scratch);
+			OrbisConstLoadGPR(bits, sign, x86_dest_reg, ppf);
 		}
 		else
 		{
 			x86_dest_reg = dest_reg_alloc ? dest_reg_alloc() : (_freeXMMreg(0), 0);
-			xPUSH(rax);
-			xMOV64(rax, (sptr)ppf);
-			xMOVSSZX(xRegisterSSE(x86_dest_reg), ptr32[rax]);
-			xPOP(rax);
+			OrbisConstLoadXMM(32, x86_dest_reg, ppf, false);
 		}
 	}
 	else
@@ -520,24 +612,11 @@ int vtlb_DynGenReadNonQuad_Const(u32 bits, bool sign, bool xmm, u32 addr_const, 
 			// Scratch must be rax/rcx (SIB-safe base-only encoding); the
 			// dest register itself may be r12/r13/rsp/rbp which misencode.
 			x86_dest_reg = dest_reg_alloc ? dest_reg_alloc() : (_freeX86reg(eax), eax.GetId());
+			// 187: the same sequences without the push/pop (OrbisConstLoadGPR/XMM above).
 			if (!xmm)
-			{
-				const xAddressReg scratch = (x86_dest_reg == rax.GetId()) ? rcx : rax;
-				xPUSH(scratch);
-				xMOV64(scratch, (sptr)&psHu32(INTC_STAT));
-				if (sign)
-					xMOVSX(xRegister64(x86_dest_reg), ptr32[scratch]);
-				else
-					xMOV(xRegister32(x86_dest_reg), ptr32[scratch]);
-				xPOP(scratch);
-			}
+				OrbisConstLoadGPR(32, sign, x86_dest_reg, (uptr)&psHu32(INTC_STAT));
 			else
-			{
-				xPUSH(rax);
-				xMOV64(rax, (sptr)&psHu32(INTC_STAT));
-				xMOVDZX(xRegisterSSE(x86_dest_reg), ptr32[rax]);
-				xPOP(rax);
-			}
+				OrbisConstLoadXMM(32, x86_dest_reg, (uptr)&psHu32(INTC_STAT), true);
 		}
 		else
 		{
@@ -628,15 +707,11 @@ int vtlb_DynGenReadQuad_Const(u32 bits, u32 addr_const, vtlb_ReadRegAllocCallbac
 	if (!vmv.isHandler(addr_const))
 	{
 		// Orbis: host pointer above 4GB; absolute disp32 would truncate.
+		// 187: without the push/pop (OrbisConstLoadXMM above).
 		const uptr ppf = vmv.assumePtr(addr_const);
 		reg = dest_reg_alloc ? dest_reg_alloc() : (_freeXMMreg(0), 0);
 		if (reg >= 0)
-		{
-			xPUSH(rax);
-			xMOV64(rax, (sptr)ppf);
-			xMOVAPS(xRegisterSSE(reg), ptr128[rax]);
-			xPOP(rax);
-		}
+			OrbisConstLoadXMM(128, reg, ppf, false);
 	}
 	else
 	{
@@ -838,50 +913,8 @@ void vtlb_DynGenWrite_Const(u32 bits, bool xmm, u32 addr_const, int value_reg)
 	if (!vmv.isHandler(addr_const))
 	{
 		// Orbis: host pointer above 4GB; absolute disp32 would truncate.
-		// Scratch must never be the value register itself.
-		const uptr ppf = vmv.assumePtr(addr_const);
-		const xAddressReg scratch = (!xmm && value_reg == rax.GetId()) ? rcx : rax;
-		xPUSH(scratch);
-		xMOV64(scratch, (sptr)ppf);
-		if (!xmm)
-		{
-			switch (bits)
-			{
-				case 8:
-					xMOV(ptr8[scratch], xRegister8(xRegister32(value_reg)));
-					break;
-
-				case 16:
-					xMOV(ptr16[scratch], xRegister16(value_reg));
-					break;
-
-				case 32:
-					xMOV(ptr32[scratch], xRegister32(value_reg));
-					break;
-
-				case 64:
-					xMOV(ptr64[scratch], xRegister64(value_reg));
-					break;
-
-					jNO_DEFAULT
-			}
-		}
-		else
-		{
-			switch (bits)
-			{
-				case 32:
-					xMOVSS(ptr32[scratch], xRegisterSSE(value_reg));
-					break;
-
-				case 128:
-					xMOVAPS(ptr128[scratch], xRegisterSSE(value_reg));
-					break;
-
-					jNO_DEFAULT
-			}
-		}
-		xPOP(scratch);
+		// 187: the movabs and the store, without the push/pop, are in OrbisConstStore above.
+		OrbisConstStore(bits, xmm, value_reg, vmv.assumePtr(addr_const));
 	}
 	else
 	{

@@ -40,9 +40,11 @@ SQLITE=${SQLITE_DIR:-}
 # comparisons). The real tile6 keeps the old names. BUILD_DIR still wins.
 BNAME=$(basename "$HERE"); BNAME=${BNAME#tile6}; BNAME=${BNAME#-}
 BTAG=""; [ -n "$BNAME" ] && BTAG="-$BNAME"
+# 171p: the no-mount helper builds disctile.c with DISC_SMP_OWNS_DATA=1: ShadowMount+ owns the /data mounts of the sandboxes, so the automatic clean-up of
+# stale sandboxes takes no mount off and never touches PS5SX2's own (disctile.c, the note above Sbx).
 case "$VARIANT" in
-  nomount) W=${BUILD_DIR:-$HOME/rps5/helperbuild${BTAG}-nomount}; OUT=PS5SXHelper-merged-nomount.elf; MAIN=main-nomount.c ;;
-  normal)  W=${BUILD_DIR:-$HOME/rps5/helperbuild${BTAG}-merged};  OUT=PS5SXHelper-merged.elf;         MAIN=main.c ;;
+  nomount) W=${BUILD_DIR:-$HOME/rps5/helperbuild${BTAG}-nomount}; OUT=PS5SXHelper-merged-nomount.elf; MAIN=main-nomount.c; OWNS="-DDISC_SMP_OWNS_DATA=1" ;;
+  normal)  W=${BUILD_DIR:-$HOME/rps5/helperbuild${BTAG}-merged};  OUT=PS5SXHelper-merged.elf;         MAIN=main.c; OWNS="" ;;
   *) echo "VARIANT must be normal or nomount"; exit 1 ;;
 esac
 #   The defaults are the configuration the tester ran without a kernel panic (helper 171e "KP test", PS5SX2 Disc Helper - KP test.elf) plus 171f's additions; the
@@ -120,7 +122,7 @@ $CC -std=gnu11 -O2 -Wall -Wextra -Werror $KPDEF -c kp.c -o obj/kp.o 2>&1 | grep 
 $CC -std=gnu11 -O2 -Wall -Wextra -Werror -DDISC_AUTO_EMBEDDED -c disc_launch.c -o obj/disc_launch.o 2>&1 | grep -v 'no version information' | head -40
 $CC -std=gnu11 -O2 -Wall -Wextra -Werror -DDISC_AUTO_EMBEDDED -c disc_speed8.c -o obj/disc_speed8.o 2>&1 | grep -v 'no version information' | head -40 # 179: DiscSpeed8 SceShellCore 8x patch + 60 s drive pin
 $CC -std=gnu11 -O2 -Wall -Wextra -Werror -c disc_hash.c -o obj/disc_hash.o 2>&1 | grep -v 'no version information' | head -40
-$CC -std=gnu11 -O2 -Wall -Wextra -Werror -DDISC_MERGED -DDISC_HOST_THREAD -I$SQLITE -c disctile.c -o obj/disctile.o 2>&1 | grep -v 'no version information' | head -40
+$CC -std=gnu11 -O2 -Wall -Wextra -Werror -DDISC_MERGED -DDISC_HOST_THREAD $OWNS -I$SQLITE -c disctile.c -o obj/disctile.o 2>&1 | grep -v 'no version information' | head -40
 $CC -std=gnu11 -O2 -Wall -Wextra -Werror -c main.c -o obj/main.o 2>&1 | grep -v 'no version information' | head -40
 [ "$VARIANT" = normal ] && $CC -std=gnu11 -O2 -Wall -Wextra -Werror -c mount.c -o obj/mount.o 2>&1 | grep -v 'no version information' | head -40
 $CC -std=gnu11 -O2 -Wall -Wextra -Werror -c jb.c -o obj/jb.o 2>&1 | grep -v 'no version information' | head -40
@@ -159,4 +161,4 @@ for n in 51 60; do
 done
 echo "gate: PPSA99251..PPSA99260 are in jb.o's built-in list and in the ELF"
 ls -la PS5SXHelper.elf && sha256sum PS5SXHelper.elf && cp PS5SXHelper.elf "$HERE/$OUT"
-echo "built $OUT: helper 171m (the Reload tile switched from PS5SX2's settings, its flag looked at while running; DiscSpeed8 shell patch fw 11.40 only unless flag disc_speed8_anyfw, detach checked; a Reload tile removed by the person stays removed; next to the PS5SX3 helper: non-PS2 discs yielded, flag disc_noyield; DiscSpeed8 8x shell patch + 60 s drive pin for PS2 discs, flag disc_nospeed8), game tiles ON by default (flag gametile_off switches off), log files $([ "$HELPER_LOGS" = 1 ] && echo ON || echo "off (flag kp_log)"), jb/mount patches $([ "$KP" = 1 ] && echo ON || echo off), symbols $([ "$STRIP" = 1 ] && echo stripped || echo kept)"
+echo "built $OUT: helper 171p (stale-sandbox clean-up: no mount taken off by the no-mount helper and never PS5SX2's own; the other helper only after 60 s busy; DiscSpeed8 pin quiet at shutdown and rest), on top of 171m (the Reload tile switched from PS5SX2's settings, its flag looked at while running; DiscSpeed8 shell patch fw 11.40 only unless flag disc_speed8_anyfw, detach checked; a Reload tile removed by the person stays removed; next to the PS5SX3 helper: non-PS2 discs yielded, flag disc_noyield; DiscSpeed8 8x shell patch + 60 s drive pin for PS2 discs, flag disc_nospeed8), game tiles ON by default (flag gametile_off switches off), log files $([ "$HELPER_LOGS" = 1 ] && echo ON || echo "off (flag kp_log)"), jb/mount patches $([ "$KP" = 1 ] && echo ON || echo off), symbols $([ "$STRIP" = 1 ] && echo stripped || echo kept)"

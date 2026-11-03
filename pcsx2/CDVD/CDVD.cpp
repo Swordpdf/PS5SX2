@@ -1478,7 +1478,11 @@ __fi void cdvdReadInterrupt()
 
 			if (cdvd.CurrentRetryCnt <= cdvd.RetryCntMax)
 			{
-				ERROR_LOG("CDVD read err, retrying... (attempt {} of {})", cdvd.CurrentRetryCnt, cdvd.RetryCntMax);
+				// 187 (audit io-2): only the first and the last attempt say so (all 256 did, in about 0.3 s); the image reader's
+				// [iso] lines say what failed (FlatFileReader.cpp)
+				if (cdvd.CurrentRetryCnt == 1 || cdvd.CurrentRetryCnt == cdvd.RetryCntMax)
+					ERROR_LOG("CDVD read err, retrying... (attempt {} of {}, sector {}{})", cdvd.CurrentRetryCnt, cdvd.RetryCntMax, cdvd.CurrentSector,
+						cdvd.CurrentRetryCnt > 2 ? "; the attempts between were not logged" : "");
 				cdvd.ReadErr = DoCDVDreadTrack(cdvd.CurrentSector, cdvd.ReadMode);
 				CDVDREAD_INT(cdvd.ReadTime);
 			}

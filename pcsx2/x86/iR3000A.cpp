@@ -55,6 +55,11 @@
 using namespace x86Emitter;
 
 extern void psxBREAK();
+extern bool OrbisFlag(const char* name); // orbis-shims/orbis_paths.cpp
+
+// 187: flags/rec_probe (read at each IOP recompiler reset) brings back the on-screen feed iopRecRecompile wrote at
+// every compile (a vsnprintf each).
+static bool s_orbis_iop_probe = false;
 
 u32 g_psxMaxRecMem = 0;
 
@@ -986,6 +991,7 @@ static void recReserve()
 void recResetIOP()
 {
 	DevCon.WriteLn("iR3000A Recompiler reset.");
+	s_orbis_iop_probe = OrbisFlag("rec_probe"); // 187
 
 	if (CHECK_EXTRAMEM != extraRam)
 	{
@@ -1646,9 +1652,11 @@ static void iopRecRecompile(const u32 startpc)
 {
 	if (0) printf("[dbg] iop: recRecompile pc=%08x\n", startpc); // Orbis: no fflush (hot path; ticker flushes 1/s)
 	{
+		// 187: the on-screen feed only with flags/rec_probe; the RSP-WILD check below stays (a compare a compile).
 		static unsigned iop_probe = 0;
 		const unsigned n = iop_probe++;
-		ps5::debug::set_line(6, "iop[%u] pc=%08x", n, startpc);
+		if (s_orbis_iop_probe)
+			ps5::debug::set_line(6, "iop[%u] pc=%08x", n, startpc);
 		(void)n;
 		{
 			unsigned long long sp = 0;

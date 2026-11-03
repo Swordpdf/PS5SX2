@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "OrbisHelperAutoload.h"
+#include "ProsperoNotify.h" // 187: OrbisNotifyPlain (TellRestartOnce)
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -112,10 +113,10 @@ std::string FindElf()
 	return {};
 }
 
-// Send the whole ELF to 127.0.0.1:9021 (the loader streams it and runs it as a system process). true when the loader took
-// all of it. Modelled on orbis_try_jailbreak's loopback send.
-bool SendToLoader(const std::string& path, std::string& detail)
+// The whole ELF; false (and why) when it cannot be read. 187: split from SendToLoader, so the start reads it once for its revision and the send.
+bool ReadElf(const std::string& path, std::vector<unsigned char>& data, std::string& detail)
 {
+	data.clear();
 	FILE* f = std::fopen(path.c_str(), "rb");
 	if (!f)
 	{
@@ -125,15 +126,45 @@ bool SendToLoader(const std::string& path, std::string& detail)
 	std::fseek(f, 0, SEEK_END);
 	const long sz = std::ftell(f);
 	std::fseek(f, 0, SEEK_SET);
-	std::vector<unsigned char> data(sz > 0 ? static_cast<size_t>(sz) : 0);
+	data.resize(sz > 0 ? static_cast<size_t>(sz) : 0);
 	const size_t got = sz > 0 ? std::fread(data.data(), 1, data.size(), f) : 0;
 	std::fclose(f);
 	if (got != data.size() || data.empty())
 	{
+		data.clear();
 		detail = "short read of the ELF";
 		return false;
 	}
+	return true;
+}
+
+// Send the whole ELF to 127.0.0.1:9021 (the loader streams it and runs it as a system process). true when the loader took
+// all of it. Modelled on orbis_try_jailbreak's loopback send.
+bool SendToLoader(const std::string& path, std::string& detail)
+{
+	std::vector<unsigned char> data;
+	if (!ReadElf(path, data, detail))
+		return false;
 	return OrbisLoaderSend(data, detail, nullptr);
+}
+
+// 187: once per shipped revision, the person hears that the shipped helper is loaded after a console restart (an older one runs and keeps
+// its lock: a copy sent now would exit at once). The revision told is kept in logs/helper-restart-told.txt.
+void TellRestartOnce(const std::string& shipped, const std::string& running)
+{
+	const std::string mark = OrbisLogPath("helper-restart-told.txt");
+	if (ReadSmall(mark) == shipped)
+		return;
+	if (FILE* f = std::fopen(mark.c_str(), "wb"))
+	{
+		std::fputs(shipped.c_str(), f);
+		std::fclose(f);
+	}
+	char text[160];
+	std::snprintf(text, sizeof(text), "PS5SX2 Disc Helper %s: restart the console to load it (%s runs until then)", shipped.c_str(),
+		running.empty() ? "an older one" : running.c_str());
+	OrbisNotifyPlain(text);
+	Log("auto-load: told once: %s", text);
 }
 } // namespace
 
@@ -203,23 +234,32 @@ bool OrbisHelperStartBeforeJailbreak()
 }
 
 // Called once at start, after the jailbreak (main-boot.cpp): decide and, if needed, send the helper.
+// 187: the shipped revision is the one in the ELF (RevFromElf; kShippedRev only when the ELF has none), and the ELF is read once.
 void OrbisHelperAutoStart()
 {
 	const bool noautoload = OrbisFlag && OrbisFlag("helper_noautoload");
 	const std::string elf = noautoload ? std::string() : FindElf();
 	const orbis_helper::Status st = ReadStatus();
+	std::vector<unsigned char> data;
+	std::string detail;
+	if (!elf.empty() && !ReadElf(elf, data, detail))
+		Log("auto-load: %s: %s", elf.c_str(), detail.c_str());
+	const std::string elf_rev = data.empty() ? std::string() : orbis_helper::RevFromElf(data.data(), data.size());
+	const std::string shipped = elf_rev.empty() ? std::string(orbis_helper::kShippedRev) : elf_rev;
 
 	std::string why;
-	const orbis_helper::Decision d = orbis_helper::Decide(/*enabled*/ true, noautoload, !elf.empty(), st, orbis_helper::kShippedRev, why);
-	Log("auto-load: %s - %s (shipped %s; %s)", orbis_helper::DecisionName(d), why.c_str(), orbis_helper::kShippedRev,
+	const orbis_helper::Decision d = orbis_helper::Decide(/*enabled*/ true, noautoload, !data.empty(), st, shipped.c_str(), why);
+	Log("auto-load: %s - %s (shipped %s%s; %s)", orbis_helper::DecisionName(d), why.c_str(), shipped.c_str(),
+		!data.empty() && elf_rev.empty() ? ", the app's own idea: no revision found in the ELF" : "",
 		st.alive ? (std::string("a helper runs: pid ") + std::to_string(st.pid) + ", rev " + (st.rev.empty() ? "?" : st.rev) +
 					", heartbeat " + std::to_string(st.age_s) + " s ago" + (st.busy ? ", copying" : "")).c_str()
 				 : "no helper heartbeat");
 
+	if (d == orbis_helper::Decision::LeaveOlder)
+		TellRestartOnce(shipped, st.rev);
 	if (d != orbis_helper::Decision::Load)
 		return;
 
-	std::string detail;
-	const bool ok = SendToLoader(elf, detail);
+	const bool ok = OrbisLoaderSend(data, detail, nullptr);
 	Log("auto-load: %s the helper %s: %s", ok ? "sent" : "could not send", elf.c_str(), detail.c_str());
 }

@@ -50,6 +50,20 @@ protected:
 	/// Checks system memory, to ensure that precaching would not exceed a reasonable amount.
 	bool CheckAvailableMemoryForPrecaching(u64 required_size, Error* error);
 
+	/// 187: what a ReadChunk call is for. Only a Request may be retried by the reader (FlatFileReader, after a failed read of an
+	/// image on a USB drive): the read thread holds no lock then. ReadSync's own read holds m_mtx (Close and the read thread
+	/// wait on it), and the read-ahead is nobody's wait: both fail at once, as before.
+	enum class ReadFor : u8
+	{
+		ReadAhead, ///< the read thread's read-ahead (or nothing)
+		Caller,    ///< ReadSync's own read on the caller's thread, under m_mtx (a failure hands the request to the read thread)
+		Request,   ///< the read thread, for data a caller waits for (BeginRead/FinishRead, or ReadSync's request)
+	};
+	ReadFor m_readFor = ReadFor::ReadAhead;
+	/// 187: a pause before such a retry: sleeps `ms` in steps of at most 5 ms. False, at once, when the request is cancelled
+	/// (CancelRead, Close, Open, Precache) or the reader is being destroyed: give up then.
+	bool RetryWait(u32 ms) const;
+
 	ThreadedFileReader();
 
 private:
@@ -80,7 +94,7 @@ private:
 	std::mutex m_mtx;
 	std::condition_variable m_condition;
 	/// True to tell the thread to exit
-	bool m_quit = false;
+	std::atomic<bool> m_quit{false}; // 187: atomic, RetryWait reads it without m_mtx
 	/// True if the thread is currently doing something other than waiting
 	/// View while holding `m_mtx`.  If false, you may touch decompression functions from other threads
 	bool m_running = false;

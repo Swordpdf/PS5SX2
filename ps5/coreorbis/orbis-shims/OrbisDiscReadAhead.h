@@ -11,6 +11,10 @@
 // more, and everything after a failed window read (the next 256 sectors are read exactly as asked, so a scratch costs one failed window, not two
 // reads of every request).
 //
+// 187: "the next 256 sectors" are the failed window's sectors only. The check had no lower bound, so one failed window sent every sector below its
+// end to plain 32 KiB reads (0.12 MB/s instead of 1.22) until the disc changed. Now the known-bad range is [m_bad_from, m_bad_until): a window
+// stops where it begins (it would fail on it again), and a failure next to or over it widens it; a failure elsewhere replaces it.
+//
 // Used under IOCtlSrc's lock (OrbisIOCtlSrc.cpp); a plain header so the PC test (tests/readahead) can use it with a fake disc.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -51,6 +55,7 @@ public:
 	{
 		for (Window& w : m_w)
 			w.count = 0;
+		m_bad_from = 0; // 187
 		m_bad_until = 0;
 	}
 
@@ -71,7 +76,7 @@ public:
 			Window* hit = Find(sector);
 			if (!hit)
 			{
-				if (sector < m_bad_until)
+				if (sector >= m_bad_from && sector < m_bad_until) // 187: inside the known-bad range only (see the top)
 					return Direct(sector, count, out, read);
 				hit = Fill(sector, count, total, read);
 				if (!hit)
@@ -135,6 +140,8 @@ private:
 		}
 		if (total)
 			size = std::min(size, total - sector);
+		if (m_bad_until > m_bad_from && sector < m_bad_from) // 187: a window stops where the known-bad range begins
+			size = std::min(size, m_bad_from - sector);
 		if (size < count)
 			return nullptr;
 		if (slot->buf.size() < static_cast<size_t>(kMaxWindow) * kSector)
@@ -143,7 +150,18 @@ private:
 		if (!read(sector, size, slot->buf.data()))
 		{
 			m_stats.window_failures++;
-			m_bad_until = sector + size;
+			// 187: the failed window's sectors become the known-bad range; joined with the old one when they touch or overlap
+			const uint32_t end = sector + size;
+			if (m_bad_until > m_bad_from && sector <= m_bad_until && end >= m_bad_from)
+			{
+				m_bad_from = std::min(m_bad_from, sector);
+				m_bad_until = std::max(m_bad_until, end);
+			}
+			else
+			{
+				m_bad_from = sector;
+				m_bad_until = end;
+			}
 			return nullptr;
 		}
 		m_stats.window_reads++;
@@ -156,7 +174,7 @@ private:
 
 	Window m_w[kWindows];
 	uint64_t m_tick = 0;
-	uint32_t m_bad_until = 0;
+	uint32_t m_bad_from = 0, m_bad_until = 0; // 187: the known-bad range (empty when equal); m_bad_until alone before
 	bool m_enabled = true;
 	Stats m_stats;
 };

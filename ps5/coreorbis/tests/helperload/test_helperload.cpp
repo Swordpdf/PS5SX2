@@ -48,12 +48,27 @@ int main()
 	// newer running -> leave
 	Check(Decide(true, false, true, Running("171k"), "171j", why) == Decision::LeaveNewer, "newer helper runs -> leave");
 	Check(Decide(true, false, true, Running("200"), "171j", why) == Decision::LeaveNewer, "much newer helper runs -> leave");
-	// older running, idle -> load
-	Check(Decide(true, false, true, Running("171i"), "171j", why) == Decision::Load, "older helper, idle -> load (replace)");
+	// 187: older running, idle -> leave (a helper sent now would exit at once on the running one's lock; the shipped one after a restart)
+	Check(Decide(true, false, true, Running("171i"), "171j", why) == Decision::LeaveOlder, "older helper, idle -> leave (restart for the new one)");
 	// older running, busy copying -> leave (do not interrupt the copy)
 	Check(Decide(true, false, true, Running("171i", true, true), "171j", why) == Decision::LeaveBusy, "older helper, copying -> leave");
-	// unknown revision running, idle -> load
-	Check(Decide(true, false, true, Running("", true), "171j", why) == Decision::Load, "unknown revision, idle -> load");
+	// 187: unknown revision running, idle -> leave as well (never two payloads at once)
+	Check(Decide(true, false, true, Running("", true), "171j", why) == Decision::LeaveOlder, "unknown revision, idle -> leave");
+	// a heartbeat that is not fresh: nothing runs -> load
+	Check(Decide(true, false, true, Running("171i", false), "171j", why) == Decision::Load, "older helper's stale heartbeat -> load");
+
+	// 187: RevFromElf, the revision in the shipped ELF ("disc payload <rev>" and its NUL)
+	auto rev = [](const char* text, size_t n) { return RevFromElf(reinterpret_cast<const unsigned char*>(text), n); };
+	static const char kElf[] = "\x7f" "ELF....disc payload \0....disc payload 171p\0more";
+	Check(rev(kElf, sizeof(kElf)) == "171p", "RevFromElf: finds 171p after a tag with no revision");
+	static const char kText[] = "disc payload 171p is running";
+	Check(rev(kText, sizeof(kText)).empty(), "RevFromElf: a revision not ended by its NUL is not one");
+	static const char kWord[] = "disc payload abc";
+	Check(rev(kWord, sizeof(kWord)).empty(), "RevFromElf: a revision must start with a digit");
+	static const char kEnd[] = {'d', 'i', 's', 'c', ' ', 'p', 'a', 'y', 'l', 'o', 'a', 'd', ' ', '1', '7', '1'};
+	Check(rev(kEnd, sizeof(kEnd)).empty(), "RevFromElf: cut off at the end of the data: nothing, and no read past it");
+	Check(RevFromElf(nullptr, 0).empty(), "RevFromElf: no data");
+	Check(RevCompare(rev(kElf, sizeof(kElf)).c_str(), kShippedRev) == 0, "kShippedRev is 171p (the helper this build ships)");
 
 	std::printf(s_failed ? "FAILED: %d\n" : "ALL PASSED: %d failed\n", s_failed);
 	return s_failed ? 1 : 0;

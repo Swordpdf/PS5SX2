@@ -72,6 +72,7 @@ void cpuReset()
 	std::memset(&fpuRegs, 0, sizeof(fpuRegs));
 	std::memset(&tlb, 0, sizeof(tlb));
 	cachedTlbs.count = 0;
+	OrbisTidInvalidate(); // 187: the GetThreadId cache was the previous run's (OrbisEEHle.h)
 
 	cpuRegs.pc				= 0xbfc00000; //set pc reg to stack
 	cpuRegs.CP0.n.Config	= 0x440;

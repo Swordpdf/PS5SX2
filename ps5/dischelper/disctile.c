@@ -82,7 +82,7 @@ static void write_helper_status(void); /* 179: forward decl; defined lower, used
 #define MAX_DRIVES 4
 #define NSLOTS     8
 #define POLL_US    250000
-#define PAYLOAD_REV "171o" /* written in the log's first line, so that a log says which payload made it: 171o = 171n without the PS2 badge in the names (the owner: it was to replace the platform badge, which the home screen has no PS2 value for; the badge 171n put in the names of PS5SX2's own tiles is taken back out, flag disctile_nobadge); 171n = 171m + no Reload tile (off unless the flag disctile_reload; one that is there is taken away) and the PS2 badge (U+F8BC) in front of every PS5SX2 tile's name (new tiles from their param.json; the names already on the home screen in app.db, appinfo.db and the param.json copies, flag disctile_nobadge); 171m = 171l + the Reload tile switched from PS5SX2's settings (the flag disctile_noreload looked at every 3 s while running: made -> the tile taken away at once, deleted -> made again; the seen mark forgotten whenever the flag takes the tile away, so switching it back on is not taken for a removal by the person); 171l = 171k + the Reload tile removed by the person stays removed (flag disctile_noreload made for them), DiscSpeed8's shell patch on fw 11.40 only (flag disc_speed8_anyfw) and every detach of the shell checked (never left traced or stopped); 171k = 171j + next to the PS5SX3 helper (disc_compat.h: a drive with a disc that is not a PS2 disc is left alone until the disc goes - not opened, not asked, not pinned to 8x - and ps5sx2-helper.txt says so (compat=1, cd0..cd3=, usb=), so that the PS5SX3 helper takes the drive without stopping this one; the system's disc tile put back at a stop only for a PS2 disc; a removed tile's concept rows that another title uses stay; flag disc_noyield = 171j's way); 171j = 171i + DiscSpeed8 SceShellCore 8x patch and 60 s drive pin (disc_speed8.c; flag disc_nospeed8), game tiles ON by default (gametile_off switches off); 171i = 171h + the flag kp_log looked at every 10 s (not only at the start); 171h = disc speed (the copies of disc_launch.c read in bigger pieces, a drive the watcher reads is not opened here, every 3 s while PS5SX2 copies), 171 = the first reload build, 171b = cover/art refresh on reload, clean slots first,
+#define PAYLOAD_REV "171p" /* written in the log's first line, so that a log says which payload made it: 171p = 171o + the no-mount helper's clean-up of stale sandboxes takes no mount off and never touches PS5SX2's own (it took /data away from every later PS5SX2 start until a restart), the other helper's only after ShadowMount+ said busy for 60 s with no app running, no clean-up at an uninstall's 409, the DiscSpeed8 pin quiet while the console shuts down or rests and asking the drive once a minute, read_serial's NUL kept inside its 16-byte buffer; 171o =171n without the PS2 badge in the names (the owner: it was to replace the platform badge, which the home screen has no PS2 value for; the badge 171n put in the names of PS5SX2's own tiles is taken back out, flag disctile_nobadge); 171n = 171m + no Reload tile (off unless the flag disctile_reload; one that is there is taken away) and the PS2 badge (U+F8BC) in front of every PS5SX2 tile's name (new tiles from their param.json; the names already on the home screen in app.db, appinfo.db and the param.json copies, flag disctile_nobadge); 171m = 171l + the Reload tile switched from PS5SX2's settings (the flag disctile_noreload looked at every 3 s while running: made -> the tile taken away at once, deleted -> made again; the seen mark forgotten whenever the flag takes the tile away, so switching it back on is not taken for a removal by the person); 171l = 171k + the Reload tile removed by the person stays removed (flag disctile_noreload made for them), DiscSpeed8's shell patch on fw 11.40 only (flag disc_speed8_anyfw) and every detach of the shell checked (never left traced or stopped); 171k = 171j + next to the PS5SX3 helper (disc_compat.h: a drive with a disc that is not a PS2 disc is left alone until the disc goes - not opened, not asked, not pinned to 8x - and ps5sx2-helper.txt says so (compat=1, cd0..cd3=, usb=), so that the PS5SX3 helper takes the drive without stopping this one; the system's disc tile put back at a stop only for a PS2 disc; a removed tile's concept rows that another title uses stay; flag disc_noyield = 171j's way); 171j = 171i + DiscSpeed8 SceShellCore 8x patch and 60 s drive pin (disc_speed8.c; flag disc_nospeed8), game tiles ON by default (gametile_off switches off); 171i = 171h + the flag kp_log looked at every 10 s (not only at the start); 171h = disc speed (the copies of disc_launch.c read in bigger pieces, a drive the watcher reads is not opened here, every 3 s while PS5SX2 copies), 171 = the first reload build, 171b = cover/art refresh on reload, clean slots first,
                             * tile-gone timing; 171c = the Reload tile kept next to the disc tile, the uninstall on its own thread asked every 0.4 s, half a second of debounce at eject;
                             * 171d = a tile's game closed when its disc goes out, the leftover database rows of a removed tile deleted, concept rows for the order, a title card when there is no cover;
                             * 171e = kp.c: quiet while the console shuts down or rests (no drive, file, database, ShadowMount+ or notification access), the log files off in a KP test build,
@@ -353,7 +353,9 @@ static int read_serial(int fd, char *out) {
                 if (!bs) return 0;
                 bs++;
                 int ni = 0;
-                for (int i = 0; i < 16 && bs[i] && bs[i] != ';' && bs[i] != '\r' && bs[i] != '\n' && bs[i] != ' '; i++) {
+                /* 171p: at most 15 characters and the NUL in the callers' 16-byte buffers (a BOOT2 name of 16 or more characters before ';' wrote the
+                 * NUL one byte past them); a serial is 9 to 12 characters, so what counts as one is unchanged */
+                for (int i = 0; i < 16 && ni < 15 && bs[i] && bs[i] != ';' && bs[i] != '\r' && bs[i] != '\n' && bs[i] != ' '; i++) {
                     if (bs[i] == '_') out[ni++] = '-';
                     else if (bs[i] != '.') out[ni++] = (char)toupper((unsigned char)bs[i]);
                 }
@@ -1236,7 +1238,7 @@ static char *replace_all(const char *s, const char *from, const char *to) {
 }
 
 /* Cleans up the leftover sandboxes of our titles at once (it is called when an uninstall was refused as busy): defined with the sandbox code below. */
-static int heal_sandboxes(int min_age, const char *why);
+static int heal_sandboxes(int min_age, const char *why, int automatic);
 static double mono_s(void);
 
 /* ---------------------------------------------------------------- taking a tile down
@@ -1358,18 +1360,16 @@ static int close_tile_game(int slot) {
     return closed;
 }
 
-/* One pass: the tile's folder removed (before the uninstall, so that no scan of ShadowMount+ takes it up again meanwhile), the uninstall asked for. A 409 (busy)
- * cleans up the leftover sandboxes of our titles: a title stays held active until its sandbox is gone, and ShadowMount+ lets go about a second after that.
- * Returns the HTTP code (0 or less: ShadowMount+ did not answer). */
+/* One pass: the tile's folder removed (before the uninstall, so that no scan of ShadowMount+ takes it up again meanwhile), the uninstall asked for.
+ * Returns the HTTP code (0 or less: ShadowMount+ did not answer). 171p: a 409 (busy) no longer cleans up sandboxes at once (remove_thread asks again, and
+ * heal_tick cleans up by its own rules): that clean-up could take /data off PS5SX2's own sandbox. */
 static int remove_pass(int slot, char *reply, size_t reply_size) {
     const char *tid = kSlots[slot];
     char dir[128], body[80];
     snprintf(dir, sizeof(dir), HB "/%s", tid);
     rm_tree(dir);
     snprintf(body, sizeof(body), "{\"title_id\":\"%s\"}", tid);
-    const int code = smp_post("/api/v1/games/uninstall", body, reply, reply_size);
-    if (code == 409) heal_sandboxes(2, "an uninstall was refused as busy");
-    return code;
+    return smp_post("/api/v1/games/uninstall", body, reply, reply_size);
 }
 
 /* 200 (asked for), 404 (not installed: nothing to do) and the other answers that will not change are final; 409, no answer and a failed uninstall (5xx) are tried again */
@@ -2524,7 +2524,18 @@ static void start_tile(int drive, const char *serial) {
  * inserts"), and loading ShadowMount+ again cleared it. So the stale sandboxes of OUR titles (PS5SX2 and the tiles) are cleaned up here when no app
  * is running: the mounts inside are taken off (deepest first), then what is left is removed. Nothing outside those folders is touched, nothing on
  * another filesystem is removed (a mount that will not come off is left alone, and said), and nothing at all while any eboot.bin process exists.
- * Flag disctile_noheal: not by itself (the reload tile still does it). */
+ * Flag disctile_noheal: not by itself (the reload tile still does it).
+ *
+ * 171p (build 187): the no-mount helper (build_helper_merged.sh VARIANT=nomount builds this with DISC_SMP_OWNS_DATA=1) runs next to ShadowMount+ 1.7-beta5
+ * and later, which mount /data into the sandboxes of the titles they manage and take it off themselves. There the automatic clean-up takes no mount off
+ * at all: a sandbox with a mount below it is left to ShadowMount+, PS5SX2's own sandboxes (PPSA99203_*) are never touched, and only empty leftover
+ * folders are removed. Until 171o it took ShadowMount+'s /data mount off PS5SX2's leftover sandbox (forced when it would not come off); ShadowMount+
+ * stayed busy after it, and every later start of PS5SX2 had no /data (no BIOS, memory cards, flags or logs) until the console restarted (klog of
+ * 2026-11-02, 23:21). In the helper with its own mount thread (DISC_SMP_OWNS_DATA=0) the clean-up still takes mounts off, but only once ShadowMount+
+ * has said busy for 60 s in a row with no app running. The Reload tile's clean-up, which the person asks for, does what it always did. */
+#ifndef DISC_SMP_OWNS_DATA
+#define DISC_SMP_OWNS_DATA 0
+#endif
 typedef struct { char name[32]; time_t age; } Sbx;           /* a sandbox folder and the seconds since it last changed */
 typedef struct { char on[160]; char from[96]; char fs[16]; } Mnt;
 
@@ -2678,10 +2689,14 @@ static int rm_same_fs(const char *path, dev_t dev, const fsid_t *fsid, int depth
     return rmdir(path) == 0 ? 0 : -1;
 }
 
-/* one sandbox: mounts off, then removed. 1 when it is gone. */
-static int heal_one(const char *name) {
+/* one sandbox: mounts off, then removed. 1 when it is gone. 171p: with may_unmount 0 a sandbox that has a mount below it is left as it is (0). */
+static int heal_one(const char *name, int may_unmount) {
     char p[160];
     snprintf(p, sizeof(p), SANDBOX_DIR "/%s", name);
+    if (!may_unmount) {
+        Mnt m1[1];
+        if (mounts_below(p, m1, 1) > 0) return 0;
+    }
     log_sandbox("before the clean-up", name);
     struct stat st;
     if (lstat(p, &st) != 0) return 1;
@@ -2716,11 +2731,22 @@ static int heal_one(const char *name) {
     return gone;
 }
 
+/* 171p: 1 when the automatic clean-up leaves this sandbox alone: in the no-mount helper, PS5SX2's own and any with a mount below it (see the note above Sbx) */
+static int heal_left_alone(const char *name) {
+    if (!DISC_SMP_OWNS_DATA) return 0;
+    if (strncmp(name, "PPSA99203", 9) == 0) return 1;
+    char p[160];
+    snprintf(p, sizeof(p), SANDBOX_DIR "/%s", name);
+    Mnt m1[1];
+    return mounts_below(p, m1, 1) > 0;
+}
+
 static pthread_mutex_t g_heal_mu = PTHREAD_MUTEX_INITIALIZER;
 static volatile time_t g_follow_until; /* the logs of ShadowMount+ are followed until then, tiles or not (after a clean-up or a reload) */
 
-/* The sandboxes of our titles that last changed at least min_age seconds ago (a start in progress is left alone), when no app runs. How many are gone. */
-static int heal_sandboxes(int min_age, const char *why) {
+/* The sandboxes of our titles that last changed at least min_age seconds ago (a start in progress is left alone), when no app runs. How many are gone.
+ * 171p: `automatic` (heal_tick's clean-up, not the Reload tile's): what heal_left_alone() names is skipped, and the no-mount helper takes no mount off. */
+static int heal_sandboxes(int min_age, const char *why, int automatic) {
     pthread_mutex_lock(&g_heal_mu);
     Sbx sb[16];
     const int n = list_sandboxes(sb, 16);
@@ -2731,8 +2757,9 @@ static int heal_sandboxes(int min_age, const char *why) {
             say("sandboxes (%s): %d of ours, but %s: not cleaned up", why, n, apps < 0 ? "the process table cannot be read" : "an app is running");
         } else {
             for (int i = 0; i < n; i++) {
+                if (automatic && heal_left_alone(sb[i].name)) continue;
                 if (sb[i].age < min_age) { say("sandbox %s: changed %lld s ago, too new to touch (%s)", sb[i].name, (long long)sb[i].age, why); continue; }
-                if (heal_one(sb[i].name)) healed++;
+                if (heal_one(sb[i].name, !(automatic && DISC_SMP_OWNS_DATA))) healed++;
             }
         }
     }
@@ -2742,11 +2769,12 @@ static int heal_sandboxes(int min_age, const char *why) {
 }
 
 /* from the main loop, once a second: say when the set of our sandboxes changes (the log is the evidence of what happens to them), and clean up
- * those that stay after the app ended: no app process for 6 s, and the sandbox itself unchanged for 10 s. A failed try is repeated every 20 s. */
+ * those that stay after the app ended: no app process for 6 s, and the sandbox itself unchanged for 10 s. A failed try is repeated every 20 s.
+ * 171p: see the note above Sbx (no mount taken off by the no-mount helper; the 60 s busy rule in the other one). */
 static void heal_tick(time_t now) {
-    static time_t next, stale_since, last_try, check_at;
+    static time_t next, stale_since, last_try, check_at, busy_since, busy_asked;
     static int fails; /* clean-ups in a row that took nothing away: tried less and less often */
-    static char last_sig[256];
+    static char last_sig[256], last_left[256];
     if (now < next) return;
     next = now + 1;
     if (check_at && now >= check_at) { /* the evidence: was ShadowMount+ released by the clean-up? */
@@ -2764,16 +2792,38 @@ static void heal_tick(time_t now) {
         for (int i = 0; i < n; i++) if (!strstr(last_sig, sb[i].name)) log_sandbox("appeared", sb[i].name);
         snprintf(last_sig, sizeof(last_sig), "%s", sig);
     }
-    if (n <= 0) { stale_since = 0; fails = 0; return; }
+    if (n <= 0) { stale_since = 0; fails = 0; busy_since = 0; return; }
     if (flag("disctile_noheal")) return;
-    if (app_processes() != 0) { stale_since = 0; return; } /* an app runs, or the table cannot be read */
+    if (app_processes() != 0) { stale_since = 0; busy_since = 0; return; } /* an app runs, or the table cannot be read */
     if (stale_since == 0) stale_since = now;
     if (now - stale_since < 6 || now - last_try < (fails < 4 ? 20 : 120)) return;
+    if (!DISC_SMP_OWNS_DATA) { /* 171p: only once ShadowMount+ has said busy for 60 s in a row (asked every 10 s) with no app running */
+        if (now - busy_asked >= 10) {
+            busy_asked = now;
+            if (smp_busy() == 1) { if (!busy_since) busy_since = now; }
+            else busy_since = 0;
+        }
+        if (!busy_since || now - busy_since < 60) return;
+    }
     last_try = now;
+    if (DISC_SMP_OWNS_DATA) { /* 171p: the ones the clean-up leaves alone, said when that set changes; no try at all when nothing else is left */
+        char left[256] = "";
+        size_t q = 0;
+        int cand = 0;
+        for (int i = 0; i < n; i++) {
+            if (!heal_left_alone(sb[i].name)) { cand++; continue; }
+            if (q + 40 < sizeof(left)) q += (size_t)snprintf(left + q, sizeof(left) - q, "%s ", sb[i].name);
+        }
+        if (strcmp(left, last_left) != 0) {
+            snprintf(last_left, sizeof(last_left), "%s", left);
+            if (left[0]) say("stale sandbox(es) left alone (no-mount helper: ShadowMount+ takes its own mounts off, PS5SX2's own are never touched): %s", left);
+        }
+        if (cand == 0) return;
+    }
     const int busy0 = smp_busy();
     say("stale app sandbox(es) with no app running for %lld s; ShadowMount+ before the clean-up: %s", (long long)(now - stale_since),
         busy0 == 1 ? "BUSY (409)" : busy0 == 0 ? "free (no 409)" : "not reachable");
-    const int healed = heal_sandboxes(10, "no app is running");
+    const int healed = heal_sandboxes(10, "no app is running", 1);
     fails = healed ? 0 : fails + 1;
     if (healed) {
         check_at = now + 4;
@@ -3115,7 +3165,7 @@ static void *reload_thread(void *arg) {
         return NULL;
     }
     smp_quiet_ensure(); /* in case ShadowMount+'s config was written again meanwhile */
-    int healed = heal_sandboxes(2, "reload");
+    int healed = heal_sandboxes(2, "reload", 0);
     notify_tile("Reload PS2 disc: %d stale app folder(s) cleaned up", healed);
     /* ShadowMount+ must not be holding a title active (it then puts the scan off): up to about 30 s, cleaning up again in between */
     char reply[400] = "";
@@ -3123,7 +3173,7 @@ static void *reload_thread(void *arg) {
     say("reload: ShadowMount+ is %s after the clean-up", busy == 1 ? "BUSY (a title is held active)" : busy == 0 ? "free" : "not reachable");
     for (int i = 0; i < 15 && busy == 1; i++) {
         sleep(2);
-        healed += heal_sandboxes(2, "reload, again");
+        healed += heal_sandboxes(2, "reload, again", 0);
         busy = smp_busy();
     }
     if (busy == 1) {

@@ -94,7 +94,7 @@ bool SetSonySpeed(int pass, uint16_t speed, uint8_t rotation = 0)
 
 // A short timed read straight off /dev/cd0 in 64 KiB preads (DiscSpeed8's fast path), for the measured-speed line in the log after a speed
 // command. Returns MB/s, or 0 when the disc is too small to time or a read failed. Reads 8 MiB after a 1 MiB warm-up, 4 MiB in from the
-// inner edge so the drive is at its set class.
+// inner edge so the drive is at its set class. 187: only with the switch file disc_measure (Reopen).
 double MeasureCd0(int fd, u32 total_sectors)
 {
   if (fd < 0)
@@ -335,8 +335,10 @@ bool IOCtlSrc::Reopen(Error* error)
         unit_attentions++;
       m_ready_policy->StartSettle(NowMs());
     }
-    // Measure and log the real MB/s at the set speed (DiscSpeed8 wants 8x vs 3.2x shown); the switch file disc_nomeasure skips it.
-    const double mbs = (m_fast && !Flag("disc_nomeasure")) ? MeasureCd0(m_device, m_sectors) : 0.0;
+    // Measure and log the real MB/s at the set speed (DiscSpeed8 wants 8x vs 3.2x shown). 187: only with the switch file disc_measure. The
+    // 9 MiB read took 0.5-2 s at every disc start and disc change, with the drive's lock held; the CDVD thread's line every 10 s has the MB/s
+    // now (CDVDdiscThread.cpp). The old switch file disc_nomeasure is not needed any more and does nothing.
+    const double mbs = (m_fast && Flag("disc_measure")) ? MeasureCd0(m_device, m_sectors) : 0.0;
     char mbs_txt[48] = {0};
     if (mbs > 0)
       std::snprintf(mbs_txt, sizeof(mbs_txt), "; measured %.2f MB/s (%.2fx DVD)", mbs, mbs * 1e6 / 1385000.0);

@@ -29,6 +29,10 @@
  * fails after a successful PT_ATTACH no longer hides the attach (it used to return -1 and skip the detach). No attach
  * while the console shuts down or rests (kp_quiet).
  *
+ * 171p (build 187, 2026-11-03): the drive pin stands still too while the console shuts down or rests: the drive's pass node is closed and
+ * nothing is asked until the console works again. The drive is asked whether a disc is in once a minute (it was every 2 s), and the pin's
+ * line is written when the answer changes (every minute only with the log files on).
+ *
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (C) 2026 swordpdf
  */
@@ -695,8 +699,21 @@ void *ds8_thread(void *arg) {
     patch_shell();
 
     time_t last_push = 0;
+    int quiet_closed = 0, pin_was = -1;
     for (;;) {
         sleep(kPollSec);
+
+        /* 171p: nothing at all while the console shuts down or rests (kp_quiet): no file looked at, the drive not asked, and its pass node closed
+         * (opened again when it is needed after). Until 171o only the shell patch stood still then, and the pin kept asking the drive every 2 s
+         * through shutdown and rest mode, against kp.c's rule (171e: no device opened, nobody asked while quiet). */
+        if (kp_quiet()) {
+            if (g_drive >= 0) { close(g_drive); g_drive = -1; quiet_closed = 1; }
+            continue;
+        }
+        if (quiet_closed) {
+            quiet_closed = 0;
+            step("quiet (shutdown or rest) is over: the drive's pass node was closed for it and is opened again when needed");
+        }
 
         /* re-check the off flag each loop: a tester can turn it off at runtime */
         if (stat(FLAG_OFF, &st) == 0) {
@@ -721,10 +738,15 @@ void *ds8_thread(void *arg) {
             step(ps2 ? "pin: a PS2 disc is in the PS5's drive: pinned to 8x every 60 s"
                      : "pin: no PS2 disc in the PS5's drive: not pinned, the drive not asked (171k)");
         }
-        if (ps2 && disc_in() && difftime(time(NULL), last_push) >= 60.0) {
+        /* 171p: the 60 s timer first, so the drive is asked whether a disc is in (GET CONFIGURATION) once a minute instead of every 2 s; the line
+         * only when the answer changes or with the log files on (kp_log_files), not a line with an fsync every minute of play */
+        if (ps2 && difftime(time(NULL), last_push) >= 60.0) {
             last_push = time(NULL);
-            if (push_8x())
-                step("pin: db 01 00 80 re-sent to the drive (8.0, rotation 1)");
+            const int pinned = disc_in() && push_8x();
+            if (pinned != pin_was || (pinned && kp_log_files()))
+                step(pinned ? "pin: db 01 00 80 re-sent to the drive (8.0, rotation 1)"
+                            : "pin: not sent (no disc answered, or the drive refused it): asked again in 60 s");
+            pin_was = pinned;
         }
     }
 }

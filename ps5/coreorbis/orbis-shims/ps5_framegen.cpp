@@ -1189,7 +1189,12 @@ namespace ps5::framegen
 			clear(m_scd_histogram);
 			clear(m_scd_previous_histogram);
 
-			for (const auto& set : m_luma) for (const image_t& i : set) clear(i);
+			// PS5SX2 187: the luma pyramids only with set_reset_clears_luma (flag fglumaclear). Nothing reads what these clears leave: of_prepare_luma
+			// and of_luma_pyramid write every texel of this frame's set before a pass reads it, and the other set is read only by the search
+			// and the upscale, which store zero vectors and return before any luma load while FrameIndex() <= 1 (IsSceneChanged; the reset
+			// frame is index 0, index 1 rewrites that set). ps5vk ran each clear as a CPU loop at a split: ~2.7 of the ~2.9 x width x height texels.
+			if (m_reset_clears_luma)
+				for (const auto& set : m_luma) for (const image_t& i : set) clear(i);
 			// m73b: the still history is kept: the HUD stays where it was across a cut, and a pixel that changes starts again
 			// m74: the quads' motions are not (they belong to the scene before)
 			clear(m_quad_motion);

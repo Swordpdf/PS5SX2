@@ -61,10 +61,15 @@ void Host::ReportInfoAsync(const std::string_view title, const std::string_view 
 	std::fflush(stdout);
 }
 
+// 187: main-boot.cpp keeps the last error for the note of the error pause (a guest exception pauses the VM for good)
+void OrbisNoteHostError(std::string_view title, std::string_view message) __attribute__((weak));
+
 void Host::ReportErrorAsync(const std::string_view title, const std::string_view message)
 {
 	std::printf("[host-error] %.*s: %.*s\n", (int)title.size(), title.data(), (int)message.size(), message.data());
 	std::fflush(stdout);
+	if (OrbisNoteHostError)
+		OrbisNoteHostError(title, message);
 }
 
 void Host::OpenURL(const std::string_view url)

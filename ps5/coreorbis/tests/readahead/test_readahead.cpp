@@ -182,6 +182,26 @@ int main()
 		Check(ra.GetStats().direct_reads >= direct_before + 4, "bad place: after a failure the next requests are read as asked (no second failed window)");
 		bool later = Get(ra, d, 6000, 16) && Get(ra, d, 6016, 16);
 		Check(later && ra.GetStats().window_reads >= 2, "bad place: windows come back beyond it");
+		// 187: and below it. The check had no lower bound: every sector below the end of the failed window was read as asked (a seek
+		// each: 0.12 MB/s instead of 1.22) until the disc changed. This one fails on build 186's header.
+		const uint64_t windows_before = ra.GetStats().window_reads, direct_before2 = ra.GetStats().direct_reads;
+		bool below = Get(ra, d, 2000, 16) && Get(ra, d, 2016, 16);
+		Check(below && ra.GetStats().window_reads == windows_before + 1 && ra.GetStats().direct_reads == direct_before2,
+			"bad place: windows come back below it too (one window for two blocks)");
+		// 187: a window that would run into the known-bad place stops where it starts (4940..5003 would touch the bad 5000..5003)
+		bool edge = Get(ra, d, 4940, 4);
+		Check(edge && ra.GetStats().window_failures == 1, "bad place: a window just below it stops at its start (no second failed window)");
+		// 187: a failure next to the known-bad place widens it: what lies inside is read as asked, not by another window that fails
+		bool next = Get(ra, d, 5008, 16, false); // window 5008..5071 fails: 4944..5071 is known bad now
+		bool inside = Get(ra, d, 4968, 16);      // read as asked (a window 4968..5007 would fail on 5000..5007)
+		Check(next && inside && ra.GetStats().window_failures == 2, "bad place: a failure next to it widens it (no third failed window)");
+		// 187: Reset (a disc change) forgets the bad place
+		ra.Reset();
+		d.bad_from = 0xFFFFFFFF;
+		d.bad_to = 0;
+		const uint64_t windows_reset = ra.GetStats().window_reads;
+		bool reset = Get(ra, d, 4960, 16);
+		Check(reset && ra.GetStats().window_reads == windows_reset + 1, "bad place: forgotten after Reset (a window again)");
 	}
 	// 8. small reads always reach the drive (the keep-alive read must wake it), big ones too
 	{

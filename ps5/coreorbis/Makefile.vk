@@ -439,6 +439,17 @@ USB_SRCS := $(PCSX2)/pcsx2/USB/USB.cpp \
 
 SRCS := $(SRCS) $(COMMON_SRCS) $(USB_SRCS) $(PCSX2)/tests/ctest/core/StubHost.cpp
 
+# 187: the helper revision the app falls back to (orbis-shims/OrbisHelperAutoload.h kShippedRev) must be the helper source's PAYLOAD_REV
+# (../dischelper/disctile.c): it said 171k while 171o shipped. The app reads the revision from the shipped ELF first (RevFromElf).
+HELPER_REV_SRC := $(shell sed -n 's/^.define PAYLOAD_REV "\([0-9a-z]*\)".*/\1/p' ../dischelper/disctile.c)
+HELPER_REV_APP := $(shell sed -n 's/.*kShippedRev = "\([0-9a-z]*\)".*/\1/p' ./orbis-shims/OrbisHelperAutoload.h)
+ifeq ($(HELPER_REV_SRC),)
+$(error no PAYLOAD_REV found in ../dischelper/disctile.c)
+endif
+ifneq ($(HELPER_REV_SRC),$(HELPER_REV_APP))
+$(error the app's helper revision "$(HELPER_REV_APP)" (orbis-shims/OrbisHelperAutoload.h kShippedRev) is not ../dischelper/disctile.c's PAYLOAD_REV "$(HELPER_REV_SRC)")
+endif
+
 OBJDIR := obj-vk
 OBJS := $(patsubst $(PCSX2)/%.cpp,$(OBJDIR)/%.o,$(filter %.cpp,$(SRCS))) \
   $(patsubst $(PCSX2)/%.cc,$(OBJDIR)/%.o,$(filter %.cc,$(SRCS))) \

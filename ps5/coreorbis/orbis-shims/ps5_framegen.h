@@ -110,6 +110,11 @@ namespace ps5::framegen
 		void set_half_res_flow(bool on) { m_half_res_flow = on; }
 		bool half_res_flow() const { return m_half_res_flow; }
 
+		// PS5SX2 187: whether a reset clears both luma pyramids, as FSR3 does (off by default: nothing reads what those clears leave, see
+		// record(); ps5vk ran them as CPU loops, ~91% of each engage's freeze). Takes effect at the next reset.
+		void set_reset_clears_luma(bool on) { m_reset_clears_luma = on; }
+		bool reset_clears_luma() const { return m_reset_clears_luma; }
+
 		// For tests: the optical flow at level 0 (R16G16_SINT, pixels), the vector field (R32_UINT x and y, packed), the SCD output.
 		VkImage debug_flow() const { return m_flow_out.image; }
 		VkImage debug_field_x() const { return m_field_x.image; }
@@ -216,6 +221,7 @@ namespace ps5::framegen
 		bool m_prepared = false;              // the frames are in GENERAL
 		bool m_debug_view = false;
 		bool m_half_res_flow = false;         // PS5SX2 186
+		bool m_reset_clears_luma = false;     // PS5SX2 187
 
 		// m73b: the GPU timer (m74: three timestamps a constant slot)
 		VkQueryPool m_queries = VK_NULL_HANDLE;

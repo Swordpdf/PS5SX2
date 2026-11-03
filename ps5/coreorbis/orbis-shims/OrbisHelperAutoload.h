@@ -4,9 +4,11 @@
 //
 // The decision (Decide / RevCompare) is kept pure here so the PC test (tests/helperload) can drive it; the socket send and
 // the status/ELF reading live in OrbisHelperAutoload.cpp. The helper writes /data/PCSX2/logs/ps5sx2-helper.txt every
-// second (disctile.c write_helper_status): "pid=<n>\ntime=<unix>\nrev=<PAYLOAD_REV>\n". The helper has its own
-// one-instance rule (a newly sent helper kills an older one and takes over; disc_launch.c / disctile.c), so the app only
-// has to decide whether to send at all.
+// second (disctile.c write_helper_status): "pid=<n>\ntime=<unix>\nrev=<PAYLOAD_REV>\n".
+// 187: one helper runs at a time, and the running one stays: the helper's host takes a lock (/data/PS5SXHelper.lock,
+// helper-host/main*.c) and a newly sent helper EXITS at once when another copy holds it ("another copy is resident"; this
+// comment used to say the new one takes over). So a newer shipped helper replaces an older running one only after a console
+// restart: the app then sends nothing and tells the person once (OrbisHelperAutoload.cpp).
 //
 // Flag file flags/helper_noautoload: the app sends nothing (the user loads the helper by hand, as before).
 //
@@ -15,6 +17,7 @@
 
 #include <climits>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -26,7 +29,30 @@ bool OrbisLoaderSend(const std::vector<unsigned char>& data, std::string& detail
 namespace orbis_helper
 {
 // The revision the app ships (the helper source's PAYLOAD_REV). Bump together with the helper.
-inline constexpr const char* kShippedRev = "171k"; // 171k: next to the PS5SX3 helper (ps5/disclaunch/disc_compat.h)
+// 187: only what the app falls back to: the revision is read from the shipped ELF itself (RevFromElf). It said 171k while
+// 171o shipped, so a running 171l..171n counted as newer and 171o was never sent. Makefile.vk stops the build when this is
+// not ps5/dischelper/disctile.c's PAYLOAD_REV.
+inline constexpr const char* kShippedRev = "171p"; // 171p: build 187 (no automatic unmount by the no-mount helper)
+
+// 187: the PAYLOAD_REV of a helper ELF, from the line its disc payload logs at start ("disc payload <rev>", a string literal
+// in disctile.c's payload_progress call, kept by the strip). "" when the ELF has no such text.
+inline std::string RevFromElf(const unsigned char* data, size_t size)
+{
+	static const char kTag[] = "disc payload ";
+	const size_t tl = sizeof(kTag) - 1;
+	for (size_t i = 0; data && i + tl < size; i++)
+	{
+		if (data[i] != 'd' || std::memcmp(data + i, kTag, tl) != 0)
+			continue;
+		size_t j = i + tl;
+		std::string rev;
+		while (j < size && rev.size() < 16 && ((data[j] >= '0' && data[j] <= '9') || (data[j] >= 'a' && data[j] <= 'z')))
+			rev.push_back(static_cast<char>(data[j++]));
+		if (!rev.empty() && rev[0] >= '0' && rev[0] <= '9' && j < size && data[j] == '\0')
+			return rev;
+	}
+	return {};
+}
 
 // Compare two revision strings like "171i" / "171j" / "180": the leading integer first, then the suffix lexically.
 // < 0 running older, 0 same, > 0 running newer; INT_MIN when either is empty/garbled (treated as "older/unknown").
@@ -62,7 +88,8 @@ enum class Decision
 	Load,        // send the helper
 	LeaveSame,   // the shipped revision already runs
 	LeaveNewer,  // a newer helper runs (sent from a PC or a newer title): keep it
-	LeaveBusy    // an older helper runs but is mid-copy: do not replace it now
+	LeaveBusy,   // an older helper runs but is mid-copy: do not replace it now
+	LeaveOlder   // 187: an older (or unknown) helper runs: one sent now would exit at once, the shipped one loads after a restart
 };
 
 inline const char* DecisionName(Decision d)
@@ -74,6 +101,7 @@ inline const char* DecisionName(Decision d)
 	case Decision::LeaveSame: return "leave (same revision)";
 	case Decision::LeaveNewer: return "leave (newer runs)";
 	case Decision::LeaveBusy: return "leave (a copy is running)";
+	case Decision::LeaveOlder: return "leave (an older one runs: the shipped one after a console restart)";
 	}
 	return "?";
 }
@@ -114,7 +142,10 @@ inline Decision Decide(bool enabled, bool noautoload, bool have_elf, const Statu
 		why = "an older helper runs but a copy is in progress: not replaced now";
 		return Decision::LeaveBusy;
 	}
-	why = "an older/unknown helper runs and is idle: replacing it";
-	return Decision::Load;
+	// 187: until 186 this sent the shipped helper ("replacing it"), which then exited at once on the running one's lock (and next
+	// to a disc payload without the host, e.g. PS5SX2-Disc.elf, two payloads would have acted on every disc)
+	why = "an older/unknown helper runs: a helper sent now would exit at once (one helper at a time, the running one holds the lock): "
+		  "the shipped one is loaded at the first start after a console restart";
+	return Decision::LeaveOlder;
 }
 } // namespace orbis_helper

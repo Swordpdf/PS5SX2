@@ -11,6 +11,7 @@
 #include "common/SmallString.h"
 #include "common/Threading.h"
 
+#include <chrono> // 187: RetryWait
 #include <cstring>
 #include <pthread.h> // PS5 port (vk-285-108)
 
@@ -89,7 +90,11 @@ void ThreadedFileReader::Loop()
 			lock.unlock();
 
 			if (ptr)
+			{
+				m_readFor = ReadFor::Request; // 187: data a caller waits for (the header): a reader may retry it
 				ok = Decompress(ptr, requestOffset, requestSize);
+				m_readFor = ReadFor::ReadAhead;
+			}
 
 			// There's a potential for a race here when doing synchronous reads. Basically, another request can come in,
 			// after we release the lock, but before we store null to indicate we're finished. So, we do a compare-exchange
@@ -228,6 +233,22 @@ bool ThreadedFileReader::Decompress(void* target, u64 begin, u32 size)
 	return true;
 }
 
+// 187: see the header. Short steps, so that Close (CancelAndWaitUntilStopped, which sets m_requestCancelled and then waits for
+// the read thread) waits ~5 ms at most for a pause, never for the whole of it.
+bool ThreadedFileReader::RetryWait(u32 ms) const
+{
+	const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+	for (;;)
+	{
+		if (m_requestCancelled.load(std::memory_order_relaxed) || m_quit.load(std::memory_order_relaxed))
+			return false;
+		const auto now = std::chrono::steady_clock::now();
+		if (now >= until)
+			return true;
+		std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(until - now, std::chrono::milliseconds(5)));
+	}
+}
+
 bool ThreadedFileReader::TryCachedRead(void*& buffer, u64& offset, u32& size, const std::lock_guard<std::mutex>&)
 {
 	// Run through twice so that if m_buffer[1] contains the first half and m_buffer[0] contains the second half it still works
@@ -310,7 +331,10 @@ int ThreadedFileReader::ReadSync(void* pBuffer, u32 sector, u32 count)
 		if (size > 0 && !m_running)
 		{
 			// Don't wait for read thread to start back up
-			if (Decompress(pBuffer, offset, size))
+			m_readFor = ReadFor::Caller; // 187: under m_mtx: no retry here (the read thread gets the request when this fails)
+			const bool done = Decompress(pBuffer, offset, size);
+			m_readFor = ReadFor::ReadAhead;
+			if (done)
 			{
 				offset += size;
 				size = 0;

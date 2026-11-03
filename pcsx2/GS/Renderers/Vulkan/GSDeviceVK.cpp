@@ -161,7 +161,11 @@ static u32 OrbisSubmitDrawBudgetRaw()
 		s_checked = now;
 		u32 budget = OrbisDefaultDrawBudget();
 		std::string text;
-		if (OrbisCachedRead(OrbisFlagPath("vk_drawbudget").c_str(), text))
+		// 187: OrbisFlagPath stat()ed /data from the GS thread every second in every hardware-renderer game (~0.05 ms, now and then ~30 ms:
+		// the stall vk-285-105 took out of the other polls). The flag and the file now come from the ticker's snapshot (OrbisPaths.h): the
+		// same files, flags/ first; a file is read here only the first time it is asked for, and only while the flag exists.
+		if (OrbisFlag("vk_drawbudget") &&
+			(OrbisCachedRead("/data/PCSX2/flags/vk_drawbudget", text) || OrbisCachedRead("/data/PCSX2/vk_drawbudget", text)))
 		{
 			const unsigned long v = std::strtoul(text.c_str(), nullptr, 10);
 			if (v >= 1000 && v <= 8000) // live-10: 8000 (was 4800), with the words guard above
@@ -176,6 +180,79 @@ static u32 OrbisSubmitDrawBudgetRaw()
 	return s_budget;
 }
 #define ORBIS_SUBMIT_DRAW_BUDGET (OrbisSubmitDrawBudget())
+
+// 187: the command buffers submitted early (ExecuteCommandBuffer and its two variants with a reason), counted by reason instead of a
+// "VK: Executing command buffer due to ..." warning each: a Console line is written and flushed into emulog.txt by the thread that
+// logs (~0.7 ms), and Midnight Club 3's GS thread spent ~20 ms a second on these. The first one of each reason still goes to emulog;
+// after that a [vkexec] line at most once a second, only when there were any, gives the counts and each reason's last wording.
+namespace
+{
+	struct OrbisExecReason
+	{
+		const char* key = nullptr; // the reason's format string
+		u32 n = 0; // since the last [vkexec] line
+		char last[96] = {};
+	};
+	OrbisExecReason s_orbis_exec[8]; // GS thread only, as the submissions
+	u32 s_orbis_exec_other = 0; // reasons past the table
+	u64 s_orbis_exec_tsc = 0; // the last [vkexec] check
+
+	// Once a second (the TSC; called by each count and by EndPresent, so the tail of a burst is not left for the next one).
+	void OrbisExecSecond(u64 now)
+	{
+		if (now - s_orbis_exec_tsc < ORBIS_TSC_SECOND)
+			return;
+		s_orbis_exec_tsc = now;
+		u32 any = s_orbis_exec_other;
+		for (const OrbisExecReason& r : s_orbis_exec)
+			any += r.n;
+		if (any == 0)
+			return;
+		printf("[vkexec] command buffers submitted early this second, by reason:");
+		for (OrbisExecReason& r : s_orbis_exec)
+		{
+			if (r.n != 0)
+				printf(" %u '%s'", r.n, r.last);
+			r.n = 0;
+		}
+		if (s_orbis_exec_other != 0)
+			printf(" %u other", s_orbis_exec_other);
+		s_orbis_exec_other = 0;
+		printf("\n");
+		fflush(stdout);
+	}
+
+	// Counts one; true for the first of its reason (which still goes to emulog).
+	bool OrbisCountExec(const char* key, const char* text)
+	{
+		bool first = false;
+		OrbisExecReason* slot = nullptr;
+		for (OrbisExecReason& r : s_orbis_exec)
+		{
+			if (!r.key)
+			{
+				r.key = key;
+				first = true;
+			}
+			if (r.key == key || std::strcmp(r.key, key) == 0)
+			{
+				slot = &r;
+				break;
+			}
+		}
+		if (slot)
+		{
+			slot->n++;
+			std::snprintf(slot->last, sizeof(slot->last), "%s", text);
+		}
+		else
+		{
+			s_orbis_exec_other++;
+		}
+		OrbisExecSecond(__builtin_ia32_rdtsc());
+		return first;
+	}
+} // namespace
 
 namespace
 {
@@ -1366,6 +1443,24 @@ void* OrbisVkDeviceHandle()
 
 bool GSDeviceVK::SetGPUTimingEnabled(bool enabled)
 {
+#ifdef ORBIS_VULKAN
+	// 187: off unless flags/gputiming exists (read here, at every GS open: GS.cpp asks for it each time). Its only reader is
+	// PerformanceMetrics' GPU time, which only the ImGui OSD shows (not built here); its start and end timestamps cost every command
+	// buffer two cache-flushing writes and a 16 KiB flush, and after a readback's CPU copy the end one is a GPU step of its own (up to
+	// a vblank below firmware 9.00). The frame generator's timer and flags/gpuprof keep their own query pools.
+	if (enabled)
+	{
+		const bool want = OrbisFlag("gputiming");
+		printf("[gputiming] %s\n", want ? "GPU timing on (flag gputiming): a timestamp at the start and the end of each command buffer" :
+										  "GPU timing off: no timestamps around each command buffer (flag gputiming turns it on at the next game start)");
+		fflush(stdout);
+		if (!want)
+		{
+			m_gpu_timing_enabled = false;
+			return false;
+		}
+	}
+#endif
 	m_gpu_timing_enabled = enabled && m_gpu_timing_supported;
 	return (enabled == m_gpu_timing_enabled);
 }
@@ -2682,7 +2777,8 @@ void GSDeviceVK::CommandBufferCompleted(u32 index)
 		if (res == VK_SUCCESS)
 		{
 			// if we didn't write the timestamp at the start of the cmdbuffer (just enabled timing), the first TS will be zero
-			if (timestamps[0] > 0 && m_gpu_timing_enabled)
+			// 187: and an end below the start (one never written reads 0 on ps5vk) would wrap the u64 difference into a huge GPU time
+			if (timestamps[0] > 0 && timestamps[1] >= timestamps[0] && m_gpu_timing_enabled)
 			{
 				const double ns_diff =
 					(timestamps[1] - timestamps[0]) * static_cast<double>(m_device_properties.limits.timestampPeriod);
@@ -3885,6 +3981,9 @@ void GSDeviceVK::EndPresent()
 	MoveToNextCommandBuffer();
 
 	InvalidateCachedState();
+#ifdef ORBIS_VULKAN
+	OrbisExecSecond(__builtin_ia32_rdtsc()); // 187: the [vkexec] line of a burst that ended
+#endif
 }
 
 bool GSDeviceVK::IsPresenting() const
@@ -4878,12 +4977,17 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 		// generated frame, 6.0 of it the flow, and the game at 67% of its speed while frames were generated). Flags: fgfullflow keeps
 		// the full search, fghalfflow asks for half at any size.
 		s.fg->set_half_res_flow(OrbisFlag("fghalfflow") || (static_cast<u64>(w) * h > 2560u * 1440u && !OrbisFlag("fgfullflow")));
+		// 187: a reset (each engage) no longer clears the two luma pyramids, ~91% of the texels ps5vk cleared there in a CPU loop (30-55 ms
+		// at 1080p, 120-230 ms at 4K, the picture frozen meanwhile); nothing reads what the clears left (ps5_framegen.cpp, record()).
+		// The flag fglumaclear clears them again.
+		s.fg->set_reset_clears_luma(OrbisFlag("fglumaclear"));
 		s.prepared = false;
 		s.reset_next = true;
-		printf("[fg] ready for %ux%u (the display %ux%u%s) in %.0f ms; the display at %.2f Hz; the optical flow at %s\n", w, h, win_w, win_h,
+		printf("[fg] ready for %ux%u (the display %ux%u%s) in %.0f ms; the display at %.2f Hz; the optical flow at %s%s\n", w, h, win_w, win_h,
 			fg_div > 1 ? "; frames generated at half its size (firmware below 9.00 or flag fghalfres), flag fgfullres for its own" : "",
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), s.hz,
-			s.fg->half_res_flow() ? "half resolution (flag fgfullflow: full)" : "full resolution");
+			s.fg->half_res_flow() ? "half resolution (flag fgfullflow: full)" : "full resolution",
+			s.fg->reset_clears_luma() ? "; the luma pyramids cleared at each reset (flag fglumaclear)" : "");
 		fflush(stdout);
 	}
 
@@ -7576,13 +7680,23 @@ void GSDeviceVK::ExecuteCommandBuffer(bool wait_for_completion, const char* reas
 	const std::string reason_str(StringUtil::StdStringFromFormatV(reason, ap));
 	va_end(ap);
 
+#ifdef ORBIS_VULKAN
+	if (OrbisCountExec(reason, reason_str.c_str())) // 187: counted, the first of each reason logged
+		Console.Warning("VK: Executing command buffer due to '%s' (the next ones are counted in [vkexec])", reason_str.c_str());
+#else
 	Console.Warning("VK: Executing command buffer due to '%s'", reason_str.c_str());
+#endif
 	ExecuteCommandBuffer(wait_for_completion);
 }
 
 void GSDeviceVK::ExecuteCommandBufferAndRestartRenderPass(bool wait_for_completion, const char* reason)
 {
+#ifdef ORBIS_VULKAN
+	if (OrbisCountExec(reason, reason)) // 187: counted, the first of each reason logged
+		Console.Warning("VK: Executing command buffer due to '%s' (the next ones are counted in [vkexec])", reason);
+#else
 	Console.Warning("VK: Executing command buffer due to '%s'", reason);
+#endif
 
 	const VkRenderPass render_pass = m_current_render_pass;
 	const GSVector4i render_pass_area = m_current_render_pass_area;
@@ -7611,7 +7725,12 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartPresent(bool wait_for_completion,
 	const std::string reason_str(StringUtil::StdStringFromFormatV(reason, ap));
 	va_end(ap);
 
+#ifdef ORBIS_VULKAN
+	if (OrbisCountExec(reason, reason_str.c_str())) // 187: counted, the first of each reason logged
+		Console.Warning("VK: Executing command buffer due to '%s' (the next ones are counted in [vkexec])", reason_str.c_str());
+#else
 	Console.Warning("VK: Executing command buffer due to '%s'", reason_str.c_str());
+#endif
 
 	pxAssert(m_is_presenting);
 	vkCmdEndRenderPass(GetCurrentCommandBuffer());

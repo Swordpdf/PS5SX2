@@ -526,16 +526,13 @@ static int gt_refresh(int s) {
 }
 
 /* ---------------------------------------------------------------- taking a tile down (a thread) */
-static void gt_heal_game_sandboxes(int min_age);
-
+/* 171p: a 409 (busy) no longer cleans up the game tiles' sandboxes at once (the thread asks again, and gt_heal_tick cleans up by its own rules) */
 static int gt_remove_pass(int s, char *reply, size_t reply_n) {
     char dir[128], body[80];
     snprintf(dir, sizeof(dir), HB "/%s", kGameSlots[s]);
     rm_tree(dir);
     snprintf(body, sizeof(body), "{\"title_id\":\"%s\"}", kGameSlots[s]);
-    const int code = smp_post("/api/v1/games/uninstall", body, reply, reply_n);
-    if (code == 409) gt_heal_game_sandboxes(2);
-    return code;
+    return smp_post("/api/v1/games/uninstall", body, reply, reply_n);
 }
 
 static void gt_set_result(int s, int result, const char *why, double t_acc) {
@@ -1035,10 +1032,12 @@ static int gt_list_sandboxes(Sbx *out, int max) {
 }
 
 /* heal_one() for a game tile's sandbox (its own copy: heal_one() has a single call site, and a second caller would change how the compiler inlines it into the
- * disc tiles' heal_sandboxes()). The mounts are taken off, then the folders removed; nothing is walked into a mount. 1 when it is gone. */
+ * disc tiles' heal_sandboxes()). The mounts are taken off, then the folders removed; nothing is walked into a mount. 1 when it is gone.
+ * 171p: the no-mount helper takes no mount off: a sandbox with a mount below it is left to ShadowMount+ (0; see the note above Sbx in disctile.c). */
 static int gt_heal_one(const char *name) {
     char p[160];
     snprintf(p, sizeof(p), SANDBOX_DIR "/%s", name);
+    if (heal_left_alone(name)) return 0;
     log_sandbox("before the clean-up (game tile)", name);
     struct stat st;
     if (lstat(p, &st) != 0) return 1;
@@ -1058,29 +1057,34 @@ static int gt_heal_one(const char *name) {
     return gone;
 }
 
-static void gt_heal_game_sandboxes(int min_age) {
-    if (app_processes() != 0) return;
-    Sbx sb[16];
-    const int n = gt_list_sandboxes(sb, 16);
-    pthread_mutex_lock(&g_heal_mu);
-    for (int i = 0; i < n; i++)
-        if (sb[i].age >= min_age) gt_heal_one(sb[i].name);
-    pthread_mutex_unlock(&g_heal_mu);
-}
-
+/* 171p: as heal_tick: in the no-mount helper only sandboxes without a mount below them (no try when there is none), in the other one only once ShadowMount+
+ * has said busy for 60 s in a row (asked every 10 s) with no app running */
 static void gt_heal_tick(time_t now) {
-    static time_t next, stale_since, last_try;
+    static time_t next, stale_since, last_try, busy_since, busy_asked;
     static int fails;
     if (now < next) return;
     next = now + 3;
     if (flag("gametile_noheal") || flag("disctile_noheal")) return;
     Sbx sb[16];
     const int n = gt_list_sandboxes(sb, 16);
-    if (n <= 0) { stale_since = 0; fails = 0; return; }
-    if (app_processes() != 0) { stale_since = 0; return; }
+    if (n <= 0) { stale_since = 0; fails = 0; busy_since = 0; return; }
+    if (app_processes() != 0) { stale_since = 0; busy_since = 0; return; }
     if (stale_since == 0) stale_since = now;
     if (now - stale_since < 6 || now - last_try < (fails < 4 ? 20 : 120)) return;
+    if (!DISC_SMP_OWNS_DATA) {
+        if (now - busy_asked >= 10) {
+            busy_asked = now;
+            if (smp_busy() == 1) { if (!busy_since) busy_since = now; }
+            else busy_since = 0;
+        }
+        if (!busy_since || now - busy_since < 60) return;
+    }
     last_try = now;
+    if (DISC_SMP_OWNS_DATA) {
+        int cand = 0;
+        for (int i = 0; i < n; i++) cand += !heal_left_alone(sb[i].name);
+        if (cand == 0) return;
+    }
     int healed = 0;
     pthread_mutex_lock(&g_heal_mu);
     for (int i = 0; i < n; i++)

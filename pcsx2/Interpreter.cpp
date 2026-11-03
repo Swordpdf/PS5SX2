@@ -216,10 +216,13 @@ static void execI()
 
 	cpuBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
 
+	// 187: flush only after the line, not after every interpreted instruction.
 	if (pc >= 0xbfc00000 && pc < 0xbfc00040)
+	{
 		printf("[dbg] execI: pc=%08x code=%08x name=%s interpret=%p\n",
 			pc, cpuRegs.code, opcode.Name, (void*)opcode.interpret);
-	fflush(stdout);
+		fflush(stdout);
+	}
 
 	opcode.interpret();
 	if (pc >= 0xbfc00000 && pc < 0xbfc00040)

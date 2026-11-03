@@ -1999,6 +1999,11 @@ public:
 	}
 	~ShelfScan()
 	{
+		// 187: the shelf closed (a disc, the PS2 system menu or a BIOS-approved start picked; no controller or display) while images not
+		// seen before were still being read: the join waited for the whole scan (up to kScanBudget = 300 s, plus one read), the game's start
+		// on a black screen. Run() now stops before its next image, so this waits at most for the read in flight (fe_games' 6 s limit). The
+		// rest are read at the next start: an image is named in reading-image.txt only once its read starts, so none goes to bad-images.txt.
+		m_cancel.store(true, std::memory_order_release);
 		if (m_thread_started)
 			pthread_join(m_thread, nullptr);
 	}
@@ -2064,6 +2069,14 @@ private:
 		double last_line = 0;
 		for (GameInfo& g : m_games)
 		{
+			if (m_cancel.load(std::memory_order_acquire)) // 187: the shelf has closed (~ShelfScan): its list is not used any more
+			{
+				std::printf("[scan] stopped with the shelf: %d image(s) left for the next start\n",
+					std::max(0, m_total - m_read.load(std::memory_order_relaxed) + left));
+				std::fflush(stdout);
+				m_done.store(true, std::memory_order_release);
+				return;
+			}
 			std::string what;
 			if (!KnownSerial(g, g.serial, &what))
 			{
@@ -2133,6 +2146,7 @@ private:
 	int m_total = 0;
 	std::atomic<int> m_read{0};
 	std::atomic<bool> m_done{false};
+	std::atomic<bool> m_cancel{false}; // 187: set by the destructor (the shelf closed): Run() stops before its next image
 	pthread_t m_thread{};
 	bool m_thread_started = false;
 };

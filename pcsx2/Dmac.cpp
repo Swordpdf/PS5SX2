@@ -8,6 +8,12 @@
 #include "IPU/IPUdma.h"
 #include "ps2/HwInternal.h"
 
+// 187 (vtlb.cpp): a burst's first lines, then one count line a second. A game that loops on a bad DMA address logged two lines
+// per try ('DMA error', then '<channel> BUSERR'), ~1,385 a second for 14 s in God of War, 0.4-0.7 ms each on the EE thread.
+bool OrbisLogBurst(const char* what, s64 value);
+static const char kDmaError[] = "DMA error";
+static const char kBusErr[] = "DMA BUSERR";
+
 bool DMACh::transfer(const char *s, tDMA_TAG* ptag)
 {
 	if (ptag == NULL)  					 // Is ptag empty?
@@ -68,7 +74,8 @@ std::string DMACh::cmqt_to_str() const
 
 __fi void throwBusError(const char *s)
 {
-    Console.Error("%s BUSERR", s);
+    if (OrbisLogBurst(kBusErr, -1)) // 187: see the top
+        Console.Error("%s BUSERR", s);
     dmacRegs.stat.BEIS = true;
 }
 
@@ -140,7 +147,8 @@ __fi tDMA_TAG* SPRdmaGetAddr(u32 addr, bool write)
 	}
 	else
 	{
-		Console.Error( "*PCSX2*: DMA error: %8.8x", addr);
+		if (OrbisLogBurst(kDmaError, addr)) // 187: see the top
+			Console.Error( "*PCSX2*: DMA error: %8.8x", addr);
 		return NULL;
 	}
 }
@@ -170,7 +178,8 @@ __ri tDMA_TAG *dmaGetAddr(u32 addr, bool write)
 	}
 	else
 	{
-		Console.Error( "*PCSX2*: DMA error: %8.8x", addr);
+		if (OrbisLogBurst(kDmaError, addr)) // 187: see the top
+			Console.Error( "*PCSX2*: DMA error: %8.8x", addr);
 		return NULL;
 	}
 }

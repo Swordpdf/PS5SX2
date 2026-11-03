@@ -18,6 +18,7 @@
 #include "x86/BaseblockEx.h"
 #include "x86/iR5900.h"
 #include "x86/iR5900Analysis.h"
+#include "GS/MultiISA.h" // 187: g_cpu (AVX2 for the block check's 32-byte compares)
 
 #include <atomic>
 #include "common/AlignedMalloc.h"
@@ -63,6 +64,13 @@ std::atomic<u32> g_orbis_rec_compiles{0}, g_orbis_rec_discards{0}, g_orbis_rec_p
 	g_orbis_rec_full_resets{0};
 std::atomic<int> g_orbis_rec_nocount{0};
 static int s_orbis_rec_nocount = 0;
+// 187: switches read at each recompiler reset (recResetRaw), so one compile never mixes two kinds of code:
+// flags/rec_smc_perword brings back the block check as one cmp/jne per word (OrbisSmcCheck below),
+// flags/rec_vtlb_pushpop the push/pop around constant-address loads and stores (recVTLB.cpp), and
+// flags/rec_probe the bring-up probes (a line every 100th compile, the on-screen feed, recExecute's lines).
+static bool s_orbis_smc_perword = false;
+static bool s_orbis_rec_probe = false;
+extern bool g_orbis_vtlb_pushpop; // recVTLB.cpp
 // vk-285-28: how much of the EE code cache is in use (GSRenderer.cpp, [rec] line).
 size_t OrbisRecEEUsed(size_t* size);
 static bool eeCpuExecuting = false;
@@ -487,20 +495,6 @@ static void __attribute__((noinline)) orbis_probe_disp2()
 	fflush(stdout);
 }
 
-static void __attribute__((noinline)) orbis_probe_rsp()
-{
-	unsigned long long sp = 0, bx = 0, r14 = 0, r15 = 0;
-	asm volatile(
-		"mov %%rsp, %0\n\t"
-		"mov %%rbx, %1\n\t"
-		"mov %%r14, %2\n\t"
-		"mov %%r15, %3\n\t"
-		: "=r"(sp), "=r"(bx), "=r"(r14), "=r"(r15));
-	printf("[dbg] rsp: enter=%p rsp=%p pc=%08x rbx=%llx r14=%llx r15=%llx\n",
-		(void*)EnterRecompiledCode, (void*)sp, cpuRegs.pc, bx, r14, r15);
-	fflush(stdout);
-}
-
 static void __attribute__((noinline)) orbis_probe_disp()
 {
 	u32 pc = cpuRegs.pc;
@@ -572,7 +566,8 @@ static const void* _DynGen_EnterRecompiledCode()
 
 	u8* retval = xGetAlignedCallTarget();
 
-	xFastCall((const void*)orbis_probe_rsp);
+	// 187: the bring-up probe called here (orbis_probe_rsp, a "[dbg] rsp:" line at every JIT entry) is gone: it ran
+	// printf with the stack 8 bytes off its 16-byte alignment. recExecute's lines (flags/rec_probe) print the same rsp.
 
 #ifdef ENABLE_VTUNE
 	xScopedStackFrame frame(true, true);
@@ -780,6 +775,24 @@ static void recResetRaw()
 	g_orbis_rec_full_resets.fetch_add(1, std::memory_order_relaxed); // vk-285-27
 	Console.WriteLn(Color_StrongBlack, "EE/iR5900 Recompiler Reset");
 
+	// 187: the switches at the top of the file; one line when they change (normally once per app start).
+	s_orbis_smc_perword = OrbisFlag("rec_smc_perword");
+	g_orbis_vtlb_pushpop = OrbisFlag("rec_vtlb_pushpop");
+	s_orbis_rec_probe = OrbisFlag("rec_probe");
+	{
+		static int s_said = -1;
+		const int now = (s_orbis_smc_perword ? 1 : 0) | (g_orbis_vtlb_pushpop ? 2 : 0) | (s_orbis_rec_probe ? 4 : 0);
+		if (now != s_said)
+		{
+			s_said = now;
+			printf("[rec] block code check: %s; constant-address loads/stores: %s; probes %s\n",
+				s_orbis_smc_perword ? "a compare per word (rec_smc_perword)" :
+					(x86Emitter::use_avx && g_cpu.vectorISA >= ProcessorFeatures::VectorISA::AVX2) ? "32-byte compares" : "16-byte compares",
+				g_orbis_vtlb_pushpop ? "push/pop scratch (rec_vtlb_pushpop)" : "no push/pop",
+				s_orbis_rec_probe ? "on (rec_probe)" : "off");
+		}
+	}
+
 	if (CHECK_EXTRAMEM != extraRam)
 	{
 		recReserveRAM();
@@ -973,6 +986,43 @@ static void recCancelInstruction()
 	pxFailRel("recCancelInstruction() called, this should never happen!");
 }
 
+// 187: recExecute's bring-up lines (7 at every JIT entry), now only with flags/rec_probe.
+static void __attribute__((noinline)) orbis_exec_probe()
+{
+	printf("[dbg] exec: pc=%08x EnterRec=%p recRecompile=%p JITCompile=%p\n",
+		cpuRegs.pc, (void*)EnterRecompiledCode, (void*)recRecompile, (void*)JITCompile);
+	{
+		unsigned long long sp = 0;
+		asm volatile("mov %%rsp, %0" : "=r"(sp));
+		printf("[dbg] exec: rsp=%p\n", (void*)sp);
+	}
+	{
+		// Orbis: raw RSP at every EE entry (which thread/stack runs JIT?).
+		static unsigned exec_n = 0;
+		if (exec_n < 3)
+		{
+			unsigned long long sp = 0;
+			asm volatile("mov %%rsp, %0" : "=r"(sp));
+			printf("[dbg] exec: entry[%u] rsp=%llx tid=%llu\n", exec_n,
+				sp, (unsigned long long)pthread_self());
+		}
+		exec_n++;
+	}
+	{
+		u8* jc = (u8*)JITCompile;
+		printf("[dbg] exec: jc bytes: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+			jc[0], jc[1], jc[2], jc[3], jc[4], jc[5], jc[6], jc[7],
+			jc[8], jc[9], jc[10], jc[11], jc[12], jc[13], jc[14], jc[15]);
+	}
+	{
+		printf("[dbg] exec2: recROM0=%p recRAM0=%p\n",
+			(void*)recROM[0].GetFnptr(), (void*)recRAM[0].GetFnptr());
+		u8* p2 = (u8*)SysMemory::GetEERec();
+		printf("[dbg] exec2: code+04e: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+			p2[0x4e], p2[0x4f], p2[0x50], p2[0x51], p2[0x52], p2[0x53], p2[0x54], p2[0x55]);
+	}
+}
+
 static void recExecute()
 {
 	// Reset before we try to execute any code, if there's one pending.
@@ -990,41 +1040,8 @@ static void recExecute()
 	if (!fastjmp_set(&m_SetJmp_StateCheck))
 	{
 		eeCpuExecuting = true;
-		printf("[dbg] exec: pc=%08x EnterRec=%p recRecompile=%p JITCompile=%p\n",
-			cpuRegs.pc, (void*)EnterRecompiledCode, (void*)recRecompile, (void*)JITCompile);
-		{
-			unsigned long long sp = 0;
-			asm volatile("mov %%rsp, %0" : "=r"(sp));
-			printf("[dbg] exec: rsp=%p\n", (void*)sp);
-		}
-		{
-			// Orbis: raw RSP at every EE entry (which thread/stack runs JIT?).
-			static unsigned exec_n = 0;
-			if (exec_n < 3)
-			{
-				unsigned long long sp = 0;
-				asm volatile("mov %%rsp, %0" : "=r"(sp));
-				printf("[dbg] exec: entry[%u] rsp=%llx tid=%llu\n", exec_n,
-					sp, (unsigned long long)pthread_self());
-			}
-			exec_n++;
-		}
-		{
-			u8* jc = (u8*)JITCompile;
-			printf("[dbg] exec: jc bytes: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-				jc[0], jc[1], jc[2], jc[3], jc[4], jc[5], jc[6], jc[7],
-				jc[8], jc[9], jc[10], jc[11], jc[12], jc[13], jc[14], jc[15]);
-		}
-		fflush(stdout);
-		{
-			extern BASEBLOCK* recROM_extern;
-			printf("[dbg] exec2: recROM0=%p recRAM0=%p\n",
-				(void*)recROM[0].GetFnptr(), (void*)recRAM[0].GetFnptr());
-			u8* p2 = (u8*)SysMemory::GetEERec();
-			printf("[dbg] exec2: code+04e: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-				p2[0x4e], p2[0x4f], p2[0x50], p2[0x51], p2[0x52], p2[0x53], p2[0x54], p2[0x55]);
-			fflush(stdout);
-		}
+		if (s_orbis_rec_probe)
+			orbis_exec_probe();
 		((void (*)())EnterRecompiledCode)();
 
 		// Generally unreachable code here ...
@@ -2304,6 +2321,85 @@ void dyna_page_reset(u32 start, u32 sz)
 	mmap_MarkCountedRamPage(start);
 }
 
+// 187-SMC-BEGIN (ps5/coreorbis/tests/eerec builds the lines up to 187-SMC-END with the real emitter)
+// 187: the manual block check (memory_protect_recompiled_code) compares 32 bytes of the block's code at a time with a
+// copy of its words that recRecompile writes after the block's last instruction (Finish):
+//     vmovdqu ymm0, [rax+off]; vpxor ymm0, ymm0, [rip+copy+off]; vptest ymm0, ymm0; jnz DispatchBlockDiscard
+// then 16 bytes the same way if that many are left, then a cmp/jne per word left, so nothing past the block's last
+// word is read. The words checked and what a mismatch does are as before. The old check (a cmp/jne per word) was 172
+// of 313 and 292 of 575 bytes of two build-184 blocks and made them 7-8% and 31-35% slower (audit emu-core-1).
+namespace OrbisSmcCheck
+{
+	static constexpr u32 MAX_WORDS = 1040; // a block is at most 1025 words: a 4 KiB page and the delay slot past it
+	static u32 s_words[MAX_WORDS]; // the block's words as compiled (the caller fills them)
+	static u32 s_bytes; // their size
+	static u8* s_disp[MAX_WORDS / 4]; // each vpxor's rip-relative displacement...
+	static u32 s_off[MAX_WORDS / 4]; // ...and the offset in the copy it is for
+	static u32 s_vecs; // how many; Finish writes a copy only for these
+
+	// rax: the block's code in host memory, s_words: its first nwords words. wide: 32-byte compares (AVX2), else
+	// 16-byte ones. False when nothing was emitted: the caller compares word by word.
+	static bool Emit(u32 nwords, const void* discard, bool wide)
+	{
+		s_vecs = 0;
+		if (nwords > MAX_WORDS)
+			return false;
+		u8* const start = xGetPtr();
+		const u32 bytes = nwords * 4;
+		s_bytes = bytes;
+		u32 off = 0;
+		while (bytes - off >= 16)
+		{
+			const u32 step = (wide && bytes - off >= 32) ? 32 : 16;
+			const xRegisterSSE& reg = (step == 32) ? ymm0 : xmm0;
+			xMOVDQU(reg, ptr[rax + off]);
+			u8* const here = xGetPtr();
+			xPXOR(reg, reg, ptr[here]); // rip-relative; Finish points it at the copy
+			u8* const end = xGetPtr();
+			s32 disp;
+			std::memcpy(&disp, end - 4, sizeof(disp));
+			if ((end[-5] & 0xc7) != 0x05 || disp != static_cast<s32>(here - end))
+			{
+				// Not the [rip+disp32] form patched below (cannot happen in the code cache): word compares instead.
+				xSetPtr(start);
+				s_vecs = 0;
+				return false;
+			}
+			s_disp[s_vecs] = end - 4;
+			s_off[s_vecs++] = off;
+			xPTEST(reg, reg);
+			xJNZ(discard);
+			off += step;
+		}
+		for (; off < bytes; off += 4)
+		{
+			xCMP(ptr32[rax + off], s_words[off / 4]);
+			xJNE(discard);
+		}
+		return true;
+	}
+
+	// After the block's last instruction (a jump; nothing falls through to here): the copy, 32-byte aligned (the
+	// legacy-SSE pxor needs 16), then the compares' displacements pointed at it.
+	static void Finish()
+	{
+		if (!s_vecs)
+			return;
+		while (reinterpret_cast<uptr>(xGetPtr()) & 31)
+			xWrite8(0xcc);
+		u8* const copy = xGetPtr();
+		for (u32 i = 0; i < s_bytes / 4; i++)
+			xWrite32(s_words[i]);
+		for (u32 i = 0; i < s_vecs; i++)
+		{
+			const s32 disp = static_cast<s32>((copy + s_off[i]) - (s_disp[i] + 4));
+			std::memcpy(s_disp[i], &disp, sizeof(disp));
+		}
+		s_vecs = 0;
+	}
+} // namespace OrbisSmcCheck
+// 187-SMC-END
+
 static void memory_protect_recompiled_code(u32 startpc, u32 size)
 {
 	// Orbis bring-up: the manual-protection prologue it emits addresses host
@@ -2343,6 +2439,17 @@ static void memory_protect_recompiled_code(u32 startpc, u32 size)
 			u32 stg = inpage_sz;
 
 			xMOV64(rax, (s64)(uptr)PSM(lpc));
+			// 187: vector compares against a copy of the words (OrbisSmcCheck above), read as the word compares below
+			// read their immediates; flags/rec_smc_perword (read at reset) keeps the compare per word.
+			bool vector_check = false;
+			if (!s_orbis_smc_perword && size <= OrbisSmcCheck::MAX_WORDS)
+			{
+				for (u32 w = 0; w < size; w++)
+					OrbisSmcCheck::s_words[w] = *(u32*)PSM(lpc + w * 4);
+				vector_check = OrbisSmcCheck::Emit(size, DispatchBlockDiscard,
+					x86Emitter::use_avx && g_cpu.vectorISA >= ProcessorFeatures::VectorISA::AVX2);
+			}
+			if (!vector_check)
 			{
 				s32 disp = 0;
 				while (stg > 0)
@@ -2478,6 +2585,8 @@ static void recRecompile(const u32 startpc)
 {
 	if (0) printf("[dbg] rec: recRecompile pc=%08x\n", startpc); // Orbis: no fflush (hot path; ticker flushes 1/s)
 	{
+		// 187: the first 8 compiles still print (a sign the EE JIT runs). The line every 100th compile (434 lines of a
+		// 4843-line build-180 boot.log) and the on-screen feed (two vsnprintf calls a compile) need flags/rec_probe.
 		void* rsp_now = nullptr;
 #if defined(__x86_64__)
 		asm volatile("mov %%rsp, %0" : "=r"(rsp_now));
@@ -2487,11 +2596,12 @@ static void recRecompile(const u32 startpc)
 		const unsigned n = rec_probe++;
 		if (!lowest_rsp || rsp_now < lowest_rsp)
 			lowest_rsp = rsp_now;
-		if (n < 8 || (n % 100) == 0)
+		if (n < 8 || (s_orbis_rec_probe && (n % 100) == 0))
 		{
 			printf("[dbg] rec: recompile[%u] pc=%08x rsp=%p lowest=%p\n", n, startpc, rsp_now, lowest_rsp);
 			fflush(stdout);
 		}
+		if (s_orbis_rec_probe)
 		{
 			ps5::debug::set_line(4, "rec[%u] pc=%08x", n, startpc);
 			ps5::debug::set_line(5, "pc=%08x cy=%u", cpuRegs.pc, (unsigned)cpuRegs.cycle);
@@ -3101,39 +3211,46 @@ StartRecomp:
 	Perf::ee.RegisterPC((void*)s_pCurBlockEx->fnptr, s_pCurBlockEx->x86size, s_pCurBlockEx->startpc);
 
 	if (0) printf("[dbg] blk: pc=%08x fnptr=%p x86size=%u insns=%u\n", s_pCurBlockEx->startpc, (void*)s_pCurBlockEx->fnptr, s_pCurBlockEx->x86size, s_pCurBlockEx->size);
-	if (s_pCurBlockEx->startpc == 0x00001000 || s_pCurBlockEx->startpc == 0x00005c30 ||
-	    s_pCurBlockEx->startpc == 0x0000e530 || s_pCurBlockEx->startpc == 0x0000e4f8)
+	// 187: the BIOS-block dumps and the LEA survey (a byte scan of every new block) only with flags/rec_probe.
+	if (s_orbis_rec_probe) [[unlikely]]
 	{
-		const u32* ew = (const u32*)PSM(s_pCurBlockEx->startpc);
-		for (u32 w = 0; w < s_pCurBlockEx->size; w++)
-			printf("[dbg] eew+%02x: %08x\n", w * 4, ew[w]);
-		const u8* xb = (const u8*)s_pCurBlockEx->fnptr;
-		u32 xn = s_pCurBlockEx->x86size;
-		for (u32 o = 0; o < xn; o += 16)
+		if (s_pCurBlockEx->startpc == 0x00001000 || s_pCurBlockEx->startpc == 0x00005c30 ||
+		    s_pCurBlockEx->startpc == 0x0000e530 || s_pCurBlockEx->startpc == 0x0000e4f8)
 		{
-			printf("[dbg] xb+%03x:", o);
-			for (u32 k = 0; k < 16 && o + k < xn; k++)
-				printf(" %02x", xb[o + k]);
-			printf("\n");
-		}
-	}
-	{
-		// Survey: what does each vmap LEA in the block ACTUALLY address?
-		const u8* b = (const u8*)s_pCurBlockEx->fnptr;
-		u32 n = s_pCurBlockEx->x86size;
-		int hits = 0;
-		for (u32 o = 0; o + 7 < n && hits < 8; o++)
-		{
-			if (b[o] == 0x48 && b[o+1] == 0x8d && b[o+2] == 0x14 && b[o+3] == 0x25)
+			const u32* ew = (const u32*)PSM(s_pCurBlockEx->startpc);
+			for (u32 w = 0; w < s_pCurBlockEx->size; w++)
+				printf("[dbg] eew+%02x: %08x\n", w * 4, ew[w]);
+			const u8* xb = (const u8*)s_pCurBlockEx->fnptr;
+			u32 xn = s_pCurBlockEx->x86size;
+			for (u32 o = 0; o < xn; o += 16)
 			{
-				s32 d = (s32)((u32)b[o+4] | ((u32)b[o+5] << 8) | ((u32)b[o+6] << 16) | ((u32)b[o+7] << 24));
-				uptr base = (uptr)(b + o + 7) + (sptr)d;
-				printf("[dbg] leaprobe: blkpc=%08x off=%03x lea_base=%p\n", s_pCurBlockEx->startpc, o, (void*)base);
-				hits++;
+				printf("[dbg] xb+%03x:", o);
+				for (u32 k = 0; k < 16 && o + k < xn; k++)
+					printf(" %02x", xb[o + k]);
+				printf("\n");
 			}
 		}
-		fflush(stdout);
+		{
+			// Survey: what does each vmap LEA in the block ACTUALLY address?
+			const u8* b = (const u8*)s_pCurBlockEx->fnptr;
+			u32 n = s_pCurBlockEx->x86size;
+			int hits = 0;
+			for (u32 o = 0; o + 7 < n && hits < 8; o++)
+			{
+				if (b[o] == 0x48 && b[o+1] == 0x8d && b[o+2] == 0x14 && b[o+3] == 0x25)
+				{
+					s32 d = (s32)((u32)b[o+4] | ((u32)b[o+5] << 8) | ((u32)b[o+6] << 16) | ((u32)b[o+7] << 24));
+					uptr base = (uptr)(b + o + 7) + (sptr)d;
+					printf("[dbg] leaprobe: blkpc=%08x off=%03x lea_base=%p\n", s_pCurBlockEx->startpc, o, (void*)base);
+					hits++;
+				}
+			}
+			fflush(stdout);
+		}
 	}
+	// 187: the copy the block check compares with, after the block's last instruction and outside x86size.
+	OrbisSmcCheck::Finish();
+	pxAssert(xGetPtr() < SysMemory::GetEERecEnd());
 	recPtr = xGetPtr();
 
 	pxAssert((g_cpuHasConstReg & g_cpuFlushedConstReg) == g_cpuHasConstReg);

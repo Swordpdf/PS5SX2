@@ -49,6 +49,9 @@
 //
 
 
+// 187: the PS5 port's flag files (orbis-shims/orbis_paths.cpp); weak, so builds without the port still link.
+bool OrbisFlag(const char* name) __attribute__((weak));
+
 thread_local u8* x86Ptr;
 thread_local u8* xTextPtr;
 thread_local XMMSSEType g_xmmtypes[iREGCNT_XMM] = {XMMT_INT};
@@ -336,6 +339,17 @@ const xRegister32
 					std::printf("[sibwarn] TRUNCATED absolute memref target=%p at jit=%p ra=%p\n", address, (void*)x86Ptr,
 						__builtin_return_address(0));
 					std::fflush(stdout);
+				}
+				// 187: stop here instead of emitting an access to the address's low 32 bits. The PS5 port's own code
+				// and data sit below 2 GiB, so the truncated access can quietly corrupt the emulator; none of the ~80
+				// console boot logs on hand where the EE recompiler ran has a [sibwarn] line. flags/rec_sibwarn keeps
+				// the old log-and-continue.
+				if (!(OrbisFlag && OrbisFlag("rec_sibwarn")))
+				{
+					char msg[192];
+					std::snprintf(msg, sizeof(msg), "[sibwarn] absolute memref target %p is out of disp32 reach (jit=%p ra=%p)",
+						address, (void*)x86Ptr, __builtin_return_address(0));
+					pxFailRel(msg);
 				}
 			}
 			ModRM(0, regfield, ModRm_UseSib);

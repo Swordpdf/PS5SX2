@@ -217,11 +217,18 @@ static void cdvdLogStats(bool last)
 		return;
 	char drive[320] = {};
 	cdvdDriveStats(drive, sizeof(drive));
+	// 187: the speed those reads came at (16 sectors a block: 2048 bytes a DVD's, 2352 a CD's; a block from the read-ahead's memory counts too, so
+	// under 1 ms of reads there is nothing to time). It stands in for the drive-speed measurement at every disc open, a 9 MiB read that is opt-in
+	// now (OrbisIOCtlSrc.cpp, switch file disc_measure).
+	char speed[48] = "under 1 ms of reads";
+	if (read_us >= 1000)
+		std::snprintf(speed, sizeof(speed), "%.2f MB/s while reading",
+			static_cast<double>(blocks) * sectors_per_read * (src->GetMediaType() >= 0 ? 2048.0 : 2352.0) / static_cast<double>(read_us));
 	// (the CPU thread asks cdvdGetSector once per sector, 16 to a block: "asked" counts sectors, "missed" the blocks that were not in the cache yet)
-	printf("[disc] %s: cpu thread asked %llu sectors, missed %llu blocks, waited %llu ms (max %llu ms, over 33 ms: %llu%s) | cdvd thread read %llu blocks in %llu ms | %s | "
-		   "cpu-wait %s%s\n",
+	printf("[disc] %s: cpu thread asked %llu sectors, missed %llu blocks, waited %llu ms (max %llu ms, over 33 ms: %llu%s) | cdvd thread read %llu blocks in %llu ms | "
+		   "%s | %s | cpu-wait %s%s\n",
 		last ? "last" : "10 s", asked, missed, wait_us / 1000, wait_max_us / 1000, over33, fallbacks ? (", own reads: " + std::to_string(fallbacks)).c_str() : "",
-		blocks, read_us / 1000, drive[0] ? drive : "(no drive layer figures)", s_cpu_wait.load() ? "on" : "off (switch file discblock)",
+		blocks, read_us / 1000, speed, drive[0] ? drive : "(no drive layer figures)", s_cpu_wait.load() ? "on" : "off (switch file discblock)",
 		s_pipeline.load() ? " | pipeline on" : "");
 	fflush(stdout);
 }
