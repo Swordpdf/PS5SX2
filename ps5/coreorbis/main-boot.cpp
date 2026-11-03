@@ -1901,6 +1901,10 @@ std::string OrbisUserAgentProduct()
   return std::string("PS5SX2/") + ORBIS_BUILD_TAG + " (PS5 " + fw + ")";
 }
 
+// 186: the console's firmware as sceKernelGetProsperoSystemSwVersion gives it, BCD (0x04030000 = 4.03; 0 unknown), for frame generation
+// (GSDeviceVK.cpp: a GPU submission only starts at a vblank below 9.00).
+unsigned g_orbis_fw_version = 0;
+
 static std::string orbis_console_survey()
 {
   std::string info;
@@ -1913,6 +1917,8 @@ static std::string orbis_console_survey()
   memcpy(fw_text, sw + 8, 0x1C);
   unsigned int fw_ver = 0;
   memcpy(&fw_ver, sw + 0x24, 4);
+  if (sw_rc == 0)
+    g_orbis_fw_version = fw_ver; // 186
   printf("[console] firmware: rc=%#x text=\"%s\" version=%#x\n", (unsigned)sw_rc, fw_text, fw_ver);
   char buf[160];
   if (sw_rc == 0 && fw_text[0])

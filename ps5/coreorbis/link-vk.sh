@@ -168,6 +168,41 @@ if [[ ${ORBIS_WAR_SHIM:-1} != 0 ]]; then
     echo "[link-vk] driver: WAR list lookup shim not linked (ps5vk_cmd_buffer.o is ${war_got:0:12}, not 6a20943's)"
   fi
 fi
+# 186 (AI-assisted): the driver's flips from the CPU (orbis-shims/orbis_ps5vk_cpuflip.c, which says why). The copy's ps5vk_queue.o gets
+# ps5vk_queue_flip weak, so the shim's definition is the one every caller reaches (the queue worker's call is a PLT32 against the symbol,
+# ps5vk_wsi.o's a GOT load), and a second copy of the object with only the driver's flip global, renamed ps5vk_queue_flip_dcb (flag file
+# vk_dcbflip). Only when ps5vk_queue.o defines ps5vk_queue_flip (the shim follows 964919b914's: queue, video, buffer index, marker, wait),
+# and not with ORBIS_CPU_FLIP=0; otherwise the driver's flips, and the shim is not linked.
+if [[ ${ORBIS_CPU_FLIP:-1} != 0 ]]; then
+  flip_dir="$OUT/driver/cpuflip"
+  rm -rf "$flip_dir" && mkdir -p "$flip_dir"
+  (cd "$flip_dir" && ar x "$OUT/driver/libps5vk.ps5.a" ps5vk_queue.o 2>/dev/null) || true
+  "$NM" "$flip_dir/ps5vk_queue.o" > "$flip_dir/nm-before.txt" 2>/dev/null || true
+  "$NM" "$OUT/driver/libps5vk.ps5.a" > "$flip_dir/nm-archive.txt" 2>/dev/null || true
+  if grep -qE " W ps5vk_queue_flip$" "$flip_dir/nm-before.txt" && grep -qE " T ps5vk_queue_flip_dcb$" "$flip_dir/nm-archive.txt"; then
+    # a driver folder whose archive already had the surgery (a copy prepared by hand): link the shim as it is
+    sh "$NATIVE/tooling/prospero-clang18" -std=c11 -O2 -march=znver2 -mavx2 -ffunction-sections -fdata-sections \
+      -c "$here/orbis-shims/orbis_ps5vk_cpuflip.c" -o "$OUT/build/obj/orbis_ps5vk_cpuflip.o"
+    OBJS="$OBJS $OUT/build/obj/orbis_ps5vk_cpuflip.o"
+    echo "[link-vk] driver: flips from the CPU (the archive was prepared already)"
+  elif grep -qE " T ps5vk_queue_flip$" "$flip_dir/nm-before.txt"; then
+    "$OBJCOPY" --keep-global-symbol=ps5vk_queue_flip "$flip_dir/ps5vk_queue.o" "$flip_dir/step.o"
+    "$OBJCOPY" --redefine-sym ps5vk_queue_flip=ps5vk_queue_flip_dcb "$flip_dir/step.o" "$flip_dir/ps5vk_queue_flipdcb.o"
+    "$OBJCOPY" --weaken-symbol=ps5vk_queue_flip "$flip_dir/ps5vk_queue.o"
+    (cd "$flip_dir" && ar r "$OUT/driver/libps5vk.ps5.a" ps5vk_queue.o ps5vk_queue_flipdcb.o)
+    "$NM" "$OUT/driver/libps5vk.ps5.a" > "$flip_dir/nm.txt" 2>/dev/null || true
+    grep -qE " W ps5vk_queue_flip$" "$flip_dir/nm.txt" ||
+      { echo "[link-vk] error: the CPU flip surgery left no weak ps5vk_queue_flip in the driver archive" >&2; exit 1; }
+    grep -qE " T ps5vk_queue_flip_dcb$" "$flip_dir/nm.txt" ||
+      { echo "[link-vk] error: the CPU flip surgery left no ps5vk_queue_flip_dcb in the driver archive" >&2; exit 1; }
+    sh "$NATIVE/tooling/prospero-clang18" -std=c11 -O2 -march=znver2 -mavx2 -ffunction-sections -fdata-sections \
+      -c "$here/orbis-shims/orbis_ps5vk_cpuflip.c" -o "$OUT/build/obj/orbis_ps5vk_cpuflip.o"
+    OBJS="$OBJS $OUT/build/obj/orbis_ps5vk_cpuflip.o"
+    echo "[link-vk] driver: flips from the CPU (ps5vk_queue_flip weak, the driver's kept as ps5vk_queue_flip_dcb)"
+  else
+    echo "[link-vk] driver: the driver's own flips (no ps5vk_queue_flip in ps5vk_queue.o)"
+  fi
+fi
 VK_ARCHIVES=(
   "$OUT/driver/libps5vk.ps5.a"
   "$VK_LIB_RUNTIME"

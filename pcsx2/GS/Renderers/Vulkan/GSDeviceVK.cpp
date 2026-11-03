@@ -4527,7 +4527,8 @@ void OrbisVkPresentBlend(GSTexture* tex, const GSVector4& sRect, const GSVector4
 // a 60 fps game at 60 Hz to 30 fps), with a pause when the game slows while frames are generated; nothing is recorded while there
 // is no room for a generated frame (a 60 fps game at 60 Hz), and the interpolator is only made once there is.
 bool g_orbis_fg_wanted = false; // main-boot.cpp sets it from PS5SX2/FrameGeneration before the GS opens
-std::atomic<bool> g_orbis_fg_active{false}; // frames are being generated (the FPS box says "FG")
+std::atomic<bool> g_orbis_fg_active{false}; // frames are being generated (the FPS box says "FG"; 186: and the latency cap stands aside)
+extern unsigned g_orbis_fw_version; // 186: main-boot.cpp, the console's firmware in BCD (0x04030000 = 4.03; 0 unknown)
 bool g_orbis_fg_engaged = false; // vk-285-133: the pacing has room for generated frames (GSRenderer.cpp skips the repeats then)
 
 // The driver's measured refresh of the output its swapchain presents to (ps5vk's high-frame-rate output, 2026-10-08); a driver
@@ -4549,6 +4550,7 @@ namespace
 		std::unique_ptr<GSTextureVK> frames[2]; // the interpolator's two frame images (this frame's and the previous one alternate)
 		VkImage frame_images[2] = {};
 		std::unique_ptr<GSTextureVK> output;    // the generated frame
+		GSTexture* barrier_target = nullptr;    // 186: the 1x1 target of the draw that puts the driver's barrier after the frame's copy
 		bool failed = false;     // it could not start: not tried again in this game
 		bool prepared = false;   // the wrappers know the images are the interpolator's (GENERAL)
 		bool reset_next = true;  // the interpolator was (re)made: its first frame has no neighbour
@@ -4605,6 +4607,9 @@ void GSDeviceVK::OrbisFrameGenRelease()
 	if (s.output)
 		s.output->Destroy(false);
 	s.output.reset();
+	if (s.barrier_target)
+		Recycle(s.barrier_target); // 186
+	s.barrier_target = nullptr;
 
 	printf("[fg] released: %llu game frames, %llu generated\n", static_cast<unsigned long long>(s.fg->frames()),
 		static_cast<unsigned long long>(s.fg->interpolated()));
@@ -4813,8 +4818,21 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 		return 0;
 	}
 
-	const u32 w = static_cast<u32>(GetWindowWidth());
-	const u32 h = static_cast<u32>(GetWindowHeight());
+	// 186: below firmware 9.00 the frames are generated at half the display's size above 2560x1440 (1920x1080 on a 4K display) and the
+	// generated one is presented scaled up. There a GPU submission that reaches an idle GPU only starts at the next vblank, so at
+	// 119.88 Hz a generated pair gets two 8.34 ms slots, the first for the game's frame, its copy into the generator, the generation and
+	// the generated frame's present (the barrier draw below keeps it one submission). swordpdf's original PS5 at 4.03, Ratchet & Clank
+	// at 6x (2026-11-03): 120 presents a second for 172 of 177 s at 1920x1080, 11 of 49 s at 3840x2160 (2.5 ms of generation more, and
+	// the slot ran over). Firmware 9.00 and newer and the PS5 Pro have no such hold (60 -> 120 at full size in the 2.15 reports) and keep
+	// the display's size. Flags: fgfullres (the display's size anywhere), fghalfres (half anywhere).
+	static const bool s_fg_full_res = OrbisFlag("fgfullres");
+	static const bool s_fg_half_res = OrbisFlag("fghalfres");
+	const bool fg_old_firmware = g_orbis_fw_version != 0 && g_orbis_fw_version < 0x09000000u; // BCD: 9.00
+	const u32 win_w = static_cast<u32>(GetWindowWidth());
+	const u32 win_h = static_cast<u32>(GetWindowHeight());
+	const u32 fg_div = (!s_fg_full_res && (fg_old_firmware || s_fg_half_res) && static_cast<u64>(win_w) * win_h > 2560u * 1440u) ? 2u : 1u;
+	const u32 w = (win_w + fg_div - 1) / fg_div;
+	const u32 h = (win_h + fg_div - 1) / fg_div;
 	const VkFormat format = m_swap_chain->GetTextureFormat();
 
 	if (!s.fg || s.fg->width() != w || s.fg->height() != h)
@@ -4862,7 +4880,8 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 		s.fg->set_half_res_flow(OrbisFlag("fghalfflow") || (static_cast<u64>(w) * h > 2560u * 1440u && !OrbisFlag("fgfullflow")));
 		s.prepared = false;
 		s.reset_next = true;
-		printf("[fg] ready for %ux%u in %.0f ms; the display at %.2f Hz; the optical flow at %s\n", w, h,
+		printf("[fg] ready for %ux%u (the display %ux%u%s) in %.0f ms; the display at %.2f Hz; the optical flow at %s\n", w, h, win_w, win_h,
+			fg_div > 1 ? "; frames generated at half its size (firmware below 9.00 or flag fghalfres), flag fgfullres for its own" : "",
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), s.hz,
 			s.fg->half_res_flow() ? "half resolution (flag fgfullflow: full)" : "full resolution");
 		fflush(stdout);
@@ -4914,10 +4933,32 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 		const VkRect2D scissor{{0, 0}, {w, h}};
 		vkCmdSetViewport(cmd, 0, 1, &vp);
 		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		// 186: the display's rectangle as it is: with no target PresentRect divides it by the window's size (DrawStretchRect), and the
+		// viewport above maps that onto the generator's smaller image (scaling it as well drew the picture in a quarter of the frame)
 		PresentRect(current, src_uv, nullptr, draw_rect, shader, shader_time, filter);
 		vkCmdEndRenderPass(cmd);
-		target->TransitionToLayout(cmd, GSTextureVK::Layout::ComputeReadWriteImage);
 		InvalidateCachedState(); // the pass and the state were set by hand
+
+		// 186: a draw that samples the frame image just drawn, into a 1x1 target. ps5vk splits the submission at a compute dispatch that
+		// samples an image this command buffer rendered into (ps5vk_dispatch -> ps5vk_cmd_buffer_split), while a draw takes its in-stream
+		// colour barrier (a RELEASE_MEM and a wait, vk_gpuwait), which marks every colour target flushed (ps5vk_cmd_buffer_gpu_barrier):
+		// after this draw the generator's first pass finds its input flushed and does not split. On firmware 4.03 each step starts on an
+		// idle GPU only at the next vblank; the split made a generated pair three steps, so three vblanks (40 fps at 119.88 Hz,
+		// swordpdf's original PS5, 2026-11-03; the driver's own counter said splits/frame compute=0.18). The flag fgnobarrierdraw leaves it out.
+		static const bool s_no_barrier_draw = OrbisFlag("fgnobarrierdraw");
+		if (!s_no_barrier_draw)
+		{
+			if (!s.barrier_target)
+				s.barrier_target = CreateRenderTarget(1, 1, GSTexture::Format::Color, false, false);
+			if (s.barrier_target)
+			{
+				StretchRect(target, GSVector4(0.0f, 0.0f, 1.0f, 1.0f), s.barrier_target, GSVector4(0.0f, 0.0f, 1.0f, 1.0f), ShaderConvert::COPY,
+					Nearest);
+				EndRenderPass();
+			}
+		}
+		target->TransitionToLayout(cmd, GSTextureVK::Layout::ComputeReadWriteImage);
+		InvalidateCachedState();
 	}
 
 	fg.set_generated(1);
@@ -4960,7 +5001,10 @@ void GSDeviceVK::OrbisFrameGenDraw()
 
 	const float w = static_cast<float>(GetWindowWidth());
 	const float h = static_cast<float>(GetWindowHeight());
-	PresentRect(s.output.get(), GSVector4(0.0f, 0.0f, 1.0f, 1.0f), nullptr, GSVector4(0.0f, 0.0f, w, h), PresentShader::COPY, 0.0f, Nearest);
+	// 186: generated at half the display's size (OrbisFrameGenRecord): scaled up bilinearly
+	const bool scaled = s.output->GetWidth() != static_cast<int>(w) || s.output->GetHeight() != static_cast<int>(h);
+	PresentRect(s.output.get(), GSVector4(0.0f, 0.0f, 1.0f, 1.0f), nullptr, GSVector4(0.0f, 0.0f, w, h), PresentShader::COPY, 0.0f,
+		scaled ? Biln : Nearest);
 }
 
 // For GSRenderer.cpp, which doesn't include this header.

@@ -21,6 +21,7 @@
 //
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <atomic>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -34,6 +35,10 @@ extern "C" unsigned long sceKernelGetProcessTime(void); // microseconds since th
 extern "C" int sceKernelUsleep(unsigned microseconds);
 bool OrbisFlag(const char* name) __attribute__((weak));
 extern "C" void orbis_event_log(const char* line) __attribute__((weak)); // settings.log, where the perf lines go
+// GSDeviceVK.cpp: frames are being generated. The cap stands aside then: a generated pair needs the GS thread a frame ahead of the screen
+// (swordpdf's original PS5 at firmware 4.03, Ratchet & Clank at 6x, 2026-11-03: 120 presents a second for 172 of 177 s without the cap,
+// 25 of 49 s with it), and frame generation's own frame of delay is the price of its smoothness anyway.
+extern std::atomic<bool> g_orbis_fg_active;
 
 namespace
 {
@@ -58,7 +63,7 @@ struct LatProbe
 	uint64_t n = 0, wait_sum = 0, wait_max = 0, lat_n = 0, lat_sum_us = 0, lat_max_us = 0, lat_min_us = UINT64_MAX;
 	int64_t pending_sum = 0, pending_max = 0;
 	// the cap, since its last line (the probe's every 2 s, else its own every 30 s)
-	uint64_t cap_presents = 0, cap_waits = 0, cap_wait_us = 0, cap_wait_max_us = 0, cap_timeouts = 0, cap_line_us = 0;
+	uint64_t cap_presents = 0, cap_waits = 0, cap_wait_us = 0, cap_wait_max_us = 0, cap_timeouts = 0, cap_line_us = 0, cap_fg = 0;
 	int timeouts_row = 0, recounts = 0;
 };
 
@@ -104,10 +109,11 @@ const char* CapText(LatProbe& p)
 	text[0] = '\0';
 	if (p.cap < 0)
 		return text;
-	std::snprintf(text, sizeof(text), "cap %d: waited before %" PRIu64 " of %" PRIu64 " presents, avg %.1f ms, most %.1f; %" PRIu64 " ran out%s",
+	std::snprintf(text, sizeof(text), "cap %d: waited before %" PRIu64 " of %" PRIu64 " presents, avg %.1f ms, most %.1f; %" PRIu64 " ran out%s; "
+		"%" PRIu64 " presents while frames were generated (no cap)",
 		p.cap, p.cap_waits, p.cap_presents, p.cap_waits ? p.cap_wait_us / 1000.0 / p.cap_waits : 0.0, p.cap_wait_max_us / 1000.0,
-		p.cap_timeouts, p.recounts ? " (counted again)" : "");
-	p.cap_presents = p.cap_waits = p.cap_wait_us = p.cap_wait_max_us = p.cap_timeouts = 0;
+		p.cap_timeouts, p.recounts ? " (counted again)" : "", p.cap_fg);
+	p.cap_presents = p.cap_waits = p.cap_wait_us = p.cap_wait_max_us = p.cap_timeouts = p.cap_fg = 0;
 	return text;
 }
 } // namespace
@@ -118,6 +124,12 @@ void OrbisLatCapBeforePresent(void* /*vk_device*/)
 	ReadFlags(p);
 	if (p.cap < 0 || p.handle < 0 || !p.based)
 		return;
+	if (g_orbis_fg_active.load(std::memory_order_relaxed))
+	{
+		p.cap_fg++;
+		p.timeouts_row = 0;
+		return;
+	}
 	uint64_t st[16] = {};
 	// a handle that stopped answering or a count that went back: OrbisLatProbePresent finds the handle again or counts again
 	if (sceVideoOutGetFlipStatus(p.handle, st) != 0 || st[0] < p.last_shown)
