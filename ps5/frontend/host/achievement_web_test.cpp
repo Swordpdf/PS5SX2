@@ -40,7 +40,7 @@ int main(int argc, char** argv)
 	std::vector<std::string> english;
 	for (int i = static_cast<int>(Str::Achievements); i < static_cast<int>(Str::Count); ++i)
 		english.emplace_back(Tr(static_cast<Str>(i)));
-	for (int language : {1, 2, 3, 20, 4, 5, 6, 7, 17, 0})
+	for (int language : {1, 2, 3, 20, 4, 5, 6, 7, 17, 30, 0})
 	{
 		SetLanguage(language, "");
 		std::unordered_set<std::string> keys;

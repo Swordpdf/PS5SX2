@@ -92,6 +92,11 @@ bool Fonts::Init(const uint8_t* text_font, size_t text_size, const uint8_t* icon
 		wanted.push_back({0, cp});
 	for (uint32_t cp = 160; cp < 256; cp++)
 		wanted.push_back({0, cp});
+	// Cyrillic (U+0400..U+045F) plus Ґ/ґ for the Ukrainian text (fe_i18n.cpp).
+	for (uint32_t cp = 0x400; cp < 0x460; cp++)
+		wanted.push_back({0, cp});
+	wanted.push_back({0, 0x490});
+	wanted.push_back({0, 0x491});
 	// vk-285-114: 0x2039 and 0x203A, the options sheet's arrows either side of a value.
 	const uint32_t extra[] = {0x2022, 0x2026, 0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2122, 0x2190,
 		0x2192, 0x25B8, 0x2039, 0x203A, 0xFFFD};
