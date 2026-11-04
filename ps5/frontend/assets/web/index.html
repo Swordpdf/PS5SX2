@@ -20,7 +20,7 @@
   --house: 140, 107, 255;
   --glow: 140, 107, 255;
   --text: #ffffff; --dim: #b8b0d1; --faint: #8c87a8;
-  --card: rgba(255, 255, 255, 0.055); --card-line: rgba(255, 255, 255, 0.09);
+  --card: transparent; --card-line: rgba(255, 255, 255, 0.12);
   --pill: rgba(255, 255, 255, 0.12);
   --accent: rgb(186, 166, 255);
   --ink: #120f29;
@@ -63,10 +63,10 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 .discrow.hide { display: none; }
 /* 2.11: the shelf search box */
 .shelfsearch { margin: 0 0 14px; }
-.shelfsearch input { width: 100%; box-sizing: border-box; padding: 12px 16px 12px 44px; border-radius: 999px; border: 1px solid var(--line, rgba(255,255,255,.14)); background: rgba(255,255,255,.06) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%23b8b4d0' stroke-width='2.4' stroke-linecap='round'><circle cx='10.5' cy='10.5' r='6.5'/><path d='M15.5 15.5 21 21'/></svg>") no-repeat 16px 50%; color: inherit; font: inherit; }
+.shelfsearch input { width: 100%; box-sizing: border-box; padding: 12px 16px 12px 44px; border-radius: 8px; border: 1px solid var(--line, rgba(255,255,255,.14)); background: rgba(255,255,255,.06) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%23b8b4d0' stroke-width='2.4' stroke-linecap='round'><circle cx='10.5' cy='10.5' r='6.5'/><path d='M15.5 15.5 21 21'/></svg>") no-repeat 16px 50%; color: inherit; font: inherit; }
 .shelfsearch input:focus { outline: none; border-color: rgba(160,140,255,.7); }
 /* Now playing */
-.now { margin-top: 22px; display: none; align-items: center; gap: 14px; padding: 12px; border-radius: 16px;
+.now { margin-top: 22px; display: none; align-items: center; gap: 14px; padding: 12px; border-radius: 8px;
        background: var(--card); border: 1px solid var(--card-line); }
 .now.show { display: flex; }
 .now img { width: 46px; height: 66px; object-fit: cover; border-radius: 4px; box-shadow: 0 4px 14px rgba(0,0,0,0.5); }
@@ -79,15 +79,12 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 
 /* The cover flow: the shelf's 58-degree turn, in CSS 3D. */
 .flow-wrap { position: relative; margin: 18px -16px 0; perspective: 900px; }
-.flow { display: flex; gap: 0; overflow-x: auto; scroll-snap-type: x mandatory; padding: 26px 0 56px;
-        scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
-.flow::-webkit-scrollbar { display: none; }
-.pad { flex: 0 0 calc(50% - 70px); }
-.case { flex: 0 0 140px; height: 200px; scroll-snap-align: center; position: relative; transform-style: preserve-3d;
-        cursor: pointer; }
+.flow { position: relative; height: 282px; padding: 26px 0 56px; overflow: hidden; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+.case { position: absolute; top: 26px; left: calc(50% - 70px); width: 140px; height: 200px; transform-style: preserve-3d; cursor: pointer; }
 .case .front { position: absolute; inset: 0; border-radius: 5px; overflow: hidden; background: #1c1a33;
                box-shadow: 0 10px 26px rgba(0,0,0,0.55); -webkit-box-reflect: below 6px linear-gradient(transparent 62%, rgba(255,255,255,0.22)); }
-.case .front img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.case.hidden .front { opacity: 0.35; }
+.case .front img { width: 100%; height: 100%; object-fit: cover; display: block; -webkit-user-drag: none; }
 .case .ph { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; padding: 12px;
             text-align: center; font-size: 13px; color: var(--dim);
             background: linear-gradient(160deg, #2a2550, #141228); }
@@ -98,20 +95,35 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
               padding: 3px 9px; border-radius: 99px; background: #5cf2a0; color: #0a2418; font-weight: 700; letter-spacing: 0.5px; }
 
 .gametitle { text-align: center; font-size: 24px; font-weight: 700; margin-top: -14px; }
+.hidegame { background: none; border: 0; padding: 4px; margin: -4px 0; color: var(--dim); cursor: pointer; }
+.hidegame.on { color: var(--accent); }
+.hidegame svg { display: block; }
 .gameinfo { text-align: center; color: var(--dim); font-size: 14px; margin-top: 6px; display: flex; gap: 8px;
             justify-content: center; align-items: center; flex-wrap: wrap; }
 .pillb { background: var(--pill); border-radius: 99px; padding: 2px 10px; font-size: 12px; color: var(--text); font-weight: 700; }
 .all { display: block; margin: 16px auto 0; background: none; border: 1px solid var(--card-line); color: var(--dim);
-       border-radius: 99px; padding: 7px 16px; font: inherit; font-size: 14px; cursor: pointer; }
+       border-radius: 8px; padding: 7px 16px; font: inherit; font-size: 14px; cursor: pointer; }
 .all.on { color: var(--text); border-color: rgba(255,255,255,0.5); }
 
 /* Settings */
 .sec { margin-top: 20px; }
 .sec h2 { font-size: 13px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--faint); font-weight: 700;
           margin: 0 0 8px 4px; }
-.card { background: var(--card); border: 1px solid var(--card-line); border-radius: 18px; overflow: hidden; }
-.row { padding: 14px 14px 15px; border-top: 1px solid var(--card-line); }
-.row:first-child { border-top: 0; }
+#settings .sec.fold { margin-top: 8px; border: 1px solid var(--card-line); border-radius: 8px; overflow: hidden; }
+#settings .sec.fold > h2 { display: flex; align-items: center; gap: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; margin: 0; padding: 14px 16px;
+                           font-size: 16px; letter-spacing: 0; text-transform: none; color: var(--text); }
+#settings .sec.fold > h2::before { content: ""; border: 5px solid transparent; border-right: 0; border-left: 8px solid var(--dim);
+                                   transform: rotate(90deg); transition: transform 0.2s ease; }
+#settings .sec.fold > .ghint { margin: 0; padding: 0 16px 12px; }
+#settings .sec.fold > .card { border: 0; border-radius: 0; }
+#settings .sec.fold.closed > h2::before, #settings .sec.fold.closing > h2::before { transform: none; }
+#settings .sec.closed > :not(h2) { display: none; }
+#settings .sec.opening > :not(h2) { animation: secin 0.22s ease-out; }
+#settings .sec.closing > :not(h2) { animation: secout 0.16s ease-in forwards; }
+@keyframes secin { from { opacity: 0; transform: translateY(-8px); } }
+@keyframes secout { to { opacity: 0; transform: translateY(-8px); } }
+.card { background: var(--card); border: 1px solid var(--card-line); border-radius: 8px; overflow: hidden; }
+.row { padding: 14px 16px 15px; }
 .row .head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .row .label { font-size: 16px; }
 .row .from { font-size: 12px; color: var(--faint); white-space: nowrap; }
@@ -125,7 +137,7 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
        margin-left: 6px; vertical-align: 1px; white-space: nowrap; display: inline-block; }
 /* One row, equal columns: --n is the number of choices. */
 .seg { display: grid; grid-template-columns: repeat(var(--n, 4), minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
-.seg button { min-width: 0; padding: 9px 2px; border-radius: 11px; border: 1px solid transparent; white-space: nowrap;
+.seg button { min-width: 0; padding: 9px 2px; border-radius: 5px; border: 1px solid transparent; white-space: nowrap;
               overflow: hidden; text-overflow: clip; background: rgba(255,255,255,0.07); color: var(--dim);
               font: inherit; font-size: 14px; cursor: pointer; transition: background 0.15s, color 0.15s, box-shadow 0.15s; }
 .seg.many button { font-size: 13px; }
@@ -145,12 +157,12 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 .empty { padding: 14px; color: var(--faint); font-size: 14px; }
 /* Recommended settings (vk-285-51): what the port was tuned with, one tap (and a second to confirm) away. */
 .rec { margin-top: 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 12px 12px 14px;
-       border-radius: 18px; background: linear-gradient(135deg, rgba(var(--glow),0.20), rgba(255,255,255,0.04));
+       border-radius: 8px; background: linear-gradient(135deg, rgba(var(--glow),0.20), rgba(255,255,255,0.04));
        border: 1px solid rgba(var(--glow),0.5); }
 .rec.ok { background: var(--card); border-color: var(--card-line); }
 .rec .rt { font-weight: 700; font-size: 15px; }
 .rec .rs { font-size: 13px; color: var(--dim); margin-top: 3px; }
-.recbtn { flex: 0 0 auto; border: 0; border-radius: 99px; padding: 9px 16px; font: inherit; font-size: 14px; font-weight: 700;
+.recbtn { flex: 0 0 auto; border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-size: 14px; font-weight: 700;
           cursor: pointer; background: rgba(255,255,255,0.92); color: var(--ink); box-shadow: 0 0 16px rgba(var(--glow),0.45);
           transition: background 0.15s; white-space: nowrap; }
 .recbtn.armed { background: #ffcf7a; box-shadow: 0 0 16px rgba(255,207,122,0.5); }
@@ -158,11 +170,11 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 .file { text-align: center; color: var(--faint); font-size: 12px; margin-top: 12px; }
 /* vk-285-116: the Settings and Controls tabs, a group's line under its title, a list row (the remapping). */
 .tabs { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; max-width: 480px; margin: 14px auto 0; padding: 4px;
-        border-radius: 99px; background: rgba(255,255,255,0.06); border: 1px solid var(--card-line); }
-.tabs button { border: 0; border-radius: 99px; padding: 8px 10px; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
+        border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid var(--card-line); }
+.tabs button { border: 0; border-radius: 5px; padding: 8px 10px; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
                background: none; color: var(--dim); transition: background 0.15s, color 0.15s, box-shadow 0.15s; }
 .tabs button.on { background: rgba(255,255,255,0.92); color: var(--ink); box-shadow: 0 0 16px rgba(var(--glow),0.45); }
-.ghint { font-size: 13px; color: var(--faint); margin: -2px 4px 10px; }
+.ghint { font-size: 13px; color: var(--faint); margin: 2px 4px 10px; }
 .prow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .prow .pl { min-width: 0; }
 .prow .pick { width: 56%; flex: 0 0 auto; margin-top: 0; padding: 8px 10px; }
@@ -178,18 +190,18 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 .file button { background: none; border: 0; color: var(--accent); font: inherit; cursor: pointer; }
 
 /* Test build 1 (vk-285-55): the testing banner and the problem report. */
-.testing { margin-top: 18px; padding: 10px 14px; border-radius: 14px; border: 1px solid rgba(255,207,122,0.45);
+.testing { margin-top: 18px; padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(255,207,122,0.45);
            background: rgba(255,207,122,0.08); color: #ffcf7a; font-size: 14px; display: flex; justify-content: space-between;
            align-items: center; gap: 10px; }
 .testing b { letter-spacing: 1.2px; }
 .testing a { color: #ffcf7a; font-weight: 700; white-space: nowrap; }
-.report textarea { display: block; width: 100%; margin-top: 10px; min-height: 86px; resize: vertical; border-radius: 12px;
+.report textarea { display: block; width: 100%; margin-top: 10px; min-height: 86px; resize: vertical; border-radius: 8px;
                    border: 1px solid var(--card-line); background: rgba(255,255,255,0.06); color: var(--text);
                    font: inherit; font-size: 15px; padding: 10px 12px; }
 .report textarea::placeholder { color: var(--faint); }
 .report textarea:focus { outline: none; border-color: rgba(var(--glow),0.7); box-shadow: 0 0 0 3px rgba(var(--glow),0.18); }
 /* vk-285-113: a memory card slot's picker, the new card's name. */
-.pick, .txt { display: block; width: 100%; margin-top: 10px; border-radius: 12px; border: 1px solid var(--card-line);
+.pick, .txt { display: block; width: 100%; margin-top: 10px; border-radius: 8px; border: 1px solid transparent;
               background: rgba(255,255,255,0.06); color: var(--text); font: inherit; font-size: 15px; padding: 10px 12px;
               color-scheme: dark; }
 .pick option { background: #1b1838; color: #fff; }
@@ -197,7 +209,7 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 .pick:focus, .txt:focus { outline: none; border-color: rgba(var(--glow),0.7); box-shadow: 0 0 0 3px rgba(var(--glow),0.18); }
 .btn:disabled { opacity: 0.55; cursor: default; }
 .btnrow { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.btn { border: 0; border-radius: 99px; padding: 9px 16px; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
+.btn { border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
        text-decoration: none; display: inline-flex; align-items: center; }
 .btn.primary { background: rgba(255,255,255,0.92); color: var(--ink); box-shadow: 0 0 16px rgba(var(--glow),0.45); }
 .btn.ghost { background: rgba(255,255,255,0.08); color: var(--text); border: 1px solid var(--card-line); }
@@ -207,13 +219,13 @@ footer a { color: var(--dim); }
 
 .toast { position: fixed; left: 50%; bottom: max(22px, env(safe-area-inset-bottom)); transform: translate(-50%, 30px);
          opacity: 0; transition: 0.25s; background: rgba(20,18,44,0.96); border: 1px solid var(--card-line);
-         color: var(--text); padding: 10px 16px; border-radius: 99px; font-size: 14px; white-space: nowrap;
+         color: var(--text); padding: 10px 16px; border-radius: 8px; font-size: 14px; white-space: nowrap;
          box-shadow: 0 8px 30px rgba(0,0,0,0.5), 0 0 20px rgba(var(--glow),0.25); pointer-events: none; z-index: 5; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .hide { display: none !important; }
 @media (min-width: 700px) {
-  .case { flex-basis: 170px; height: 242px; }
-  .pad { flex-basis: calc(50% - 85px); }
+  .flow { height: 324px; }
+  .case { left: calc(50% - 85px); width: 170px; height: 242px; }
   .wordmark { font-size: 36px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -261,7 +273,7 @@ footer a { color: var(--dim); }
     <div class="shelfsearch"><input id="shelfsearch" type="search" maxlength="64" autocomplete="off" placeholder="Search the console's shelf (title, serial, region)" aria-label="Search the games on the console's shelf"></div>
     <div class="flow-wrap"><div class="flow" id="flow"></div></div>
     <div class="gametitle" id="gtitle"></div>
-    <div class="gameinfo" id="ginfo"></div>
+    <div class="gameinfo"><span id="ginfo"></span><button class="hidegame" id="hidegame" hidden></button></div>
     <button class="all" id="allgames">Settings for all games</button>
     <div class="tabs" id="tabs"><button data-tab="settings">Settings</button><button data-tab="controls">Controls</button><button data-tab="achievements">Achievements</button></div>
 
@@ -297,6 +309,7 @@ footer a { color: var(--dim); }
 const CROP_PX = [["0","Off"],["2","2 px"],["4","4 px"],["6","6 px"],["8","8 px"],["10","10 px"],["12","12 px"],["16","16 px"],
                  ["24","24 px"],["32","32 px"]];
 const RESET_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>';
+const EYE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>', EYE_OFF_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M3 3l18 18"/></svg>';
 const CROP_HINT = "Cuts PS2 pixels off each side of the picture, for games with garbage at a border (Shadow of the Colossus). The picture keeps its proportions.";
 // 2026-10-08 (AI-assisted): PCSX2's texture offsets, in thousandths of a texel, as the sheet's TexOffsetChoices().
 const TC_OFFSETS = [["0","Off"],["100","100"],["200","200"],["250","250"],["300","300"],["400","400"],["500","500"],["525","525"],
@@ -644,57 +657,96 @@ function glowFrom(img) {
 function setGlow(v) { document.documentElement.style.setProperty("--glow", v); }
 
 // ---- The cover flow.
+let flowPos = 0, flowAnim = 0, flowDrag = null, flowMoved = false, wheelTimer = 0;
 function buildFlow() {
   const flow = $("flow");
-  flow.innerHTML = '<div class="pad"></div>' + games.map((g, i) =>
-    '<div class="case" data-i="' + i + '"><div class="front">' +
-    (g.cover ? '<img loading="lazy" alt="" src="' + cover(g.id) + '">'
+  flow.innerHTML = games.map((g, i) =>
+    '<div class="case' + (g.hidden ? " hidden" : "") + '" data-i="' + i + '"><div class="front">' +
+    (g.cover ? '<img loading="lazy" alt="" draggable="false" src="' + cover(g.id) + '">'
              : '<div class="ph"><b>' + esc(g.title) + '</b>' + esc(g.serial) + '</div>') +
-    '</div>' + (g.playing ? '<div class="live">PLAYING</div>' : "") + '</div>').join("") + '<div class="pad"></div>';
-  flow.querySelectorAll(".case").forEach((el) => el.addEventListener("click", () => {
-    const i = +el.dataset.i;
-    if (current === games[i].id) return;
-    scrollToGame(i, true);
-  }));
-  flow.addEventListener("scroll", onScroll, { passive: true });
-  flow.addEventListener("touchstart", () => { touching = true; }, { passive: true });
-  flow.addEventListener("touchend", () => { touching = false; onScroll(); }, { passive: true });
-  onScroll();
+    '</div>' + (g.playing ? '<div class="live">PLAYING</div>' : "") + '</div>').join("");
+  flow.querySelectorAll(".case").forEach((el) => el.addEventListener("click", () => { if (!flowMoved) glideTo(+el.dataset.i); }));
+  if (!flow.dataset.hooked) {
+    flow.dataset.hooked = "1";
+    flow.addEventListener("pointerdown", (e) => {
+      cancelAnimationFrame(flowAnim);
+      flowDrag = { x: e.clientX, pos: flowPos, t: performance.now(), v: 0, on: false };
+      flowMoved = false;
+    });
+    flow.addEventListener("pointermove", (e) => {
+      if (!flowDrag) return;
+      const dx = e.clientX - flowDrag.x;
+      if (!flowDrag.on) {
+        if (Math.abs(dx) < 6) return;
+        flowDrag.on = flowMoved = true;
+        flow.setPointerCapture(e.pointerId);
+      }
+      const now = performance.now(), p = clampFlow(flowDrag.pos - dx / caseWidth());
+      if (now > flowDrag.t) flowDrag.v = 0.7 * (p - flowPos) / (now - flowDrag.t) + 0.3 * flowDrag.v;
+      flowDrag.t = now;
+      flowPos = p;
+      drawFlow();
+    });
+    const release = () => {
+      const d = flowDrag;
+      flowDrag = null;
+      if (d && d.on) glideTo(flowPos + (performance.now() - d.t > 80 ? 0 : d.v * 250));
+    };
+    flow.addEventListener("pointerup", release);
+    flow.addEventListener("pointercancel", release);
+    flow.addEventListener("wheel", (e) => {
+      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+      e.preventDefault();
+      cancelAnimationFrame(flowAnim);
+      flowPos = clampFlow(flowPos + e.deltaX / caseWidth());
+      drawFlow();
+      clearTimeout(wheelTimer);
+      wheelTimer = setTimeout(() => glideTo(flowPos), 120);
+    }, { passive: false });
+  }
+  flowPos = clampFlow(flowPos);
+  drawFlow();
 }
-function caseCentre(el) { return el.offsetLeft + el.offsetWidth / 2; }
+function caseWidth() { const c = $("flow").querySelector(".case"); return c ? c.offsetWidth : 140; }
+function clampFlow(p) { return Math.max(0, Math.min(games.length - 1, p)); }
 function scrollToGame(i, smooth) {
-  const flow = $("flow"), el = flow.querySelectorAll(".case")[i];
-  if (el) flow.scrollTo({ left: caseCentre(el) - flow.clientWidth / 2, behavior: smooth ? "smooth" : "auto" });
+  if (smooth) return glideTo(i);
+  cancelAnimationFrame(flowAnim);
+  flowPos = clampFlow(i);
+  drawFlow();
 }
-let settleTimer = 0, touching = false;
-function onScroll() {
-  const flow = $("flow"), mid = flow.scrollLeft + flow.clientWidth / 2;
-  let best = -1, bestD = 1e9;
-  flow.querySelectorAll(".case").forEach((el) => {
-    const w = el.offsetWidth, d = (caseCentre(el) - mid) / w, ad = Math.min(Math.abs(d), 3);
+function glideTo(target) {
+  const i = clampFlow(Math.round(target)), from = flowPos, t0 = performance.now();
+  const dur = Math.min(520, 220 + Math.abs(i - from) * 70);
+  cancelAnimationFrame(flowAnim);
+  const step = (t) => {
+    const k = Math.min(1, Math.max(0, (t - t0) / dur));
+    flowPos = from + (i - from) * (1 - Math.pow(1 - k, 3));
+    drawFlow();
+    if (k < 1) flowAnim = requestAnimationFrame(step);
+    else if (games[i] && current !== games[i].id) select(games[i].id);
+  };
+  flowAnim = requestAnimationFrame(step);
+}
+function drawFlow() {
+  const cases = $("flow").querySelectorAll(".case"), w = caseWidth(), best = Math.round(flowPos);
+  cases.forEach((el, i) => {
+    const d = i - flowPos, ad = Math.min(Math.abs(d), 3);
     const e = Math.min(ad, 1) * Math.min(ad, 1) * (3 - 2 * Math.min(ad, 1)); // smoothstep, as Pose()
     const s = d < 0 ? -1 : 1;
-    const turn = -s * 58 * e, z = -e * 70 - Math.max(ad - 1, 0) * 30, x = -s * (e * 0.28 + Math.max(ad - 1, 0) * 0.5) * w;
+    const turn = -s * 58 * e, z = -e * 70 - Math.max(ad - 1, 0) * 30, x = d * w - s * (e * 0.28 + Math.max(ad - 1, 0) * 0.5) * w;
     el.style.transform = "perspective(700px) translateX(" + x.toFixed(1) + "px) translateZ(" + z.toFixed(1) + "px) rotateY(" + turn.toFixed(1) + "deg)";
     el.style.zIndex = String(100 - Math.round(ad * 10));
     el.style.opacity = String(Math.max(0.35, 1 - Math.max(ad - 1, 0) * 0.25));
-    if (Math.abs(d) < bestD) { bestD = Math.abs(d); best = +el.dataset.i; }
   });
-  const cases = flow.querySelectorAll(".case");
-  if (best >= 0 && games[best] && current !== "@global" && !cases[best].classList.contains("sel")) {
+  if (games[best] && current !== "@global" && cases[best] && !cases[best].classList.contains("sel")) {
     showInfo(games[best]);
+    $("hidegame").hidden = games[best].id !== current;
     cases.forEach((el) => el.classList.toggle("sel", el === cases[best]));
     const img = cases[best].querySelector("img");
     if (img && img.complete) glowFrom(img);
   }
-  clearTimeout(settleTimer);
-  settleTimer = setTimeout(() => {
-    if (best < 0 || !games[best]) return;
-    if (!touching && bestD > 0.01) scrollToGame(best, true);
-    if (current !== games[best].id) select(games[best].id);
-  }, 140);
 }
-
 function showInfo(g) {
   $("gtitle").textContent = g.title;
   const bits = [g.serial, g.region, (g.size / 1e9).toFixed(1) + " GB"].filter(Boolean).map(esc);
@@ -883,6 +935,7 @@ function renderAchievements() {
 }
 
 let resetsAt = new Map(), resetsNow = new Set();
+const openSecs = new Set();
 function resetBtn(attrs, key) {
   resetsNow.add(key);
   if (!resetsAt.has(key)) resetsAt.set(key, Date.now());
@@ -895,6 +948,15 @@ function render() {
   if (tab === "achievements") { renderAchievements(); return; }
   ++achievementImageGeneration;
   const isGlobal = data.id === "@global";
+  const hidden = !isGlobal && truthy(data.values["PS5SX2/HideGame"]);
+  $("hidegame").hidden = isGlobal;
+  $("hidegame").classList.toggle("on", hidden);
+  const gi = games.findIndex((g) => g.id === data.id);
+  const gc = document.querySelectorAll(".case")[gi];
+  if (gc) { games[gi].hidden = hidden; gc.classList.toggle("hidden", hidden); }
+  $("hidegame").innerHTML = hidden ? EYE_OFF_ICON : EYE_ICON;
+  $("hidegame").title = hidden ? "Hidden from the shelf" : "Hide from the shelf";
+  $("hidegame").setAttribute("aria-label", $("hidegame").title);
   const playingHere = state.playing && state.playing.id === data.id;
   let html = "";
   const r = data.recommended;
@@ -933,6 +995,7 @@ function render() {
     if ((grp.tab || "settings") !== tab) continue; // vk-285-116
     if (grp.global && !isGlobal) continue; // 2026-10-08: a group for all games only (Folders)
     if (grp.game && isGlobal) continue; // 2026-10-08: a group for one game only (Hardware fixes)
+    if (grp.title === "Shelf" && grp.game) { if (tab === "settings") html += tileHtml(); continue; }
     html += '<div class="sec"><h2>' + esc(grp.title) + "</h2>" + (grp.hint ? '<div class="ghint">' + esc(grp.hint) + "</div>" : "") +
       '<div class="card">';
     for (const it of grp.items) {
@@ -999,7 +1062,6 @@ function render() {
       }
     }
     html += "</div></div>";
-    if (grp.title === "Shelf" && grp.game && !isGlobal && tab === "settings") html += tileHtml(); // 2.12: the game's home screen tile, right under Shelf
   }
   if (tab === "controls") {
     // vk-285-116: every control of this file back to what it follows (two taps).
@@ -1032,6 +1094,26 @@ function render() {
     html += "</div></div>";
   }
   $("settings").innerHTML = html;
+  $("settings").querySelectorAll(".sec > h2").forEach((h) => {
+    const k = tab + "/" + h.textContent, sec = h.parentElement;
+    const show = () => { sec.classList.toggle("closed", !openSecs.has(k)); h.setAttribute("aria-expanded", openSecs.has(k)); };
+    const flip = () => {
+      if (openSecs.delete(k)) {
+        sec.classList.add("closing");
+        h.setAttribute("aria-expanded", false);
+        setTimeout(() => { sec.classList.remove("closing"); show(); }, 160);
+      } else {
+        openSecs.add(k);
+        sec.classList.remove("closing");
+        sec.classList.add("opening");
+        show();
+      }
+    };
+    sec.classList.add("fold");
+    h.tabIndex = 0; h.setAttribute("role", "button"); show();
+    h.addEventListener("click", flip);
+    h.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(); } });
+  });
   $("file").innerHTML = esc(data.file) + (data.exists ? "" : " (made on the first change)") +
     (playingHere ? " · applied live in the running game" : "");
   $("settings").querySelectorAll("[data-key]").forEach((b) => b.addEventListener("click", () => change(b.dataset.key, b.dataset.val)));
@@ -1337,6 +1419,7 @@ async function refreshState() {
 }
 
 $("allgames").addEventListener("click", () => select(current === "@global" && games.length ? games[0].id : "@global"));
+$("hidegame").addEventListener("click", () => change("PS5SX2/HideGame", truthy(data.values["PS5SX2/HideGame"]) ? null : "true"));
 // vk-285-116: the tabs.
 function showTab() { document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab)); }
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => {

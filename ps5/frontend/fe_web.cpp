@@ -865,6 +865,7 @@ void WebServer::ApiGames(Response& res)
 		       ",\"serial\":" + Json(g.serial) + ",\"size\":" + std::to_string(g.bytes) + ",\"badges\":" + badges +
 		       ",\"cover\":" + (CoverPath(finder, g).empty() ? "false" : "true") +
 		       ",\"settings\":" + (Exists(m_cfg.settings_dir + "/" + g.stem + ".ini") ? "true" : "false") +
+		       ",\"hidden\":" + (g.hidden ? "true" : "false") +
 		       ",\"playing\":" + (g.file == playing ? "true" : "false") + "}";
 	}
 	res.body = out + "]";

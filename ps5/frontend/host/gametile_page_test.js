@@ -89,7 +89,7 @@ const document = {
 const ctx = vm.createContext({
   console, document, URL, setTimeout, clearTimeout, setInterval, clearInterval, Map, Promise, JSON, Math, Date, Object, Array, String, Number, parseFloat, parseInt,
   location: { href: "http://127.0.0.1:8844/" }, history: { replaceState() {} }, localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
-  fetch: serve, requestAnimationFrame: (f) => setTimeout(f, 0), navigator: {}, window: {},
+  fetch: serve, requestAnimationFrame: (f) => setTimeout(f, 0), cancelAnimationFrame: clearTimeout, performance, navigator: {}, window: {},
 });
 vm.runInContext(script, ctx);
 const run = (code) => vm.runInContext(code, ctx);
@@ -125,9 +125,9 @@ const off = (extra) => Object.assign({ available: true, phase: "off", busy: fals
   assert(h.includes('<div class="from" style="margin-top:2px">Off</div>'), "the value is the console's word: Off");
   assert(h.includes("Puts God of War on the PS5 home screen."), "the help is the console's");
   assert(/data-tile="add"/.test(h) && !/data-tile="add"[^>]*disabled/.test(h) && h.includes(">Add to home screen</button>"), "Off: an enabled Add to home screen button");
-  // right after the Shelf group, before the next group
+  // where the Shelf group was (its one row is the eye by the title), before the next group
   const shelf = h.indexOf("<h2>Shelf</h2>"), tileAt = h.indexOf("<h2>Home screen</h2>"), next = h.indexOf("<h2>" + groupAfterShelf() + "</h2>");
-  assert(shelf >= 0 && shelf < tileAt && tileAt < next, "the section is right under the Shelf group and above " + groupAfterShelf() + " (" + [shelf, tileAt, next] + ")");
+  assert(shelf < 0 && tileAt >= 0 && tileAt < next, "the section is where the Shelf group was, above " + groupAfterShelf() + " (" + [shelf, tileAt, next] + ")");
   assert(h.indexOf("<h2>Home screen</h2>", tileAt + 1) < 0, "drawn once");
   assert(tilePolls() === 1, "one look at /api/tile for the game: " + tilePolls());
   assert(calls.find((c) => c.url.indexOf("/api/tile?id=") === 0 && c.url.endsWith(encodeURIComponent(A))), "the request names the game by its file name, encoded");
