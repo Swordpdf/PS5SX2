@@ -107,10 +107,11 @@ header { display: flex; align-items: flex-start; justify-content: space-between;
 
 /* Settings */
 .sec { margin-top: 20px; }
+#settings { max-width: 480px; margin: 0 auto; }
 .sec h2 { font-size: 13px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--faint); font-weight: 700;
           margin: 0 0 8px 4px; }
 #settings .sec.fold { margin-top: 8px; border: 1px solid var(--card-line); border-radius: 8px; overflow: hidden; }
-#settings .sec.fold > h2 { display: flex; align-items: center; gap: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; margin: 0; padding: 14px 16px;
+#settings .sec.fold > h2 { display: flex; align-items: center; gap: 12px; cursor: pointer; user-select: none; -webkit-user-select: none; margin: 0; padding: 10px 16px;
                            font-size: 16px; letter-spacing: 0; text-transform: none; color: var(--text); }
 #settings .sec.fold > h2::before { content: ""; border: 5px solid transparent; border-right: 0; border-left: 8px solid var(--dim);
                                    transform: rotate(90deg); transition: transform 0.2s ease; }
