@@ -150,6 +150,9 @@ public:
 	void SetUpdateRows(bool on) { m_update_rows = on; }
 	// b185: the sheet for all games gets the "Reload PS2 Disc tile" switch when the app can set the helper's flag for it.
 	void SetReloadTileRow(bool on) { m_reload_tile_row = on; }
+	// 2.31 (AI-assisted): the in-game menu (fe_ingame.h) lists these groups after the others ("Shelf", "Discs"): a running game wants
+	// Display first. Empty (the shelf's sheet): OptionGroups()' order.
+	void SetGroupsLast(std::vector<std::string> titles) { m_groups_last = std::move(titles); }
 	bool TakeSystemMenu()
 	{
 		const bool asked = m_system_menu;
@@ -238,6 +241,7 @@ private:
 	bool m_folder_rows = false; // vk-285-135
 	bool m_update_rows = false; // 180
 	bool m_reload_tile_row = false; // b185
+	std::vector<std::string> m_groups_last; // 2.31
 	Kind m_folder_request = Kind::Header;
 	bool m_elf = false; // 2026-10-08: this sheet's game is an ELF (the Disc image row)
 	int m_armed_row = -1;

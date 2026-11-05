@@ -53,6 +53,7 @@ void OrbisLatCapBeforePresent(void* vk_device); // 186: the display-queue cap (t
 #include "ps5/coreorbis/orbis-shims/OrbisFrameGenPacing.h" // vk-285-133: its pacing
 #include "ps5/coreorbis/orbis-shims/OrbisDisplayHz.h" // 2.11: the display rate it paces against
 #include "ps5/coreorbis/orbis-shims/OrbisFrameGenGate.h" // 2.11: the "[fg] status" line, the gate that stops frame generation
+#include "ps5/coreorbis/orbis-shims/OrbisInGameUi.h" // 2.31: the in-game menu's vertices (OrbisDrawUi)
 #include "ps5/coreorbis/orbis-shims/OrbisVideoOutMode.h" // 2.11: the app's own 120 Hz switch (flag fg120)
 #endif
 #define printf OrbisDeferredPrintf
@@ -4573,6 +4574,8 @@ extern float g_orbis_present_param[4]; // GSRenderer.cpp (live.ini): x = FSR sha
 // Test build 1 (vk-285-55): the COPY present shader alpha-blended, for the testing watermark. A file
 // static, not a member, so GSDeviceVK's layout (compiled into many objects) stays as it was.
 static VkPipeline s_orbis_present_blend = VK_NULL_HANDLE;
+// 2.31 (AI-assisted): PS5SX2's own UI over the present (the in-game menu, its hold ring; bin/resources/shaders/vulkan/orbis_ui.glsl).
+static VkPipeline s_orbis_ui_pipeline = VK_NULL_HANDLE;
 #endif
 
 void GSDeviceVK::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
@@ -4610,6 +4613,60 @@ void OrbisVkPresentBlend(GSTexture* tex, const GSVector4& sRect, const GSVector4
 {
 	if (GSDeviceVK* dev = GSDeviceVK::GetInstance())
 		dev->OrbisPresentBlend(tex, sRect, dRect);
+}
+
+// 2.31 (AI-assisted): the in-game menu's vertices (fe::UiVertex, 36 bytes) in runs, each with its texture and the part of it the
+// runs' u, v 0..1 cover; over the whole window, blended by alpha (the swap chain's alpha kept). As RenderImGui streams ImGui's.
+bool GSDeviceVK::OrbisDrawUi(const void* vertices, u32 count, const orbis_ui::DrawRun* runs, u32 nruns)
+{
+	if (s_orbis_ui_pipeline == VK_NULL_HANDLE || !vertices || count == 0)
+		return false;
+	constexpr u32 stride = sizeof(orbis_ui::Vertex);
+	const u32 size = count * stride;
+	if (!m_vertex_stream_buffer.ReserveMemory(size, stride))
+	{
+		Console.Warning("VK: the in-game menu's %u vertices don't fit the vertex stream", count);
+		return false;
+	}
+	const u32 base = m_vertex_stream_buffer.GetCurrentOffset() / stride;
+	std::memcpy(m_vertex_stream_buffer.GetCurrentHostPointer(), vertices, size);
+	m_vertex_stream_buffer.CommitMemory(size);
+
+	const float w = static_cast<float>(GetWindowWidth()), h = static_cast<float>(GetWindowHeight());
+	SetPipeline(s_orbis_ui_pipeline);
+	const VkViewport vp = {0.0f, 0.0f, w, h, 0.0f, 1.0f};
+	SetViewport(vp);
+	SetScissor(GSVector4i(0, 0, static_cast<int>(w), static_cast<int>(h)));
+	struct
+	{
+		float scale[2], translate[2], uv_scale[2], uv_offset[2];
+	} pc = {{2.0f / w, 2.0f / h}, {-1.0f, -1.0f}, {1.0f, 1.0f}, {0.0f, 0.0f}};
+	for (u32 i = 0; i < nruns; i++)
+	{
+		const orbis_ui::DrawRun& r = runs[i];
+		if (r.count == 0 || !r.tex || r.first + r.count > count)
+			continue;
+		pc.uv_scale[0] = r.uv[0];
+		pc.uv_scale[1] = r.uv[1];
+		pc.uv_offset[0] = r.uv[2];
+		pc.uv_offset[1] = r.uv[3];
+		SetUtilityPushConstants(&pc, sizeof(pc));
+		SetUtilityTexture(static_cast<GSTexture*>(r.tex), m_linear_sampler);
+		if (ApplyUtilityState())
+			vkCmdDraw(GetCurrentCommandBuffer(), r.count, 1, base + r.first, 0);
+	}
+	return true;
+}
+
+bool OrbisVkDrawUi(const orbis_ui::Vertex* vertices, uint32_t count, const orbis_ui::DrawRun* runs, uint32_t nruns)
+{
+	GSDeviceVK* dev = GSDeviceVK::GetInstance();
+	return dev && dev->OrbisDrawUi(vertices, count, runs, nruns);
+}
+
+bool OrbisVkUiReady()
+{
+	return s_orbis_ui_pipeline != VK_NULL_HANDLE;
 }
 
 // ---- Frame generation (2026-10-08, AI-assisted; needs proper testing on the console) -------------------------------------------
@@ -6712,6 +6769,47 @@ bool GSDeviceVK::CompilePresentPipelines()
 		else
 			Console.Warning("VK: the watermark's blended present pipeline couldn't be made");
 	}
+	// 2.31 (AI-assisted): PS5SX2's own UI over the present (the in-game menu, its hold ring): orbis_ui.glsl with fe::UiVertex
+	// vertices, blended by alpha over the frame, the swap chain's alpha kept. Without it the menu combo opens the settings page
+	// in the browser, as before (main-boot.cpp asks OrbisVkUiReady).
+	{
+		const std::optional<std::string> ui = ReadShaderSource("shaders/vulkan/orbis_ui.glsl");
+		VkShaderModule uvs = ui ? GetUtilityVertexShader(*ui, "vs_main") : VK_NULL_HANDLE;
+		VkShaderModule ups = ui ? GetUtilityFragmentShader(*ui, "ps_main") : VK_NULL_HANDLE;
+		if (uvs != VK_NULL_HANDLE && ups != VK_NULL_HANDLE)
+		{
+			Vulkan::GraphicsPipelineBuilder ub;
+			SetPipelineProvokingVertex(m_features, ub);
+			ub.SetPipelineLayout(m_utility_pipeline_layout);
+			ub.SetRenderPass(m_swap_chain_render_pass, 0);
+			ub.AddVertexBuffer(0, sizeof(orbis_ui::Vertex), VK_VERTEX_INPUT_RATE_VERTEX);
+			ub.AddVertexAttribute(0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(orbis_ui::Vertex, x));
+			ub.AddVertexAttribute(1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(orbis_ui::Vertex, u));
+			ub.AddVertexAttribute(2, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(orbis_ui::Vertex, color));
+			ub.AddVertexAttribute(3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(orbis_ui::Vertex, p0));
+			ub.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+			ub.SetVertexShader(uvs);
+			ub.SetFragmentShader(ups);
+			ub.SetNoCullRasterizationState();
+			ub.SetNoDepthTestState();
+			ub.SetBlendAttachment(0, true, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD,
+				VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_ADD);
+			ub.SetDynamicViewportAndScissorState();
+			ub.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+			ub.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+			s_orbis_ui_pipeline = ub.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+		}
+		if (uvs != VK_NULL_HANDLE)
+			vkDestroyShaderModule(m_device, uvs, nullptr);
+		if (ups != VK_NULL_HANDLE)
+			vkDestroyShaderModule(m_device, ups, nullptr);
+		if (s_orbis_ui_pipeline != VK_NULL_HANDLE)
+			Vulkan::SetObjectName(m_device, s_orbis_ui_pipeline, "PS5SX2 UI pipeline (in-game menu)");
+		else
+			Console.Warning("VK: the in-game menu's pipeline couldn't be made (orbis_ui.glsl)");
+		printf("[menu] in-game menu pipeline: %s\n", s_orbis_ui_pipeline != VK_NULL_HANDLE ? "ready" : "FAILED");
+		fflush(stdout);
+	}
 #endif
 
 	return true;
@@ -7197,6 +7295,11 @@ void GSDeviceVK::DestroyResources()
 	{
 		vkDestroyPipeline(m_device, s_orbis_present_blend, nullptr);
 		s_orbis_present_blend = VK_NULL_HANDLE;
+	}
+	if (s_orbis_ui_pipeline != VK_NULL_HANDLE) // 2.31
+	{
+		vkDestroyPipeline(m_device, s_orbis_ui_pipeline, nullptr);
+		s_orbis_ui_pipeline = VK_NULL_HANDLE;
 	}
 #endif
 	for (const auto& pipe : m_convert)

@@ -25,6 +25,13 @@
 
 class VKSwapChain;
 
+#ifdef ORBIS_VULKAN
+namespace orbis_ui
+{
+struct DrawRun; // ps5/coreorbis/orbis-shims/OrbisInGameUi.h (2.31)
+}
+#endif
+
 class GSDeviceVK final : public GSDevice
 {
 public:
@@ -616,6 +623,10 @@ public:
 	// Test build 1 (vk-285-55): draws sTex over the frame being presented, blended by its alpha
 	// (the testing watermark). Only between BeginPresent and EndPresent.
 	void OrbisPresentBlend(GSTexture* sTex, const GSVector4& sRect, const GSVector4& dRect);
+	// 2.31 (AI-assisted): PS5SX2's own UI (the in-game menu, its hold ring; orbis_ui.glsl): `count` fe::UiVertex vertices drawn in
+	// runs, each with its texture (ps5/coreorbis/orbis-shims/OrbisInGameUi.h). Only between BeginPresent and EndPresent; false
+	// without its pipeline.
+	bool OrbisDrawUi(const void* vertices, u32 count, const orbis_ui::DrawRun* runs, u32 nruns);
 	// 2026-10-08 (AI-assisted): frame generation (PS5SX2/FrameGeneration; GSDeviceVK.cpp, "frame generation"). Record: outside
 	// a present, for a frame of the game: draws it as the present would into the interpolator's frame and makes the frame
 	// between it and the last one; returns how many presents of the generated frame should go before the game's (0: none).

@@ -14,6 +14,8 @@
 #include "fe_games.h"
 #include "fe_roots.h" // 2026-10-16: usb-games.txt's header, which roots a list was written for
 #include "fe_i18n.h"
+#include "fe_ingame.h" // 2.31: the in-game menu
+#include "ps5/coreorbis/orbis-shims/OrbisInGameUi.h" // 2.31: its atlas and hold ring for the GS
 #include "fe_renderer.h"
 #include "fe_sound.h"
 #include "fe_text.h"
@@ -150,7 +152,10 @@ int sceAudioOutClose(int handle);
 			".previous\n")
 FE_INCBIN(fe_font_text, "Roboto-Regular.ttf");
 FE_INCBIN(fe_font_icons, "promptfont.otf");
-extern "C" const uint8_t fe_font_text[], fe_font_text_end[], fe_font_icons[], fe_font_icons_end[];
+// 2.31 (AI-assisted): Font Awesome Free's solid icons (SIL OFL 1.1; the icons CC BY 4.0), for the in-game menu's rows.
+FE_INCBIN(fe_font_symbols, "fa-solid-900.ttf");
+extern "C" const uint8_t fe_font_text[], fe_font_text_end[], fe_font_icons[], fe_font_icons_end[], fe_font_symbols[],
+	fe_font_symbols_end[];
 
 // vk-285-50: the frontend's own files (frontend/assets): Font Awesome Free's brands font (SIL OFL
 // 1.1) for the handles' icons, and the settings page with its two icons (Font Awesome, CC BY 4.0).
@@ -1813,6 +1818,118 @@ void orbis_web_log_next_requests(int n)
 {
 	if (g_web)
 		g_web->LogNextRequests(n);
+}
+
+// ---- 2.31 (AI-assisted): the in-game menu (fe_ingame.h) -------------------------------------------------------------------------
+namespace
+{
+std::atomic<fe::InGameMenu*> g_ingame{nullptr};
+fe::Fonts* g_ingame_fonts = nullptr; // made once, kept: the GS's hold ring reads it (const) at its presents
+
+// The GS's hold ring (orbis_ui::HoldBuilder): the menu's drawing, in OrbisInGameUi's layout (the same as fe::UiVertex's).
+void IngameHoldBuilder(float progress, float w, float h, std::vector<orbis_ui::Vertex>& v, std::vector<orbis_ui::Range>& r)
+{
+	static_assert(sizeof(orbis_ui::Vertex) == sizeof(fe::UiVertex), "orbis_ui::Vertex is fe::UiVertex");
+	v.clear();
+	r.clear();
+	if (!g_ingame_fonts)
+		return;
+	fe::InGameFrame f;
+	fe::InGameMenu::BuildHold(*g_ingame_fonts, f, w, h, progress);
+	v.resize(f.ui.size());
+	if (!f.ui.empty())
+		std::memcpy(v.data(), f.ui.data(), f.ui.size() * sizeof(fe::UiVertex));
+	for (const fe::InGameRange& x : f.ranges)
+		r.push_back({x.first, x.count, x.image});
+}
+} // namespace
+
+std::string orbis_ingame_when(int64_t utc)
+{
+	const time_t local = static_cast<time_t>(SettingsLogLocalTime(utc));
+	const time_t now_local = static_cast<time_t>(SettingsLogLocalTime(static_cast<long long>(time(nullptr))));
+	struct tm tm = {}, now_tm = {};
+	gmtime_r(&local, &tm);
+	gmtime_r(&now_local, &now_tm);
+	static int s_format = -1;
+	if (s_format < 0)
+	{
+		int v = 1;
+		s_format = sceSystemServiceParamGetInt(3 /* time format */, &v) == 0 ? v : 1;
+	}
+	char hm[24];
+	if (s_format == 0)
+		std::snprintf(hm, sizeof(hm), "%d:%02d %s", (tm.tm_hour + 11) % 12 + 1, tm.tm_min, tm.tm_hour < 12 ? "AM" : "PM");
+	else
+		std::snprintf(hm, sizeof(hm), "%02d:%02d", tm.tm_hour, tm.tm_min);
+	const long day = static_cast<long>(local / 86400), today = static_cast<long>(now_local / 86400);
+	char out[64];
+	if (day == today)
+		std::snprintf(out, sizeof(out), fe::Tr(fe::Str::IngameToday), hm);
+	else if (day == today - 1)
+		std::snprintf(out, sizeof(out), fe::Tr(fe::Str::IngameYesterday), hm);
+	else
+	{
+		static const char* const kMonths[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+		std::snprintf(out, sizeof(out), "%d %s %s", tm.tm_mday, kMonths[tm.tm_mon % 12], hm);
+	}
+	return out;
+}
+
+void orbis_ingame_prepare(const OrbisFrontendPaths& paths)
+{
+	static std::atomic<bool> s_started{false};
+	if (s_started.exchange(true))
+		return;
+	std::thread([paths]() {
+		const double t0 = Now();
+		fe::Fonts* fonts = new fe::Fonts();
+		const bool ok = fonts->Init(fe_font_text, static_cast<size_t>(fe_font_text_end - fe_font_text), fe_font_icons,
+			static_cast<size_t>(fe_font_icons_end - fe_font_icons), fe_font_brands, static_cast<size_t>(fe_font_brands_end - fe_font_brands));
+		if (!ok)
+		{
+			std::printf("[menu] in-game menu: its fonts couldn't be made (the menu combo opens the settings page)\n");
+			std::fflush(stdout);
+			delete fonts;
+			return;
+		}
+		const int icon_font = fonts->AddFont(fe_font_symbols);
+		const int icons = icon_font >= 0 ? fonts->Preload(icon_font, fe::InGameMenu::IconCodepoints()) : 0;
+		g_ingame_fonts = fonts;
+		orbis_ui::SetAtlas(fonts->AtlasPixels().data(), fonts->AtlasWidth(), fonts->AtlasHeight(), 1 + fonts->AtlasVersion());
+		orbis_ui::SetHoldBuilder(IngameHoldBuilder);
+
+		fe::InGameMenu* menu = new fe::InGameMenu();
+		fe::InGameMenu::Config cfg;
+		cfg.fonts = fonts;
+		cfg.icon_font = icon_font;
+		// The files the shelf's sheet and the settings page edit, logged as they log.
+		cfg.paths.settings_dir = paths.settings_dir;
+		cfg.paths.gs_ini = paths.gs_ini;
+		cfg.paths.patches_dir = paths.patches_dir;
+		cfg.paths.cheats_dir = paths.online_patches ? paths.cheats_dir : std::string();
+		cfg.paths.memcards_dir = paths.memcards_dir;
+		cfg.paths.presets.assign(reinterpret_cast<const char*>(fe_presets), static_cast<size_t>(fe_presets_end - fe_presets));
+		{
+			const std::string log_path = paths.settings_log;
+			cfg.paths.log = [log_path](const std::string& line) { AppendSettingsLog(log_path, line + " (in-game menu)"); };
+		}
+#ifdef PS5SX2_ACHIEVEMENTS
+		cfg.achievements = Achievements::GetPS5GameAchievements;
+#endif
+		cfg.clock = []() { return Clock(); };
+		cfg.when = [](int64_t utc) { return orbis_ingame_when(utc); };
+		menu->Configure(cfg);
+		g_ingame.store(menu, std::memory_order_release);
+		std::printf("[menu] in-game menu ready: %d of %zu icons, atlas %dx%d, %.0f ms\n", icons, fe::InGameMenu::IconCodepoints().size(),
+			fonts->AtlasWidth(), fonts->AtlasHeight(), (Now() - t0) * 1000.0);
+		std::fflush(stdout);
+	}).detach();
+}
+
+fe::InGameMenu* orbis_ingame_menu()
+{
+	return g_ingame.load(std::memory_order_acquire);
 }
 
 int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budget_s, void (*notify)(const char*))

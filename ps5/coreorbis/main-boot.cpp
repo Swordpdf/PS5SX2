@@ -38,6 +38,12 @@
 #include "../frontend/fe_roots.h"    // 2026-10-16: the folders games are listed from (the ones you set only, or the usual places)
 #include "../frontend/fe_options.h"  // 2026-10-16: fe::SplitFolderList (PS5SX2/GameFolders)
 #include "../frontend/fe_gametile.h" // 2.12: a game tile's marker, its launch check and its folder (fe::gametile)
+#include "../frontend/fe_ingame.h"   // 2.31: the in-game menu
+#include "../frontend/fe_covers.h"   // build 190: the achievements' badges for the in-game menu (CoverService::Decode, as the shelf)
+#include "orbis-shims/OrbisInGameUi.h" // 2.31: its frames for the GS, the hold ring
+#include "MTGS.h"                    // 2.31: idle presents while the menu is up
+#include "SaveState.h"               // 2.31: the save states' screenshots
+#include "PerformanceMetrics.h"      // 2.31: the menu's FPS chip
 #include "ps2/BiosTools.h"       // vk-285-134: IsBIOS, IsBIOSAvailable
 #include "orbis-shims/OrbisOpenBios.h" // bioscheck: the BIOS before every start; OpenPS2BIOS, shipped for players without one
 #endif // vk-285-36/38: [vkwait], [shaders]
@@ -101,6 +107,8 @@ bool g_orbis_sw_on_gl = false;
 // eerec-278: bumped by the pad thread when L3+R3 are held ~0.4 s (cycles the present filter).
 std::atomic<int> g_orbis_filter_cycle{0};
 extern std::atomic<int> g_orbis_state_request; // eerec-282 (StubHost.cpp)
+std::atomic<int> g_orbis_ingame_request{0}; // 2.31: the in-game menu combo asks; StubHost.cpp pauses the game for it
+bool OrbisVkUiReady(); // 2.31 (GSDeviceVK.cpp): the in-game menu's pipeline was made
 // vk-285-48: back to the menu. The pad thread asks with request 3: since vk-285-49 on a touchpad
 // click with L1+R1 held (48 used L3+R3 + D-pad Left). StubHost's PumpMessagesOnCPUThread then calls
 // OrbisBackToMenuCpu() at vsync on the CPU thread, which stops the VM; main() writes the memory
@@ -905,6 +913,89 @@ static void orbis_pad_rumble_mode(int32_t handle, const char *who)
   fflush(stdout);
 }
 
+// ---- 2.31 (AI-assisted): the in-game menu (ps5/frontend/fe_ingame.h), the pad thread's part -----------------------------------
+// The settings page combo (PS5SX2/WebButton1/2, L2 + D-pad down by default) held for a second asks for the menu; it opened the
+// settings page in the PS5's browser before, and the menu has that page's address and QR code. StubHost.cpp's
+// PumpMessagesOnCPUThread pauses the game for it at the next vsync (OrbisInGameMenuPauseCpu) and the main loop runs it while the
+// VM is paused (orbis_ingame_menu_run). From the request until the menu has closed, the pad thread hands it the controller and
+// gives the game nothing; the buttons still held when it closes reach the game once they have been let go.
+static std::atomic<bool> s_ingame_active{false};  // asked for, open or closing
+static std::atomic<bool> s_ingame_running{false}; // the menu loop runs (the pause took)
+static std::atomic<long long> s_ingame_asked_ms{0};
+static std::atomic<uint64_t> s_ingame_pad{0};     // the buttons held (triggers past 200 as L2 / R2), lx << 32, ly << 40
+static std::atomic<uint32_t> s_ingame_pressed{0}; // pressed since the menu last looked
+static bool s_ingame_had_pad = false;             // pad thread: the menu had the controller (the next read starts the mask)
+constexpr int kIngameHoldMs = 1000;
+
+static bool orbis_ingame_available()
+{
+  return orbis_ingame_menu() != nullptr && OrbisVkUiReady();
+}
+
+static uint32_t orbis_ingame_buttons(const OrbisPadData &d)
+{
+  uint32_t b = d.buttons;
+  if (d.l2 >= 200)
+    b |= 0x100u;
+  if (d.r2 >= 200)
+    b |= 0x200u;
+  return b;
+}
+
+static long long orbis_ingame_now_ms()
+{
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// True while the menu has the controller: what is held goes to the menu, released buttons and centred sticks to the game.
+static bool orbis_ingame_take_pad(OrbisPadPort &port1, const OrbisPadData &d)
+{
+  if (!s_ingame_active.load(std::memory_order_acquire))
+    return false;
+  // A request the CPU thread never took (the game stopped on an error, a state was loading): given up after 1.5 s.
+  if (!s_ingame_running.load(std::memory_order_acquire) && orbis_ingame_now_ms() - s_ingame_asked_ms.load() > 1500)
+  {
+    g_orbis_ingame_request.store(0);
+    s_ingame_active.store(false, std::memory_order_release);
+    printf("[menu] in-game menu: the game didn't pause for it (request dropped)\n");
+    fflush(stdout);
+    return false;
+  }
+  const uint32_t b = orbis_ingame_buttons(d);
+  const uint32_t prev = static_cast<uint32_t>(s_ingame_pad.load(std::memory_order_relaxed));
+  s_ingame_pressed.fetch_or(b & ~prev, std::memory_order_acq_rel);
+  s_ingame_pad.store(static_cast<uint64_t>(b) | (static_cast<uint64_t>(d.lx) << 32) | (static_cast<uint64_t>(d.ly) << 40),
+    std::memory_order_release);
+  OrbisPadData idle;
+  memset(&idle, 0, sizeof(idle));
+  idle.lx = idle.ly = idle.rx = idle.ry = 128;
+  if (g_orbis_port1_guitar.load(std::memory_order_relaxed))
+    orbis_pad_apply_guitar(port1, idle, nullptr);
+  else
+    orbis_pad_apply(port1, idle);
+  s_ingame_had_pad = true;
+  return true;
+}
+
+// After the menu: a button still held from it is kept from the game until it is let go.
+static void orbis_ingame_mask(OrbisPadData &d)
+{
+  static uint32_t s_mask = 0;
+  if (s_ingame_had_pad)
+  {
+    s_ingame_had_pad = false;
+    s_mask = orbis_ingame_buttons(d);
+  }
+  if (!s_mask)
+    return;
+  s_mask &= orbis_ingame_buttons(d) | (d.l2 ? 0x100u : 0u) | (d.r2 ? 0x200u : 0u);
+  d.buttons &= ~s_mask;
+  if (s_mask & 0x100u)
+    d.l2 = 0;
+  if (s_mask & 0x200u)
+    d.r2 = 0;
+}
+
 static void *orbis_pad_thread(void *)
 {
   auto p_read = [](int32_t h, OrbisPadData *d) { return scePadReadState(h, d); };
@@ -1009,8 +1100,13 @@ static void *orbis_pad_thread(void *)
         fflush(stdout);
       }
     }
-    if (rc == 0)
+    if (rc == 0 && orbis_ingame_take_pad(port1, d))
     {
+      // 2.31: the in-game menu has the controller (above); the game gets nothing.
+    }
+    else if (rc == 0)
+    {
+      orbis_ingame_mask(d); // 2.31: buttons held from the menu reach the game once they are let go
       // vk-285-117 (AI-assisted): save and load the state (slot 1) with the combos the Controls tab chose (two buttons each,
       // held together for PS5SX2/StateHold; orbis-shims/OrbisPadMap.h ComboWatch). By default L3+R3 + D-pad up saves and
       // + D-pad down loads, at once, as since eerec-282 (now the D-pad press that does it is kept from the game). The
@@ -1038,11 +1134,51 @@ static void *orbis_pad_thread(void *)
         // vk-285-139: the change disc combo (the next disc of the game's set; StubHost.cpp runs it on the CPU thread).
         const bool disc = s_disc.Update(cfg.disc, cfg.hold_ms, cs, now_ms, block) && !save && !load && !fast;
         // the open-settings-page combo (WebButton1/2, 2 s hold fixed): replaces the old hardcoded L2+D-pad down.
+        // 2.31 (AI-assisted): the in-game menu, held for a second (its ring fills meanwhile, GSRenderer.cpp); the settings page in
+        // the PS5's browser as before when the menu can't be shown (its fonts or the GS's pipeline failed).
         {
-          uint32_t web_block = 0;
-          if (s_web.Update(cfg.web, 2000, cs, now_ms, web_block))
+          const bool menu = orbis_ingame_available();
+          const int web_hold = menu ? kIngameHoldMs : 2000;
           {
-            if (g_orbis_qr_show.load(std::memory_order_relaxed))
+            // How far the combo has been held, for the ring (all its buttons down; nothing set, or one button twice: one button).
+            static long long s_web_since = -1;
+            bool all = false;
+            int n = 0;
+            orbis_padmap::ComboButton list[2] = {orbis_padmap::CB_NONE, orbis_padmap::CB_NONE};
+            for (orbis_padmap::ComboButton x : cfg.web)
+              if (x != orbis_padmap::CB_NONE && x < orbis_padmap::CB_COUNT && (n == 0 || list[0] != x))
+                list[n++] = x;
+            if (n > 0)
+            {
+              all = true;
+              for (int i = 0; i < n; i++)
+                all = all && orbis_padmap::ComboHeld(list[i], cs);
+            }
+            if (!all || !s_web.armed || s_ingame_active.load(std::memory_order_relaxed))
+              s_web_since = -1;
+            else if (s_web_since < 0)
+              s_web_since = now_ms;
+            orbis_ui::SetHold(menu && s_web_since >= 0 ? std::min(1.0f, static_cast<float>(now_ms - s_web_since) / web_hold) : 0.0f);
+          }
+          uint32_t web_block = 0;
+          if (s_web.Update(cfg.web, web_hold, cs, now_ms, web_block))
+          {
+            if (menu)
+            {
+              orbis_ui::SetHold(0.0f);
+              if (!s_ingame_active.exchange(true))
+              {
+                s_ingame_pad.store(static_cast<uint64_t>(orbis_ingame_buttons(d)) | (static_cast<uint64_t>(d.lx) << 32) |
+                  (static_cast<uint64_t>(d.ly) << 40));
+                s_ingame_pressed.store(0);
+                s_ingame_running.store(false);
+                s_ingame_asked_ms.store(now_ms);
+                g_orbis_ingame_request.store(1, std::memory_order_release);
+                printf("[pad] menu combo: opening the in-game menu (%s)\n", orbis_padmap::DescribeCombo(cfg.web, web_hold).c_str());
+                fflush(stdout);
+              }
+            }
+            else if (g_orbis_qr_show.load(std::memory_order_relaxed))
             {
               g_orbis_qr_show.store(0, std::memory_order_relaxed);
               printf("[pad] web combo: settings QR hidden (%s)\n", orbis_padmap::DescribeCombo(cfg.web, 2000).c_str());
@@ -3099,6 +3235,306 @@ void OrbisChangeDiscCpu(int req)
   fflush(stdout);
 }
 
+// ---- 2.31 (AI-assisted): the in-game menu (ps5/frontend/fe_ingame.h), the VM thread's part ----------------------------------
+// OrbisInGameMenuPauseCpu (StubHost.cpp's PumpMessagesOnCPUThread, at a vsync) pauses the game for it: the CPU leaves Execute and
+// the main loop runs orbis_ingame_menu_run while the VM is paused. MTGS's idle presents (SetRunIdle) draw it all along
+// (GSRenderer::PresentCurrentFrame). What the menu asks for runs here, on the VM thread with the VM paused, as PCSX2's own pause
+// menu runs it: states saved and loaded, the fast forward switch and a disc change through the requests the combos use (they take
+// effect once the game goes on), back to the shelf as L1 + R1 + touchpad does it.
+static bool s_ingame_paused = false;    // the VM is paused for the menu
+static std::string s_ingame_path;       // the game's image (main's s_game_path)
+static std::string s_ingame_stem;       // the game's settings file's stem ("" with no game file: the sheets for all games only)
+static std::string s_ingame_serial;
+static double s_ingame_started_at = 0;  // steady seconds when the game started (the menu's "played")
+
+void OrbisInGameMenuPauseCpu()
+{
+  if (!orbis_ingame_available() || VMManager::GetState() != VMState::Running)
+  {
+    s_ingame_active.store(false, std::memory_order_release);
+    printf("[menu] in-game menu: not now (%s)\n", orbis_ingame_available() ? "the game isn't running" : "not ready");
+    fflush(stdout);
+    return;
+  }
+  s_ingame_paused = true;
+  s_ingame_running.store(true, std::memory_order_release);
+  printf("[menu] in-game menu: pausing the game\n");
+  fflush(stdout);
+  VMManager::SetPaused(true);
+  MTGS::RunOnGSThread([]() { MTGS::SetRunIdle(true); });
+}
+
+static const char* orbis_ingame_aspect_chip()
+{
+  switch (EmuConfig.CurrentAspectRatio)
+  {
+    case AspectRatioType::Stretch: return "Stretch";
+    case AspectRatioType::R16_9: return "16:9";
+    case AspectRatioType::R10_7: return "10:7";
+    default: return "4:3";
+  }
+}
+
+// The game and what the menu can do with it, read when it opens (the sheets' files and the slots' times; not the screenshots).
+static fe::InGameSession orbis_ingame_session()
+{
+  fe::InGameSession s;
+  s.has_game = !s_ingame_stem.empty();
+  s.game.path = s_ingame_path;
+  s.game.file = s_ingame_path.substr(s_ingame_path.rfind('/') + 1);
+  s.game.stem = s_ingame_stem;
+  s.game.serial = !s_ingame_serial.empty() ? s_ingame_serial : VMManager::GetDiscSerial();
+  {
+    std::string stem = s.game.file;
+    const size_t dot = stem.rfind('.');
+    if (dot != std::string::npos && dot > 0)
+      stem.erase(dot);
+    fe::MakeTitle(stem, s.game.title, s.game.region, s.game.extra);
+    const std::string db = VMManager::GetTitle(true);
+    if (!db.empty())
+      s.game.title = db;
+    if (s.game.title.empty())
+      s.game.title = s.has_game ? stem : "PS2 system menu";
+  }
+  s.discs = orbis_disc_set();
+  s.disc = orbis_current_disc();
+  const std::string serial = VMManager::GetDiscSerial();
+  const u32 crc = VMManager::GetDiscCRC();
+  s.slots.resize(orbis_ui::kSlots);
+  for (int i = 0; i < orbis_ui::kSlots; i++)
+  {
+    const std::string f = VMManager::GetSaveStateFileName(serial.c_str(), crc, i + 1);
+    struct stat st = {};
+    if (!f.empty() && stat(f.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
+    {
+      s.slots[static_cast<size_t>(i)].used = true;
+      s.slots[static_cast<size_t>(i)].mtime = static_cast<int64_t>(st.st_mtime);
+    }
+  }
+  s.fast_forward = VMManager::GetLimiterMode() != LimiterModeType::Nominal;
+  s.hardcore = Achievements::IsHardcoreModeActive();
+  if (!orbis_web_qr(s.qr, s.qr_size, s.web_address))
+  {
+    s.qr.clear();
+    s.qr_size = 0;
+    s.web_address.clear();
+  }
+  if (EmuConfig.GS.UpscaleMultiplier > 1.0f)
+  {
+    char b[16];
+    snprintf(b, sizeof(b), "%gx", EmuConfig.GS.UpscaleMultiplier);
+    s.chips.push_back(b);
+  }
+  s.chips.push_back(orbis_ingame_aspect_chip());
+  const float fps = PerformanceMetrics::GetFPS();
+  if (fps > 1.0f)
+  {
+    char b[24];
+    snprintf(b, sizeof(b), "%.0f FPS", fps);
+    s.chips.push_back(b);
+  }
+  if (s_ingame_started_at > 0)
+    s.played_s = orbis_mono_seconds() - s_ingame_started_at;
+  return s;
+}
+
+// Runs one of the menu's requests (VM thread, VM paused). True: the menu is left without the game going on (back to the shelf).
+static bool orbis_ingame_request_run(fe::InGameMenu &menu, const fe::InGameRequest &r)
+{
+  using K = fe::InGameRequest::Kind;
+  char msg[320];
+  switch (r.kind)
+  {
+    case K::SaveState:
+    {
+      std::string err;
+      VMManager::SaveStateToSlot(r.slot, false, [&err](const std::string &e) { err = e; });
+      printf("[menu] save state, slot %d: %s\n", r.slot, err.empty() ? "saved" : err.c_str());
+      fflush(stdout);
+      if (err.empty())
+      {
+        menu.SlotSaved(r.slot, static_cast<int64_t>(time(nullptr)));
+        orbis_ui::SetSlotShot(r.slot - 1, 0, 0, {}); // the paused picture is its picture now
+        snprintf(msg, sizeof(msg), fe::Tr(fe::Str::IngameSaved), r.slot);
+        menu.Done(true, msg, false);
+      }
+      else
+      {
+        snprintf(msg, sizeof(msg), fe::Tr(fe::Str::IngameSaveFailed), err.c_str());
+        menu.Done(false, msg, false);
+      }
+      return false;
+    }
+    case K::LoadState:
+    {
+      Error e;
+      const bool ok = VMManager::LoadStateFromSlot(r.slot, false, &e);
+      printf("[menu] load state, slot %d: %s\n", r.slot, ok ? "loaded" : e.GetDescription().c_str());
+      fflush(stdout);
+      if (ok)
+        menu.Done(true, std::string(), true);
+      else
+      {
+        snprintf(msg, sizeof(msg), fe::Tr(fe::Str::IngameLoadFailed), e.GetDescription().c_str());
+        menu.Done(false, msg, false);
+      }
+      return false;
+    }
+    case K::FastForward:
+      g_orbis_state_request.store(4, std::memory_order_release); // switched at the game's next vsync (StubHost.cpp)
+      printf("[menu] fast forward: switching it\n");
+      fflush(stdout);
+      menu.Done(true, std::string(), true);
+      return false;
+    case K::ChangeDisc:
+    {
+      const bool ok = orbis_request_disc(r.text); // put in at the game's next vsync (request 5, OrbisChangeDiscCpu)
+      printf("[menu] change disc to %s: %s\n", r.text.c_str(), ok ? "asked" : "no game");
+      fflush(stdout);
+      menu.Done(ok, std::string(), ok);
+      return false;
+    }
+    case K::Note:
+    {
+      printf("[note] %s\n", r.text.c_str());
+      fflush(stdout);
+      orbis_eventf("tester note: %s", r.text.c_str());
+      const std::string clock = orbis_ingame_when(static_cast<int64_t>(time(nullptr)));
+      snprintf(msg, sizeof(msg), fe::Tr(fe::Str::IngameNoted), clock.c_str());
+      menu.Done(true, msg, false);
+      return false;
+    }
+    case K::BackToShelf:
+      printf("[menu] back to the shelf, from the in-game menu\n");
+      fflush(stdout);
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The menu, while the VM is paused for it, until it has closed. Then the game goes on (or the app leaves for the shelf).
+static void orbis_ingame_menu_run()
+{
+  fe::InGameMenu *menu = orbis_ingame_menu();
+  bool leave = false;
+  if (menu)
+  {
+    const double t0 = orbis_mono_seconds();
+    const fe::InGameSession session = orbis_ingame_session();
+    menu->SetSession(session);
+    static_assert(fe::kInGameSaveSlots == orbis_ui::kSlots && fe::kInGameBadges == orbis_ui::kBadges, "the menu's pictures are OrbisInGameUi's");
+    for (int i = 0; i < orbis_ui::kPictures; i++)
+      orbis_ui::SetSlotShot(i, 0, 0, {});
+    orbis_ui::Begin();
+    s_ingame_pressed.store(0);
+    menu->Open(orbis_mono_seconds(), static_cast<uint32_t>(s_ingame_pad.load()));
+    int used = 0;
+    for (const fe::InGameSlot &sl : session.slots)
+      used += sl.used ? 1 : 0;
+    printf("[menu] in-game menu open: %s (%s), %d saved states, %zu discs, %.0f ms to read its files\n", session.game.title.c_str(),
+      session.game.serial.c_str(), used, session.discs.size(), (orbis_mono_seconds() - t0) * 1000.0);
+    fflush(stdout);
+    orbis_eventf("in-game menu opened");
+    const std::string serial = VMManager::GetDiscSerial();
+    const u32 crc = VMManager::GetDiscCRC();
+    int next_shot = 0;
+    fe::InGameFrame frame;
+    for (;;)
+    {
+      const double now = orbis_mono_seconds();
+      const uint64_t pad = s_ingame_pad.load(std::memory_order_acquire);
+      fe::InGamePad in;
+      in.held = static_cast<uint32_t>(pad);
+      in.pressed = s_ingame_pressed.exchange(0, std::memory_order_acq_rel);
+      in.lx = static_cast<uint8_t>(pad >> 32);
+      in.ly = static_cast<uint8_t>(pad >> 40);
+      menu->Update(now, in);
+      if (menu->Closed())
+        break;
+      float rect[4] = {0, 0, 0, 0}, w = 0, h = 0;
+      orbis_ui::GetPresent(rect, w, h);
+      if (w < 16.0f || h < 16.0f)
+      {
+        w = 1920.0f;
+        h = 1080.0f;
+        rect[0] = rect[1] = 0.0f;
+        rect[2] = w;
+        rect[3] = h;
+      }
+      menu->Build(frame, w, h, rect);
+      static_assert(sizeof(fe::UiVertex) == sizeof(orbis_ui::Vertex) && sizeof(fe::InGameRange) == sizeof(orbis_ui::Range),
+        "the menu's layouts are OrbisInGameUi's");
+      orbis_ui::Publish(reinterpret_cast<const orbis_ui::Vertex *>(frame.ui.data()), frame.ui.size(),
+        reinterpret_cast<const orbis_ui::Range *>(frame.ranges.data()), frame.ranges.size());
+      // The save states' screenshots, one a frame (a state's file opens slowly on /data), once the menu shows.
+      while (next_shot < orbis_ui::kSlots && !session.slots[static_cast<size_t>(next_shot)].used)
+        next_shot++;
+      if (next_shot < orbis_ui::kSlots && now - t0 > 0.12)
+      {
+        const std::string f = VMManager::GetSaveStateFileName(serial.c_str(), crc, next_shot + 1);
+        u32 sw = 0, sh = 0;
+        std::vector<u32> px;
+        if (SaveState_ReadScreenshot(f, &sw, &sh, &px) && sw > 0 && sh > 0 && px.size() >= static_cast<size_t>(sw) * sh)
+        {
+          orbis_ui::SetSlotShot(next_shot, static_cast<int>(sw), static_cast<int>(sh), std::vector<uint32_t>(px.begin(), px.end()));
+          menu->SlotShot(next_shot + 1, static_cast<int>(sw), static_cast<int>(sh));
+        }
+        next_shot++;
+      }
+      // Build 190: the Achievements tab's badges, two a frame at most, from the pictures the achievements code keeps in
+      // achievement_images (the web page's; a missing one is downloaded, and IdleUpdate lets that go on while the game is paused).
+      if (now - t0 > 0.12)
+      {
+        int loaded = 0;
+        for (const fe::InGameBadgeWant &b : menu->WantedBadges(now))
+        {
+          const std::vector<u8> png = Achievements::GetPS5AchievementBadge(b.id);
+          if (png.empty())
+          {
+            menu->BadgeDone(b, false, false, now); // not there yet: asked again in a second
+            continue;
+          }
+          fe::CoverImage img;
+          if (!fe::CoverService::Decode(png, 96, img, 512) || img.width <= 0 || img.height <= 0 ||
+              img.rgba.size() < static_cast<size_t>(img.width) * static_cast<size_t>(img.height) * 4)
+          {
+            printf("[menu] achievement %u: its badge (%zu bytes) does not decode\n", b.id, png.size());
+            menu->BadgeDone(b, false, true, now);
+            continue;
+          }
+          std::vector<uint32_t> px(static_cast<size_t>(img.width) * static_cast<size_t>(img.height));
+          std::memcpy(px.data(), img.rgba.data(), px.size() * 4);
+          orbis_ui::SetSlotShot(orbis_ui::kSlots + b.index, img.width, img.height, px);
+          menu->BadgeDone(b, true, false, now);
+          if (++loaded >= 2)
+            break;
+        }
+        Achievements::IdleUpdate();
+      }
+      fe::InGameRequest r;
+      while (menu->TakeRequest(r))
+        leave = orbis_ingame_request_run(*menu, r) || leave;
+      if (leave)
+        break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
+  }
+  orbis_ui::End();
+  MTGS::RunOnGSThread([]() { MTGS::SetRunIdle(false); });
+  s_ingame_paused = false;
+  s_ingame_running.store(false, std::memory_order_release);
+  s_ingame_active.store(false, std::memory_order_release);
+  if (leave)
+  {
+    OrbisBackToMenuCpu(); // the VM stops; the main loop leaves for the shelf (orbis_back_to_menu)
+    return;
+  }
+  printf("[menu] in-game menu closed: the game goes on\n");
+  fflush(stdout);
+  VMManager::SetPaused(false);
+}
+
 // At the game's start: the set, and the disc it starts from (the cheat disc, when it's on and found).
 static std::string orbis_disc_boot(const std::string& game)
 {
@@ -4487,6 +4923,12 @@ int main()
 #ifdef ORBIS_VULKAN
   if (!system_menu)
     orbis_web_now_playing(s_game_path, web_stem, web_serial); // vk-285-50: the page marks it and applies its changes live
+  // 2.31: the in-game menu: the same game's files, and its fonts made meanwhile (fe_ps5.cpp, on a thread of its own).
+  s_ingame_path = s_game_path;
+  s_ingame_stem = system_menu ? std::string() : web_stem;
+  s_ingame_serial = web_serial;
+  if (!orbis_flag("noingamemenu"))
+    orbis_ingame_prepare(orbis_frontend_paths(false));
 #endif
   if (!system_menu)
   {
@@ -5184,6 +5626,7 @@ int main()
   // vk-285-47: the game's name and how it runs, instead of "VM init OK".
   if (res == VMBootResult::StartupSuccess)
   {
+    s_ingame_started_at = orbis_mono_seconds(); // 2.31: the in-game menu's "played"
     std::string title = VMManager::GetTitle(true);
     if (title.empty() && system_menu)
       title = "PS2 system menu"; // 2026-10-08
@@ -5574,6 +6017,12 @@ int main()
       // 187: a pause no breakpoint made is a guest exception's: L1+R1+Touch leaves it for the shelf (orbis_error_pause). The port's other
       // SetPaused(true) callers can't run: the hotkeys (pause, frame advance) get no input events here, nothing starts an input recording,
       // and there is no debugger (its breakpoints, and their pauses, are told apart all the same).
+      // 2.31: paused for the in-game menu (OrbisInGameMenuPauseCpu): it runs here until it closes, then the game goes on.
+      if (st == VMState::Paused && s_ingame_paused)
+      {
+        orbis_ingame_menu_run();
+        continue;
+      }
       if (st == VMState::Paused && !CBreakPoints::GetBreakpointTriggered() && !CBreakPoints::GetCorePaused())
       {
         const bool first = !error_pause_seen;

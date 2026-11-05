@@ -249,6 +249,8 @@ void OrbisReadbackAutoCpu(); // vk-285-118 (main-boot.cpp)
 void OrbisOSDLabel(const char* text);
 void OrbisBackToMenuCpu();
 void OrbisChangeDiscCpu(int req); // vk-285-139 (main-boot.cpp): 5 the settings page's disc, 6 the change disc combo
+extern std::atomic<int> g_orbis_ingame_request; // 2.31 (main-boot.cpp): the in-game menu combo asks
+void OrbisInGameMenuPauseCpu(); // 2.31 (main-boot.cpp): pauses the game for the menu
 
 extern std::atomic<int> g_orbis_gsini_reload, g_orbis_pin_request; // eerec-285 (GSRenderer.cpp)
 void orbis_reload_gs_ini_cpu(); // eerec-285 (main-boot.cpp)
@@ -273,6 +275,12 @@ void Host::PumpMessagesOnCPUThread()
 		OrbisApplyPinning(pin);
 	if (g_orbis_rb_auto_request.exchange(0, std::memory_order_acq_rel))
 		OrbisReadbackAutoCpu();
+	// 2.31: the in-game menu: the game pauses here (the main loop runs the menu); the other requests wait for it to go on.
+	if (g_orbis_ingame_request.exchange(0, std::memory_order_acq_rel))
+	{
+		OrbisInGameMenuPauseCpu();
+		return;
+	}
 	const int req = g_orbis_state_request.exchange(0, std::memory_order_acq_rel);
 	if (req == 1)
 	{

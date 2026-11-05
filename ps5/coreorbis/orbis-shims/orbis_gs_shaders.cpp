@@ -31,6 +31,7 @@ ORBIS_SHADER_INCBIN(orbis_sh_vk_convert, "vulkan/convert.glsl");
 ORBIS_SHADER_INCBIN(orbis_sh_vk_imgui, "vulkan/imgui.glsl");
 ORBIS_SHADER_INCBIN(orbis_sh_vk_interlace, "vulkan/interlace.glsl");
 ORBIS_SHADER_INCBIN(orbis_sh_vk_merge, "vulkan/merge.glsl");
+ORBIS_SHADER_INCBIN(orbis_sh_vk_orbis_ui, "vulkan/orbis_ui.glsl"); // 2.31: PS5SX2's in-game menu
 ORBIS_SHADER_INCBIN(orbis_sh_vk_present, "vulkan/present.glsl");
 ORBIS_SHADER_INCBIN(orbis_sh_vk_shadeboost, "vulkan/shadeboost.glsl");
 ORBIS_SHADER_INCBIN(orbis_sh_vk_tfx, "vulkan/tfx.glsl");
@@ -40,7 +41,7 @@ ORBIS_SHADER_INCBIN(orbis_sh_common_fxaa, "common/fxaa.fx");
 
 extern "C" const char orbis_sh_vk_cas[], orbis_sh_vk_cas_end[], orbis_sh_vk_convert[], orbis_sh_vk_convert_end[],
 	orbis_sh_vk_imgui[], orbis_sh_vk_imgui_end[], orbis_sh_vk_interlace[], orbis_sh_vk_interlace_end[],
-	orbis_sh_vk_merge[], orbis_sh_vk_merge_end[], orbis_sh_vk_present[], orbis_sh_vk_present_end[],
+	orbis_sh_vk_merge[], orbis_sh_vk_merge_end[], orbis_sh_vk_orbis_ui[], orbis_sh_vk_orbis_ui_end[], orbis_sh_vk_present[], orbis_sh_vk_present_end[],
 	orbis_sh_vk_shadeboost[], orbis_sh_vk_shadeboost_end[], orbis_sh_vk_tfx[], orbis_sh_vk_tfx_end[],
 	orbis_sh_common_ffx_a[], orbis_sh_common_ffx_a_end[], orbis_sh_common_ffx_cas[], orbis_sh_common_ffx_cas_end[],
 	orbis_sh_common_fxaa[], orbis_sh_common_fxaa_end[];
@@ -60,6 +61,7 @@ const Builtin kBuiltins[] = {
 	{"shaders/vulkan/imgui.glsl", orbis_sh_vk_imgui, orbis_sh_vk_imgui_end},
 	{"shaders/vulkan/interlace.glsl", orbis_sh_vk_interlace, orbis_sh_vk_interlace_end},
 	{"shaders/vulkan/merge.glsl", orbis_sh_vk_merge, orbis_sh_vk_merge_end},
+	{"shaders/vulkan/orbis_ui.glsl", orbis_sh_vk_orbis_ui, orbis_sh_vk_orbis_ui_end},
 	{"shaders/vulkan/present.glsl", orbis_sh_vk_present, orbis_sh_vk_present_end},
 	{"shaders/vulkan/shadeboost.glsl", orbis_sh_vk_shadeboost, orbis_sh_vk_shadeboost_end},
 	{"shaders/vulkan/tfx.glsl", orbis_sh_vk_tfx, orbis_sh_vk_tfx_end},

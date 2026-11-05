@@ -78,6 +78,15 @@ public:
 	// text (the baseline at `baseline_out` from its top). `px` is the em size.
 	void Raster(const char* utf8, float px, std::vector<uint8_t>& alpha, int& w, int& h, int& baseline_out) const;
 
+	// 2.31 (the in-game menu, AI-assisted): one more font after Init (Font Awesome Free's solid icons; the data stays alive with
+	// this object). Returns its index for Preload, -1 when it can't be read.
+	int AddFont(const uint8_t* data);
+	// Puts these code points of font `font` into the atlas now (those already in it, or not in the font, are left), so that
+	// AddText draws them. Returns how many were added; each one counts up AtlasVersion.
+	int Preload(int font, const std::vector<uint32_t>& codepoints);
+	// Bumped by every glyph packed after Init: a renderer holding a copy of the atlas uploads it again when this changes.
+	uint32_t AtlasVersion() const { return m_atlas_version; }
+
 private:
 	const Glyph* Find(uint32_t cp) const;
 	bool AddGlyph(int font, uint32_t cp);
@@ -100,6 +109,7 @@ private:
 	std::vector<uint8_t> m_atlas;
 	int m_atlas_w = 0, m_atlas_h = 0;
 	int m_pen_x = 0, m_pen_y = 0, m_row_h = 0;
+	uint32_t m_atlas_version = 0; // 2.31
 
 public:
 	~Fonts();

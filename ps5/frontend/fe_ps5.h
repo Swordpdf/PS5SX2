@@ -122,6 +122,17 @@ bool orbis_web_qr(std::vector<unsigned char>& modules, int& size, std::string& s
 // the LAN one, else the loopback one; `shown` is the short "<ip>:<port>" (no access token, safe to log). False
 // without a web server.
 bool orbis_web_browser_url(std::string& url, std::string& shown);
+// 2.31 (AI-assisted): the in-game menu (fe_ingame.h). Prepare makes its fonts (the shelf's, and Font Awesome Free's solid icons)
+// on a thread of its own when a game starts (about half a second, while the game boots), hands their atlas to the GS
+// (orbis-shims/OrbisInGameUi.h) and sets the hold ring's builder. The menu is null until that is done (or when it failed).
+namespace fe
+{
+class InGameMenu;
+}
+void orbis_ingame_prepare(const OrbisFrontendPaths& paths);
+fe::InGameMenu* orbis_ingame_menu();
+// A save's time as the menu shows it, in the console's time zone and clock format: "Today 21:47", "Yesterday 9:05 PM", "2 Nov 14:05".
+std::string orbis_ingame_when(int64_t utc);
 // How many requests the page's server has had, and how long ago the last one came (-1 while none has).
 void orbis_web_request_stats(uint64_t& count, double& age_s);
 // Log the next `n` requests to boot.log (who loads the page).

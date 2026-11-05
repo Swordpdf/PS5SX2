@@ -15,6 +15,7 @@ extern "C" int sceKernelAvailableFlexibleMemorySize(unsigned long long* size); /
 #include "GS/Renderers/Vulkan/VKOrbisTiming.h" // vk-285-113: the readback counters (OrbisPerfMinute)
 #ifdef ORBIS_VULKAN
 #include "OrbisGSShaders.h" // vk-285-115: shadeboost.glsl from the folder or the eboot
+#include "ps5/coreorbis/orbis-shims/OrbisInGameUi.h" // 2.31: the in-game menu over the paused game
 #endif
 #include "GSDumpReplayer.h"
 #include "Host.h"
@@ -1173,6 +1174,8 @@ static void OrbisPerfMinute(unsigned fps, float speed, float ee, float gs, float
 
 #ifdef ORBIS_VULKAN
 void OrbisVkPresentBlend(GSTexture* tex, const GSVector4& sRect, const GSVector4& dRect); // GSDeviceVK.cpp
+bool OrbisVkDrawUi(const orbis_ui::Vertex* vertices, uint32_t count, const orbis_ui::DrawRun* runs, uint32_t nruns); // 2.31, GSDeviceVK.cpp
+bool OrbisVkUiReady(); // 2.31, GSDeviceVK.cpp
 // 2026-10-08 (AI-assisted): frame generation (GSDeviceVK.cpp, "frame generation").
 extern bool g_orbis_fg_wanted;
 extern bool g_orbis_fg_engaged; // vk-285-133: generated frames have room (the repeats of the game's last frame present nothing then)
@@ -1612,12 +1615,173 @@ static void OrbisDrawBezel()
 #endif
 
 // Once a vsync, before the present begins (the frame generation's presents too): the pictures' uploads.
+#ifdef ORBIS_VULKAN
+// ---- 2.31 (AI-assisted): PS5SX2's in-game menu (ps5/frontend/fe_ingame.h) and its hold ring ---------------------------------
+// The menu's vertices come from the VM thread (orbis-shims/OrbisInGameUi.h) and are drawn by GSDeviceVK's UI pipeline
+// (orbis_ui.glsl). Its textures live here: the font atlas (R8), the paused picture made small twice (the background's blur: a
+// quarter, then a sixteenth of the window, bilinear each time, once per opening) and the save states' screenshots. They are
+// made and filled outside the present's render pass (PresentCurrentFrame before it begins; OrbisPreparePanels for the ring).
+namespace
+{
+struct OrbisUiState
+{
+	GSDevice* dev = nullptr;
+	GSTexture* atlas = nullptr;
+	uint32_t atlas_version = 0;
+	GSTexture* blur[2] = {};
+	uint32_t blur_session = 0;
+	bool blur_ok = false;
+	GSTexture* slots[orbis_ui::kPictures] = {}; // the save states' screenshots, then the achievements' badges (build 190)
+	uint32_t slot_serial[orbis_ui::kPictures] = {};
+	std::vector<orbis_ui::Vertex> verts;
+	std::vector<orbis_ui::Range> ranges;
+	std::vector<orbis_ui::DrawRun> runs;
+};
+OrbisUiState s_ui;
+
+// A new GS device (a renderer change, a game's own settings) doesn't have the old one's textures: start again.
+void OrbisUiCheckDevice()
+{
+	if (s_ui.dev == g_gs_device.get())
+		return;
+	s_ui = OrbisUiState();
+	s_ui.dev = g_gs_device.get();
+}
+
+void OrbisUiPrepareAtlas()
+{
+	OrbisUiCheckDevice();
+	const uint32_t want = orbis_ui::AtlasVersion();
+	if (want == 0 || (s_ui.atlas && s_ui.atlas_version == want))
+		return;
+	std::vector<uint8_t> px;
+	int w = 0, h = 0;
+	uint32_t version = 0;
+	if (!orbis_ui::CopyAtlas(px, w, h, version))
+		return;
+	if (s_ui.atlas && (s_ui.atlas->GetWidth() != w || s_ui.atlas->GetHeight() != h))
+	{
+		g_gs_device->Recycle(s_ui.atlas);
+		s_ui.atlas = nullptr;
+	}
+	if (!s_ui.atlas)
+		s_ui.atlas = g_gs_device->CreateTexture(w, h, 1, GSTexture::Format::UNorm8);
+	if (s_ui.atlas && s_ui.atlas->Update(GSVector4i(0, 0, w, h), px.data(), w))
+	{
+		s_ui.atlas_version = version;
+		printf("[menu] font atlas %dx%d uploaded (version %u)\n", w, h, version);
+		fflush(stdout);
+	}
+}
+
+void OrbisUiPrepareBlur(GSTexture* current, const GSVector4& src_uv)
+{
+	OrbisUiCheckDevice();
+	if (!current || (s_ui.blur_ok && s_ui.blur_session == orbis_ui::Session()))
+		return;
+	const int ww = std::max(64, static_cast<int>(g_gs_device->GetWindowWidth()));
+	const int wh = std::max(64, static_cast<int>(g_gs_device->GetWindowHeight()));
+	const int sizes[2][2] = {{ww / 4, wh / 4}, {ww / 16, wh / 16}};
+	for (int i = 0; i < 2; i++)
+	{
+		if (s_ui.blur[i] && (s_ui.blur[i]->GetWidth() != sizes[i][0] || s_ui.blur[i]->GetHeight() != sizes[i][1]))
+		{
+			g_gs_device->Recycle(s_ui.blur[i]);
+			s_ui.blur[i] = nullptr;
+		}
+		if (!s_ui.blur[i])
+			s_ui.blur[i] = g_gs_device->CreateRenderTarget(sizes[i][0], sizes[i][1], GSTexture::Format::Color, false);
+	}
+	if (!s_ui.blur[0] || !s_ui.blur[1])
+		return;
+	g_gs_device->StretchRect(current, src_uv, s_ui.blur[0],
+		GSVector4(0.0f, 0.0f, static_cast<float>(sizes[0][0]), static_cast<float>(sizes[0][1])), ShaderConvert::COPY, Biln);
+	g_gs_device->StretchRect(s_ui.blur[0], GSVector4(0.0f, 0.0f, 1.0f, 1.0f), s_ui.blur[1],
+		GSVector4(0.0f, 0.0f, static_cast<float>(sizes[1][0]), static_cast<float>(sizes[1][1])), ShaderConvert::COPY, Biln);
+	s_ui.blur_session = orbis_ui::Session();
+	s_ui.blur_ok = true;
+}
+
+void OrbisUiPrepareSlots()
+{
+	OrbisUiCheckDevice();
+	for (int i = 0; i < orbis_ui::kPictures; i++)
+	{
+		const uint32_t serial = orbis_ui::SlotSerial(i);
+		if (serial == s_ui.slot_serial[i])
+			continue;
+		std::vector<uint32_t> rgba;
+		int w = 0, h = 0;
+		uint32_t got = 0;
+		const bool have = orbis_ui::CopySlotShot(i, w, h, rgba, got);
+		s_ui.slot_serial[i] = got;
+		if (s_ui.slots[i] && (!have || s_ui.slots[i]->GetWidth() != w || s_ui.slots[i]->GetHeight() != h))
+		{
+			g_gs_device->Recycle(s_ui.slots[i]);
+			s_ui.slots[i] = nullptr;
+		}
+		if (!have)
+			continue;
+		if (!s_ui.slots[i])
+			s_ui.slots[i] = g_gs_device->CreateTexture(w, h, 1, GSTexture::Format::Color);
+		if (s_ui.slots[i])
+			s_ui.slots[i]->Update(GSVector4i(0, 0, w, h), rgba.data(), w * 4);
+	}
+}
+
+// The runs of a frame of the menu: each range with its texture; the paused picture's u, v 0..1 mapped to where it is in the frame.
+void OrbisUiDraw(GSTexture* current, const GSVector4& src_uv)
+{
+	s_ui.runs.clear();
+	for (const orbis_ui::Range& r : s_ui.ranges)
+	{
+		orbis_ui::DrawRun run = {r.first, r.count, nullptr, {1.0f, 1.0f, 0.0f, 0.0f}};
+		const bool picture = r.image == orbis_ui::kFrame || (r.image == orbis_ui::kBlur && !s_ui.blur_ok);
+		if (r.image == orbis_ui::kAtlas)
+			run.tex = s_ui.atlas;
+		else if (r.image == orbis_ui::kBlur)
+			run.tex = s_ui.blur_ok ? s_ui.blur[1] : current; // no blur made: the picture itself, dimmed
+		else if (r.image == orbis_ui::kFrame)
+			run.tex = current;
+		else if (r.image >= orbis_ui::kSlot0 && r.image < orbis_ui::kSlot0 + orbis_ui::kPictures)
+			run.tex = s_ui.slots[r.image - orbis_ui::kSlot0];
+		if (picture && run.tex)
+		{
+			run.uv[0] = src_uv.z - src_uv.x;
+			run.uv[1] = src_uv.w - src_uv.y;
+			run.uv[2] = src_uv.x;
+			run.uv[3] = src_uv.y;
+		}
+		if (run.tex)
+			s_ui.runs.push_back(run);
+	}
+	if (!s_ui.verts.empty() && !s_ui.runs.empty())
+		OrbisVkDrawUi(s_ui.verts.data(), static_cast<uint32_t>(s_ui.verts.size()), s_ui.runs.data(), static_cast<uint32_t>(s_ui.runs.size()));
+}
+
+// The ring while the menu's buttons are held in the game, over the frame (and over a generated one).
+void OrbisUiDrawHold()
+{
+	const float p = orbis_ui::Hold();
+	const orbis_ui::HoldBuilder build = orbis_ui::GetHoldBuilder();
+	if (p <= 0.0f || !build || !s_ui.atlas || s_ui.dev != g_gs_device.get() || !OrbisVkUiReady())
+		return;
+	build(p, static_cast<float>(g_gs_device->GetWindowWidth()), static_cast<float>(g_gs_device->GetWindowHeight()), s_ui.verts, s_ui.ranges);
+	OrbisUiDraw(nullptr, GSVector4(0.0f, 0.0f, 1.0f, 1.0f));
+}
+} // namespace
+#endif
+
 static void OrbisPreparePanels()
 {
 	if (!g_gs_device)
 		return;
 	OrbisPrepareChallengeIcons();
 	OrbisPrepareBezel();
+#ifdef ORBIS_VULKAN
+	if (orbis_ui::Hold() > 0.0f) // 2.31: the hold ring's font (once; again only when the atlas changes)
+		OrbisUiPrepareAtlas();
+#endif
 }
 
 // The panels drawn over the game besides the box: the challenge icons, then the settings QR code over everything.
@@ -2884,6 +3048,10 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				src_rect, current->GetSize(), s_display_alignment, g_gs_device->UsesLowerLeftOrigin(),
 				GetVideoMode() == GSVideoMode::SDTV_480P);
 			s_last_draw_rect = draw_rect;
+#ifdef ORBIS_VULKAN
+			orbis_ui::SetPresent(draw_rect.x, draw_rect.y, draw_rect.z, draw_rect.w, static_cast<float>(g_gs_device->GetWindowWidth()),
+				static_cast<float>(g_gs_device->GetWindowHeight())); // 2.31: where the in-game menu's card starts from
+#endif
 			s_orbis_res[0] = src_rect.width(); // vk-285-12: OSD resolution line
 			s_orbis_res[1] = src_rect.height();
 			s_orbis_res[2] = static_cast<int>(draw_rect.z - draw_rect.x + 0.5f);
@@ -2958,6 +3126,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				OrbisDrawBezel(); // 2026-10-08
 				OrbisWatermark();
 				OrbisGLOSD(true);
+				OrbisUiDrawHold(); // 2.31
 				EndPresentFrame();
 			}
 		}
@@ -2984,6 +3153,9 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 			OrbisWatermark(); // test build 1 (vk-285-55): under the FPS box
 #endif
 			OrbisGLOSD(); // eerec-278
+#ifdef ORBIS_VULKAN
+			OrbisUiDrawHold(); // 2.31: the in-game menu's hold ring
+#endif
 			if (s_orbis_gl && g_orbis_diag) // eerec-280
 				OrbisSampleWindow(); // eerec-279 (every 120th call)
 			ORBIS_VS_MARK(ORBIS_VS_OSD);
@@ -3272,6 +3444,37 @@ void GSRenderer::StopGSDump()
 
 void GSRenderer::PresentCurrentFrame()
 {
+#ifdef ORBIS_VULKAN
+	// 2.31 (AI-assisted): the in-game menu, over the paused game (MTGS's idle presents while the VM is paused for it). Until the
+	// menu's first frame comes, the game's picture as the present draws it (no black flash).
+	if (orbis_ui::Active() && OrbisVkUiReady())
+	{
+		GSTexture* current = g_gs_device->GetCurrent();
+		GSVector4 src_uv(0.0f, 0.0f, 1.0f, 1.0f), draw_rect(0.0f, 0.0f, 1.0f, 1.0f);
+		if (current)
+		{
+			const GSVector4i src_rect(CalculateDrawSrcRect(current, m_real_size));
+			src_uv = GSVector4(src_rect) / GSVector4(current->GetSize()).xyxy();
+			draw_rect = CalculateDrawDstRect(g_gs_device->GetWindowWidth(), g_gs_device->GetWindowHeight(), src_rect, current->GetSize(),
+				s_display_alignment, g_gs_device->UsesLowerLeftOrigin(), GetVideoMode() == GSVideoMode::SDTV_480P);
+			orbis_ui::SetPresent(draw_rect.x, draw_rect.y, draw_rect.z, draw_rect.w, static_cast<float>(g_gs_device->GetWindowWidth()),
+				static_cast<float>(g_gs_device->GetWindowHeight()));
+			OrbisUiPrepareBlur(current, src_uv);
+		}
+		OrbisUiPrepareAtlas();
+		OrbisUiPrepareSlots();
+		const bool have = orbis_ui::Latest(s_ui.verts, s_ui.ranges);
+		if (BeginPresentFrame(false))
+		{
+			if (have && s_ui.atlas)
+				OrbisUiDraw(current, src_uv);
+			else if (current)
+				g_gs_device->PresentRect(current, src_uv, nullptr, draw_rect, PresentShader::COPY, 0.0f, Biln);
+			EndPresentFrame();
+		}
+		return;
+	}
+#endif
 	if (BeginPresentFrame(false))
 	{
 		GSTexture* current = g_gs_device->GetCurrent();

@@ -21,6 +21,9 @@ struct Fonts::FontData
 	stbtt_fontinfo info;
 	float base_scale = 0; // font units -> base pixels
 	int ascent = 0, descent = 0, line_gap = 0;
+	// 2.31: the field from a coverage raster (SdfFromCoverage) for every glyph: Font Awesome solid's icons (AddFont) overlap
+	// their own outlines, which stb_truetype's crossing count fills wrongly (the in-game menu's icons came out as blobs).
+	bool coverage_sdf = false;
 };
 
 uint32_t NextCodepoint(const char*& s)
@@ -196,6 +199,42 @@ bool Fonts::AddGlyph(int font, uint32_t cp)
 	return PackGlyph(cp, r);
 }
 
+// 2.31 (AI-assisted): the in-game menu's icons (Font Awesome Free solid) after the shelf's fonts.
+int Fonts::AddFont(const uint8_t* data)
+{
+	if (!data)
+		return -1;
+	FontData* f = new FontData();
+	if (!stbtt_InitFont(&f->info, data, stbtt_GetFontOffsetForIndex(data, 0)))
+	{
+		delete f;
+		return -1;
+	}
+	f->base_scale = stbtt_ScaleForMappingEmToPixels(&f->info, kBasePx);
+	stbtt_GetFontVMetrics(&f->info, &f->ascent, &f->descent, &f->line_gap);
+	f->coverage_sdf = true;
+	m_fonts.push_back(f);
+	return static_cast<int>(m_fonts.size()) - 1;
+}
+
+int Fonts::Preload(int font, const std::vector<uint32_t>& codepoints)
+{
+	if (font < 0 || font >= static_cast<int>(m_fonts.size()))
+		return 0;
+	int added = 0;
+	for (const uint32_t cp : codepoints)
+	{
+		if (m_glyphs.count(cp))
+			continue;
+		if (AddGlyph(font, cp))
+		{
+			added++;
+			m_atlas_version++;
+		}
+	}
+	return added;
+}
+
 // Draws one glyph's distance field. Reads the font only: it may run on several threads at once.
 Fonts::RenderedGlyph Fonts::RenderGlyph(const FontData& f, int font, uint32_t cp)
 {
@@ -209,10 +248,12 @@ Fonts::RenderedGlyph Fonts::RenderGlyph(const FontData& f, int font, uint32_t cp
 	stbtt_GetGlyphHMetrics(&f.info, index, &advance, &lsb);
 	r.advance = advance * f.base_scale;
 	int w = 0, h = 0, xoff = 0, yoff = 0;
-	unsigned char* sdf = stbtt_GetGlyphSDF(&f.info, f.base_scale, index, kPad, 128, 128.0f / kSpread, &w, &h, &xoff, &yoff);
-	if (sdf && w > 0 && h > 0 && *std::max_element(sdf, sdf + static_cast<size_t>(w) * h) < 128)
+	unsigned char* sdf = f.coverage_sdf ? nullptr :
+	                     stbtt_GetGlyphSDF(&f.info, f.base_scale, index, kPad, 128, 128.0f / kSpread, &w, &h, &xoff, &yoff);
+	if (f.coverage_sdf || (sdf && w > 0 && h > 0 && *std::max_element(sdf, sdf + static_cast<size_t>(w) * h) < 128))
 	{
-		stbtt_FreeSDF(sdf, nullptr);
+		if (sdf)
+			stbtt_FreeSDF(sdf, nullptr);
 		sdf = SdfFromCoverage(&f.info, f.base_scale, index, kPad, 128.0f / kSpread, &w, &h, &xoff, &yoff);
 	}
 	r.sdf = sdf;

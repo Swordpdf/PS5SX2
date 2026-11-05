@@ -250,10 +250,11 @@ std::vector<OptionDef> ButtonsGroup()
 		// vk-285-139: change disc, for games on more than one disc.
 		Seg("PS5SX2/DiscButton1", "Change disc: button 1", "L3R3", "", ComboChoices(), disc_hint),
 		Seg("PS5SX2/DiscButton2", "Change disc: button 2", "Right", "", ComboChoices(), disc_hint),
-		Seg("PS5SX2/WebButton1", "Settings page: button 1", "L2", "", ComboChoices(),
-			"Opens this game's settings page in the PS5's web browser (held for 2 seconds). Default: L2 + D-pad down."),
-		Seg("PS5SX2/WebButton2", "Settings page: button 2", "Down", "", ComboChoices(),
-			"Opens this game's settings page in the PS5's web browser (held for 2 seconds). Default: L2 + D-pad down."),
+		// 2.31 (AI-assisted): the in-game menu (fe_ingame.h); the keys stay WebButton1/2, so a combo set before still opens it.
+		Seg("PS5SX2/WebButton1", "In-game menu: button 1", "L2", "", ComboChoices(),
+			"Opens the in-game menu (held for a second; the game pauses): save and load states, the settings, the controls and more. Default: L2 + D-pad down."),
+		Seg("PS5SX2/WebButton2", "In-game menu: button 2", "Down", "", ComboChoices(),
+			"Opens the in-game menu (held for a second; the game pauses): save and load states, the settings, the controls and more. Default: L2 + D-pad down."),
 	};
 	for (OptionDef& d : ButtonRows())
 		out.push_back(std::move(d));
@@ -634,8 +635,13 @@ void OptionsSheet::BuildRows()
 		add(Kind::Header, "ELF");
 		add(Kind::ElfDisc, "Disc image");
 	}
+	// 2.31: the groups SetGroupsLast names come after the others (the in-game menu's order); none named: one pass, as before.
+	for (int pass = 0; pass < (m_groups_last.empty() ? 1 : 2); pass++)
 	for (const OptionGroup& g : OptionGroups())
 	{
+		if (!m_groups_last.empty() &&
+			(std::find(m_groups_last.begin(), m_groups_last.end(), g.title) != m_groups_last.end()) != (pass == 1))
+			continue;
 		if (g.tab != m_tab || (g.game_only && m_global) || (g.global_only && !m_global))
 			continue;
 		if (g.title == "Folders" && settings && m_global && m_folder_rows)

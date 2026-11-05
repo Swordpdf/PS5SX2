@@ -175,6 +175,73 @@ enum class Str : int
 	ReloadTileOn,   // "On"
 	ReloadTileOff,  // "Off"
 	ReloadTileHelp, // what the row does
+	// 2.31 (AI-assisted): the in-game menu (fe_ingame.h; English only for now).
+	IngamePaused,           // "Paused": the Game tab's title
+	IngameTabGame,          // "Game": the first tab
+	IngameResume,           // "Resume game"
+	IngameSaveState,        // "Save state"
+	IngameLoadState,        // "Load state"
+	IngameFastForward,      // "Fast forward"
+	IngameChangeDisc,       // "Change disc"
+	IngamePhone,            // "Settings on your phone"
+	IngameReport,           // "Report a problem"
+	IngameShelf,            // "Back to the shelf"
+	IngameSlot,             // "Slot %d"
+	IngameEmpty,            // "Empty": a slot with no state
+	IngameNoSaves,          // "No saves yet": the Load state row with none
+	IngameOn,               // "On"
+	IngameOff,              // "Off"
+	IngameDiscOf,           // "Disc %d of %d"
+	IngameNoNetwork,        // "No network"
+	IngameProblemGraphics,  // "Graphics glitch": what Report a problem notes
+	IngameProblemSlow,      // "Slowdown or stutter"
+	IngameProblemSound,     // "Sound problem"
+	IngameProblemControls,  // "Controls problem"
+	IngameProblemOther,     // "Something else"
+	IngamePressAgain,       // "Press again"
+	IngameSettingsThis,     // "Settings for this game": the Settings tab's title
+	IngameSettingsAll,      // "Settings for all games"
+	IngameControlsThis,     // "Controls for this game"
+	IngameControlsAll,      // "Controls for all games"
+	IngameNextStart,        // "next start": the tag of a row read when a game starts
+	IngameAppliesResume,    // "Applies when you resume.": after a row's help
+	IngameAppliesNextStart, // "Used when the game starts next."
+	IngameSavedThis,        // "Saved for this game · applies when you resume"
+	IngameSavedAll,         // "Saved for all games · applies when you resume"
+	IngameSaving,           // "Saving to slot %d..."
+	IngameSaved,            // "Saved to slot %d"
+	IngameSaveFailed,       // "The state couldn't be saved: %s" (%s: PCSX2's reason, in English)
+	IngameLoading,          // "Loading slot %d..."
+	IngameLoadFailed,       // "The state couldn't be loaded: %s"
+	IngameNoted,            // "Noted in the session log at %s" (%s: the time)
+	IngameHardcore,         // "Off in hardcore mode": the Load state row's value
+	IngameHelpResume,
+	IngameHelpSave,
+	IngameHelpLoad,
+	IngameHelpLoadHardcore,
+	IngameHelpFast,
+	IngameHelpDisc,
+	IngameHelpPhone,
+	IngameHelpPhoneNone,
+	IngameHelpReport,
+	IngameHelpShelf,
+	IngameHintResume,       // "Resume": Circle
+	IngameHintTabs,         // "Tabs": L2 R2
+	IngameHintSlot,         // "Slot": left / right on the save and load rows
+	IngameHintSave,         // "Save": Cross
+	IngameHintLoad,         // "Load"
+	IngameHintChoose,       // "Choose": left / right
+	IngameHintScope,        // "This game / All games": L1 R1
+	IngameAchievementsCount,   // "%d of %d unlocked · %d of %d points"
+	IngameAchievementsNone,    // no list to show
+	IngameAchievementsLoading, // "Loading the achievements..."
+	IngamePlayed,           // "played %s" (%s: "1 h 12 min")
+	IngameHoldMenu,         // "Menu": the ring while the combo is held
+	IngameToday,            // "Today %s" (%s: 21:47)
+	IngameYesterday,        // "Yesterday %s"
+	IngameJustNow,          // "Just now": a state saved while the menu is open
+	IngameSavedThisNext,    // "Saved for this game · used when the game starts next"
+	IngameSavedAllNext,     // "Saved for all games · used when a game starts next"
 	Count
 };
 

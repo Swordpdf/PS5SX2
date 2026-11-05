@@ -36,7 +36,9 @@ Expect rough edges. Bug reports with logs are very welcome, and so is patience.
 - **Settings from your phone.** The shelf shows a QR code: scan it, or type the address under it (`http://<PS5 IP>:<port>/`) into any browser on the same network, and a settings page opens. Triangle on the shelf shows the QR code large.
   - Change the resolution, aspect ratio, filters, patches and more, for all games or one game.
   - Most changes apply while you play.
-  - In a game, hold L2 + D-pad Down for 2 seconds to open the page in the PS5's own web browser. The game keeps running.
+- **An in-game menu.** In a game, hold L2 + D-pad Down for a second: the game pauses and a menu in the shelf's style opens over
+  it, with save and load states (each slot with its screenshot), every setting of the settings page, the controls, the game's
+  achievements and the way back to the shelf. [The in-game menu](#the-in-game-menu) has the details.
 - **Widescreen and 60 FPS patches.** Put PCSX2 patch files (`.pnach`) in `/data/PCSX2/patches/` and switch them on per game from the settings page.
 - **RetroAchievements.** Sign in on the shelf and earn [RetroAchievements](https://retroachievements.org) as you play (softcore). Unlocks pop up like PS5 trophies, with the badge and the trophy sound, and every game's list is in its Square menu. [RetroAchievements](#retroachievements) has the details.
 - **Online play.** PCSX2's emulated network adapter is on for every game and goes out through the PS5's own connection. SOCOM II has played online matches on [PS Rewired](https://psrewired.com)'s revival servers.
@@ -102,7 +104,7 @@ The first start downloads the covers for your games, then the shelf opens.
 | Hold L1 + R1, click the touchpad | Back to the shelf |
 | Hold L3 + R3, then D-pad Up / Down | Save / load state (slot 1) |
 | Hold L3 + R3 and let go | Next display filter |
-| Hold L2 + D-pad Down for 2 seconds | Open the settings page in the PS5's web browser; the game keeps running |
+| Hold L2 + D-pad Down for a second | [The in-game menu](#the-in-game-menu): the game pauses until you close it |
 | The fast forward buttons (Controls tab; none by default) | Fast forward on or off |
 
 In a game the touchpad click is the PS2's SELECT and OPTIONS its START. The Create button (left of the touchpad) does nothing.
@@ -154,7 +156,24 @@ Most changes show up in the running game straight away. The page marks the few t
 
 The same settings are on the shelf: press Square on a game.
 
-In a game, hold L2 + D-pad Down for 2 seconds and the PS5's own web browser opens on the page. The game keeps running behind it. If the console won't open its browser, the page's QR code and address show over the game instead, and the same combo hides them.
+In a game, the in-game menu's *Settings on your phone* row shows the page's address and QR code.
+
+## The in-game menu
+
+In a game, hold L2 + D-pad Down for a second: a small *Menu* ring fills in the corner, then the game pauses (sound too) and its
+picture moves into a card next to the menu. L2 / R2 switch tabs, Circle or OPTIONS goes back to the game.
+
+- **Game:** resume, save and load states (ten slots, each with its screenshot and when it was saved), fast forward, change disc
+  (for games on more than one disc), *Settings on your phone* (the settings page's address and QR code), *Report a problem* (a
+  note in the session log, for when you send your logs in #bugs) and back to the shelf (press it twice).
+- **Settings** and **Controls:** the settings page's options, for this game or all games (L1 / R1). Each change is saved at once
+  and applies when the game goes on; the few that need a restart say *next start*.
+- **Achievements:** the game's RetroAchievements with their badges, when you're signed in.
+
+The buttons are *In-game menu: button 1* and *button 2* on the *Controls* tab (*Buttons*), for all games or for one game. With an
+empty file named `noingamemenu` in `/data/PCSX2/flags/`, the combo does what it did before 2.40 instead: held for 2 seconds it
+opens the settings page in the PS5's own web browser while the game keeps running (or shows its QR code and address over the game
+when the console won't open its browser).
 
 ## Texture packs
 
@@ -200,7 +219,7 @@ Earn [RetroAchievements](https://retroachievements.org) as you play. It's softco
 
 - **Signing in:** on the shelf, press L1 + Square and sign in with your RetroAchievements account. The password isn't kept, only a sign-in token, in `/data/PCSX2/achievements-secrets.ini`. Sign out from the same panel. Until you sign in, nothing connects.
 - **Unlocks** pop up like PS5 trophies, with the achievement's badge, its title and the trophy sound. Mastering a game plays the platinum sound. The popups go through your jailbreak's ELF loader (port 9021); without one they're plain notifications.
-- **The lists:** press Square on a game and go to *Achievements* with L2 / R2 to see its achievements and the ones you've unlocked. While you play, the settings page has the running game's list.
+- **The lists:** press Square on a game and go to *Achievements* with L2 / R2 to see its achievements and the ones you've unlocked. While you play, the in-game menu's *Achievements* tab and the settings page have the running game's list.
 - **A dropped connection:** unlocks are retried. Going back to the shelf waits up to 5 seconds for any still being sent, and a notification says if one couldn't be.
 - **Your disc has to be a version RetroAchievements knows.** One it doesn't recognise gets no achievements.
 
