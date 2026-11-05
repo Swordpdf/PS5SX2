@@ -19,7 +19,9 @@
 //         "Downloads", "ServiceFeedback" and "Trophies" channels, never appeared;
 //       - channelType "ServiceFeedback" and "Trophies" showed during a game ("Downloads" is filtered by the
 //         PS5's settings and Do Not Disturb);
-//       - the icon can be a PNG by its /data/... or /user/data/... path, or an https URL;
+//       - the icon can be a PNG by its /data/... or /user/data/... path, or an https URL (build 190: on the Pro with OnionHEN,
+//         2026-11-05, the system UI has no /data: every picture failed, "scePssNativeFileOpen - Failed to open file(/data/PCSX2/
+//         achievement_images/...) error code(-2147352574)", ENOENT; /user/data is the same folder: OrbisToastPath);
 //       - rawData.soundEffect "psfx_trophy_toast" plays the trophy ding and "psfx_platinum_trophy_toast" the
 //         platinum trophy sound (ShadowMountPlus's TOASTS.md describes the field; it uses "none").
 // libSceNotification is loaded when the first rich toast is sent (sceKernelLoadStartModule), so a console
@@ -539,13 +541,28 @@ void OrbisNotifyPlain(const char* text)
 	Queue(std::move(r));
 }
 
+// Build 190: a toast's picture as the system UI can open it. It opens the file itself, in its own view of the file system, which
+// has /user (it reads /user/app/<title>/sce_sys/pic0.dds) but, with the OnionHEN set-up on the Pro, no /data: a /data/... picture
+// is given as /user/data/..., the same folder, when that path shows the file (the same size). Anything else is left as it is.
+static std::string OrbisToastPath(const char* icon)
+{
+	std::string s = icon ? icon : "";
+	if (s.rfind("/data/", 0) != 0)
+		return s;
+	const std::string user = "/user" + s;
+	struct stat a, b;
+	if (stat(s.c_str(), &a) == 0 && stat(user.c_str(), &b) == 0 && S_ISREG(b.st_mode) && a.st_size == b.st_size)
+		return user;
+	return s;
+}
+
 void OrbisNotifyRichNow(const char* message, const char* sub_message, const char* icon, const char* sound, const char* channel)
 {
 	Request r;
 	r.api = Api::Rich;
 	r.message = message ? message : "";
 	r.sub_message = sub_message ? sub_message : "";
-	r.icon = icon ? icon : "";
+	r.icon = OrbisToastPath(icon);
 	r.sound = sound ? sound : "";
 	r.channel = channel ? channel : "";
 	r.logged = true;
@@ -559,7 +576,7 @@ void OrbisNotifyRich(const char* message, const char* sub_message, const char* i
 	r.api = Api::Rich;
 	r.message = message ? message : "";
 	r.sub_message = sub_message ? sub_message : "";
-	r.icon = icon ? icon : "";
+	r.icon = OrbisToastPath(icon);
 	r.sound = sound ? sound : "";
 	r.channel = channel ? channel : "";
 	r.logged = true; // a toast sent not logged never showed on the Pro (2026-10-05)
