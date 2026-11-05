@@ -18,6 +18,7 @@ coreorbis=$(cd -- "$here/../.." && pwd)
 pcsx2=$(cd -- "$coreorbis/../.." && pwd)
 fe="$pcsx2/ps5/frontend"
 nfs="$pcsx2/ps5/third_party/libnfs"
+smb="$pcsx2/ps5/third_party/libsmb2"
 work=${NFS_TEST_DIR:-$here/obj}
 CXX=${CXX:-clang++-18}
 CC=${CC:-clang-18}
@@ -42,6 +43,15 @@ for c in "$nfs"/lib/*.c "$nfs"/mount/*.c "$nfs"/nfs/*.c "$nfs"/nfs4/*.c "$nfs"/p
   objs+=("$o")
   while (( $(jobs -r | wc -l) >= ${NFS_JOBS:-2} )); do wait -n; done
 done
+# libsmb2 and OrbisSmb.cpp: OrbisNfs.cpp's wrappers also serve /smb/.
+mkdir -p "$work/smb"
+for c in "$smb"/lib/*.c; do
+  o="$work/smb/$(basename "$c" .c).o"
+  "$CC" -O1 -g -w -DHAVE_CONFIG_H -D_FILE_OFFSET_BITS=64 "-D_U_=__attribute__((unused))" -I"$smb" -I"$smb/include" \
+    -I"$smb/include/smb2" "${san[@]}" -c "$c" -o "$o" &
+  objs+=("$o")
+  while (( $(jobs -r | wc -l) >= ${NFS_JOBS:-2} )); do wait -n; done
+done
 wait
 
 # The frontend's game scan (fe_games.cpp and what it needs), as the frontend's raw .bin test builds it.
@@ -51,6 +61,7 @@ cxx_flags=(-std=c++20 -O1 -g -Wall -Wextra -Wno-unused-function -Wno-unused-para
   -I"$coreorbis/include-orbis" -I"$nfs/include" -I"$fe" -I"$pcsx2/3rdparty/vulkan/include" -I"$pcsx2/3rdparty/libchdr/include"
   -I"$pcsx2/ps5/third_party/lz4" "${san[@]}")
 "$CXX" "${cxx_flags[@]}" -DORBIS_NFS_WRAP_DIRS -c "$coreorbis/orbis-shims/OrbisNfs.cpp" -o "$work/OrbisNfs.o"
+"$CXX" "${cxx_flags[@]}" -I"$smb/include" -c "$coreorbis/orbis-shims/OrbisSmb.cpp" -o "$work/OrbisSmb.o"
 
 # The console's --wrap list, and the PC's opendir/readdir/closedir (the console's are dirshim.cpp's).
 wraps=()
@@ -59,7 +70,7 @@ while IFS= read -r name; do
   wraps+=("-Wl,--wrap=$name")
 done < "$coreorbis/orbis-shims/OrbisNfs.wrap"
 wraps+=(-Wl,--wrap=opendir -Wl,--wrap=readdir -Wl,--wrap=closedir)
-"$CXX" "${cxx_flags[@]}" "$here/test_nfs.cpp" "$work/OrbisNfs.o" "$fe/fe_games.cpp" "$fe/fe_covers.cpp" "$fe/fe_text.cpp" \
+"$CXX" "${cxx_flags[@]}" "$here/test_nfs.cpp" "$work/OrbisNfs.o" "$work/OrbisSmb.o" "$fe/fe_games.cpp" "$fe/fe_covers.cpp" "$fe/fe_text.cpp" \
   "$fe/fe_i18n.cpp" "$fe/fe_settings.cpp" "$work/lz4.o" "$work/chd_stub.o" "${objs[@]}" "${wraps[@]}" \
   -o "$work/test_nfs" -lz -lpthread
 

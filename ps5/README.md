@@ -55,6 +55,11 @@ make -f Makefile.vk -j"$(nproc)"
 ORBIS_BUILD_TAG=my-build bash link-vk.sh
 ```
 
+In a container instead, with the public dependencies above at their revisions (the stock SDK, without the `target/lib`
+changes): `ps5/docker/build.sh` compiles; with `PS5_VULKAN_DIR` set, it links too.
+`ps5/docker/build-radv.sh` compiles and links with the public RADV driver instead (ps5/docs/build-dependencies.md):
+`ps5/build-radv/app/eboot.bin`, experimental.
+
 - The first link also builds the host tool, into `ps5/proto/native/build/host/`.
 - The signed eboot is `ps5/build-vk/app/eboot.bin`.
 - On the console, the app folder `/data/homebrew/PPSA99203/` holds:

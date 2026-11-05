@@ -129,6 +129,8 @@ int main(int argc, char** argv)
 		Check(fe::ResolveGameRoots({root + "/gone"}, {}, {}, {}).copy_to.empty(), "set but missing: copy_to empty (the caller says so)");
 		Check(fe::UnderNfs("/nfs") && fe::UnderNfs("/nfs/nas/PS2") && !fe::UnderNfs("/nfsx/a") && !fe::UnderNfs(data) && !fe::UnderNfs(mnt + "/usb0/nfs"),
 			"a folder under /nfs is a share: no copy target");
+		Check(fe::UnderSmb("/smb") && fe::UnderSmb("/smb/nas/PS2") && !fe::UnderSmb("/smbx/a") && !fe::UnderSmb(data),
+			"a folder under /smb is a share: no copy target");
 	}
 	// 7c. entries that cannot be a folder: relative, the root '/', empty
 	{

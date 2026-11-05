@@ -2246,7 +2246,7 @@ private:
 			}
 		}
 		SortGames(m_games); // vk-285-113: by the titles the game database may have changed
-		std::printf("[frontend] %zu disc image(s), %d on USB, %d on NFS shares, scanned in %.0f ms (%d image(s) read, the rest from the cache files)\n",
+		std::printf("[frontend] %zu disc image(s), %d on USB, %d on network shares, scanned in %.0f ms (%d image(s) read, the rest from the cache files)\n",
 			m_games.size(), on_usb, on_nfs, (Now() - m_t0) * 1000.0, m_read.load());
 		if (left > 0 || skipped > 0) // chd2
 			std::printf("[scan] %d image(s) left for the next start (time), %d not read (given up on: cache/bad-images.txt), %d read(s) still "
@@ -2722,6 +2722,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.folder_places.push_back({"Extended storage", "/mnt/ext0"});
 	acfg.folder_places.push_back({"Extended storage 2", "/mnt/ext1"});
 	acfg.folder_places.push_back({"NFS shares", "/nfs"}); // OrbisNfs.cpp: a folder while shares are set
+	acfg.folder_places.push_back({"SMB shares", "/smb"});
+	acfg.smb_set_password = paths.smb_set_password;
+	acfg.smb_has_password = paths.smb_has_password;
 	acfg.bios_present = paths.bios_check; // vk-285-134
 	acfg.bios_problem = paths.bios_problem;
 	acfg.bios_dir = paths.bios_dir;

@@ -68,6 +68,9 @@ struct OrbisFrontendPaths
 	bool open_bios_bundled = false;
 	std::function<bool()> bios_open_in_use;
 	std::string bios_pending_launch;
+	// SMB shares' passwords (OrbisSmb): set one (empty removes it), and whether one is set. Unset: no password entry.
+	std::function<bool(const std::string& url, const std::string& password, std::string& error)> smb_set_password;
+	std::function<bool(const std::string& url)> smb_has_password;
 };
 
 // bioscheck (2026-10-29, AI-assisted): OpenPS2BIOS 0.5 (Tamariba Devs, MIT), embedded from frontend/assets/openps2bios with its licence.
