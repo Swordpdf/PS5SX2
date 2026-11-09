@@ -14,6 +14,7 @@
 #include "common/Path.h"
 #include "common/StringUtil.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 
@@ -499,6 +500,8 @@ void FileMemoryCard::FlushCache(uint slot, const char* why)
 	u32 blocks = 0, runs = 0;
 	size_t bytes = 0;
 	bool ok = true;
+	// A failed write remains pending: clear the stream's error before retrying it. (AI-assisted)
+	std::clearerr(f);
 	for (size_t b = 0; b < dirty.size();)
 	{
 		if (!dirty[b])
@@ -508,7 +511,7 @@ void FileMemoryCard::FlushCache(uint slot, const char* why)
 		}
 		size_t e = b;
 		while (e < dirty.size() && dirty[e])
-			dirty[e++] = 0;
+			e++;
 		const size_t off = b * MC2_ERASE_SIZE;
 		const size_t len = std::min(e * MC2_ERASE_SIZE, image.size()) - off;
 		ok = ok && FileSystem::FSeek64(f, static_cast<s64>(off), SEEK_SET) == 0 && std::fwrite(&image[off], len, 1, f) == 1;
@@ -518,7 +521,12 @@ void FileMemoryCard::FlushCache(uint slot, const char* why)
 		b = e;
 	}
 	ok = ok && std::fflush(f) == 0;
-	m_dirty_any[slot] = false;
+	// Keep every range pending until the whole flush succeeds, including buffered writes.
+	if (ok)
+	{
+		std::fill(dirty.begin(), dirty.end(), 0);
+		m_dirty_any[slot] = false;
+	}
 	g_orbis_mcd_flush_kib.fetch_add(static_cast<u32>(bytes >> 10), std::memory_order_relaxed);
 	std::printf("[mcd] slot %u: wrote back %u block(s) (%zu KiB) in %u write(s), %.1f ms (%s)%s\n", slot, blocks,
 		bytes >> 10, runs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count(), why,
