@@ -363,12 +363,16 @@ const std::vector<OptionGroup>& OptionGroups()
 			{
 				Toggle("PS5SX2/HideGame", "Hide from the shelf", "false", "Hidden %",
 					"Takes this game off the shelf when the sheet closes. Show hidden games, on the sheet for all games (R1), puts hidden games back on the shelf, dimmed, to turn this off again."),
+				Toggle("PS5SX2/Favorite", "Favorite", "false", "Favorite %",
+					"Marks this game as a favorite. Shelf view, on the sheet for all games (R1), can show just favorites. Saved with this game's settings; applies when the sheet closes."),
 			},
 			kTabSettings, true},
 		{"Shelf",
 			{
 				Toggle("PS5SX2/ShowHiddenGames", "Show hidden games", "false", "Hidden games %",
 					"Puts the games hidden from the shelf back on it, dimmed, so you can open one's sheet and turn Hide from the shelf off."),
+				Seg("PS5SX2/ShelfView", "Shelf view", "all", "Shelf %", {{"all", "All games"}, {"favorites", "Favorites"}},
+					"Shows all games or just favorites when the sheet closes. Search and hidden-game choices still apply. With an empty shelf, Square opens this sheet so you can choose All games again."),
 			},
 			kTabSettings, false, true},
 		// vk-285-139 (AI-assisted; swordpdf: a GameShark disc for all games, "it would have to be disc 1 at all times"): games
@@ -720,7 +724,7 @@ OptionsSheet::Effective OptionsSheet::Get(const std::string& key, const std::str
 {
 	if (const std::string* v = Find(m_own, key))
 		return {*v, From::Own};
-	if (!m_global)
+	if (!m_global && key != "PS5SX2/Favorite")
 		if (const std::string* v = Find(m_globals, key))
 			return {*v, From::Global};
 	return {def, From::Default};

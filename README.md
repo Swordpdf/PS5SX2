@@ -156,6 +156,11 @@ Most changes show up in the running game straight away. The page marks the few t
 
 The same settings are on the shelf: press Square on a game.
 
+**Favorites:** press Square on a game and turn on *Shelf > Favorite*. Switch to *All games* with R1 and set *Shelf view* to
+*Favorites* to show only favorites. Search and hidden-game choices still apply. If the shelf is empty, Square opens the
+global settings so you can choose *All games* again. Favorites are saved with each image's settings and survive restarts;
+changes made from the phone apply the next time the shelf opens. (AI-assisted)
+
 In a game, the in-game menu's *Settings on your phone* row shows the page's address and QR code.
 
 ## The in-game menu

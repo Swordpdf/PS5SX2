@@ -428,6 +428,7 @@ private:
 	std::vector<Shelved> m_shelved;
 	std::vector<int> m_index;
 	bool m_show_hidden = false;
+	bool m_favorites_only = false;
 	// vk-285-137: a line above the title for a few seconds (a game hidden, hidden games shown or not).
 	std::string m_note_text;
 	double m_note_time = -10;

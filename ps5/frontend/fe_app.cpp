@@ -217,6 +217,7 @@ bool App::Init(Renderer* renderer, const Fonts* fonts, std::vector<GameInfo> gam
 		m_index[i] = static_cast<int>(i);
 	m_shelved.clear();
 	m_show_hidden = !cfg.options.gs_ini.empty() && ShowHiddenGames(cfg.options.gs_ini);
+	m_favorites_only = !cfg.options.gs_ini.empty() && ShowFavoritesOnly(cfg.options.gs_ini);
 	if (!m_games.empty())
 	{
 		const size_t all = m_games.size();
@@ -600,7 +601,9 @@ bool App::ApplyHidden(int keep)
 	int at = -1, after = -1, before = -1;
 	for (Entry& e : all)
 	{
-		if ((e.game.hidden && !m_show_hidden) || (!m_search.applied.empty() && e.index >= 0 && !SearchMatches(e.game))) // 2.11: and the search's
+		// Keep original indices and cover slots together; drive/copy entries remain available in either view. (AI-assisted)
+		if ((e.game.hidden && !m_show_hidden) || (e.index >= 0 &&
+			((m_favorites_only && !e.game.favorite) || (!m_search.applied.empty() && !SearchMatches(e.game)))))
 		{
 			m_shelved.push_back({std::move(e.game), e.slot, e.index});
 			continue;
@@ -1717,6 +1720,8 @@ void App::Build(FrameDesc& f, const std::string& clock)
 	}
 	if (!clock.empty())
 		m_fonts->AddText(ui, clock.c_str(), W - margin, 150.0f * k, 58.0f * k, white, 0.2f, Fonts::Right);
+	m_fonts->AddText(ui, m_favorites_only ? "Favorites" : "All games", W * 0.5f, 150.0f * k, 40.0f * k,
+		m_favorites_only ? accent : dim, 0.3f, Fonts::Center);
 	if (m_cfg.achievements.state)
 	{
 		std::string label = "RetroAchievements - ";
@@ -1828,6 +1833,8 @@ void App::Build(FrameDesc& f, const std::string& clock)
 			add("can't be read"); // vk-285-134
 		if (g.hidden)
 			add("hidden"); // vk-285-137
+		if (g.favorite)
+			add("favorite");
 		const float info_px = 44.0f * k, badge_px = 36.0f * k;
 		const float pad = 20.0f * k, gap = 16.0f * k;
 		float row_w = m_fonts->Measure(info.c_str(), info_px);
@@ -1854,6 +1861,11 @@ void App::Build(FrameDesc& f, const std::string& clock)
 				char line[160];
 				std::snprintf(line, sizeof(line), Tr(Str::ShelfScanning), scan_done, scan_total);
 				m_fonts->AddText(ui, line, W * 0.5f, H * 0.5f, 64.0f * k, white, 0.4f, Fonts::Center);
+			}
+			else if (m_search.applied.empty() && m_favorites_only)
+			{
+				m_fonts->AddText(ui, "No favorites to show", W * 0.5f, H * 0.47f, 64.0f * k, white, 0.4f, Fonts::Center);
+				m_fonts->AddText(ui, "Press Square, then set Shelf view to All games.", W * 0.5f, H * 0.53f, 40.0f * k, dim, 0.2f, Fonts::Center);
 			}
 			else if (m_search.applied.empty())
 			{
@@ -2285,27 +2297,36 @@ void App::SheetTab(int tab)
 
 void App::RefreshBadges()
 {
-	if (m_cfg.refresh_game && !m_games.empty())
+	if (m_cfg.refresh_game)
 	{
-		if (m_sheet_global)
-			for (GameInfo& g : m_games)
+		const std::string stem = m_games.empty() ? std::string() : m_games[static_cast<size_t>(m_selected)].stem;
+		for (GameInfo& g : m_games)
+			if (m_sheet_global || g.stem == stem)
 				m_cfg.refresh_game(g);
-		else
-			m_cfg.refresh_game(m_games[static_cast<size_t>(m_selected)]);
+		// Filtered-out images may use the same settings file; refresh them before they rejoin the shelf.
+		for (Shelved& h : m_shelved)
+			if (m_sheet_global || h.game.stem == stem)
+				m_cfg.refresh_game(h.game);
 	}
 	// vk-285-137: a game hidden on its sheet leaves the shelf now; Show hidden games (the sheet for all games) brings the hidden
 	// ones back, dimmed, or takes them off again.
 	const bool show = !m_cfg.options.gs_ini.empty() && ShowHiddenGames(m_cfg.options.gs_ini);
 	const bool show_changed = show != m_show_hidden;
 	m_show_hidden = show;
+	const bool favorites = !m_cfg.options.gs_ini.empty() && ShowFavoritesOnly(m_cfg.options.gs_ini);
+	const bool view_changed = favorites != m_favorites_only;
+	m_favorites_only = favorites;
 	const bool hid = !m_sheet_global && !m_games.empty() && m_games[static_cast<size_t>(m_selected)].hidden && !show;
+	const bool unfavorited = !m_sheet_global && !m_games.empty() && favorites &&
+		m_index[static_cast<size_t>(m_selected)] >= 0 && !m_games[static_cast<size_t>(m_selected)].favorite;
 	const std::string title = m_games.empty() ? std::string() : m_games[static_cast<size_t>(m_selected)].title;
 	const std::string file = m_games.empty() ? std::string() : m_games[static_cast<size_t>(m_selected)].file;
 	const int keep = !m_games.empty() ? m_index[static_cast<size_t>(m_selected)] : m_shelved.empty() ? 0 : m_shelved.front().index;
 	const size_t shown_before = m_games.size();
-	if (!ApplyHidden(keep) && !show_changed)
+	if (!ApplyHidden(keep) && !show_changed && !view_changed)
 		return;
-	const size_t hidden_count = m_shelved.size() + static_cast<size_t>(std::count_if(m_games.begin(), m_games.end(),
+	const size_t hidden_count = static_cast<size_t>(std::count_if(m_shelved.begin(), m_shelved.end(),
+		[](const Shelved& h) { return h.game.hidden; }) + std::count_if(m_games.begin(), m_games.end(),
 		[](const GameInfo& g) { return g.hidden; }));
 	if (hid)
 	{
@@ -2320,6 +2341,14 @@ void App::RefreshBadges()
 		std::printf("[frontend] hidden games %s (%zu; the shelf had %zu, now %zu)\n", show ? "shown, dimmed" : "off the shelf", hidden_count,
 			shown_before, m_games.size());
 	}
+	else if (view_changed)
+	{
+		m_note_text = favorites ? "Showing favorites. To see every game, set Shelf view to All games."
+		                        : "Showing all games. Search and hidden-game choices still apply.";
+		std::printf("[frontend] shelf view: %s (%zu entries)\n", favorites ? "favorites" : "all", m_games.size());
+	}
+	else if (unfavorited)
+		m_note_text = title + " is no longer a favorite. It is still in All games.";
 	else
 		return;
 	m_note_time = m_time;

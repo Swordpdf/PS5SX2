@@ -32,6 +32,8 @@ struct GameInfo
 	// vk-285-137 (AI-assisted; swordpdf: "add an option to hide games from the shelf"): PS5SX2/HideGame=true in its own settings
 	// file (ReadBadges). The shelf leaves it out unless gs.ini's PS5SX2/ShowHiddenGames is on, and then shows it dimmed.
 	bool hidden = false;
+	// A shelf preference in settings/<stem>.ini, independent of the disc serial. (AI-assisted)
+	bool favorite = false;
 };
 
 // A disc image's file name: .iso, (vk-285-108) .chd, (vk-285-113) .cso or .zso, (2026-10-08) .bin or .img, in any case,
@@ -106,6 +108,7 @@ void ReadBadges(GameInfo& g, const std::string& settings_dir, const std::string&
 
 // vk-285-137: gs.ini's PS5SX2/ShowHiddenGames (the sheet for all games): hidden games stay on the shelf, dimmed.
 bool ShowHiddenGames(const std::string& gs_ini);
+bool ShowFavoritesOnly(const std::string& gs_ini);
 
 // vk-285-139 (AI-assisted): a game's discs, for changing discs in the game. The images an .m3u in the image's folder lists
 // (in its order, relative to it or full paths) when one lists this image; else the disc images beside it whose names

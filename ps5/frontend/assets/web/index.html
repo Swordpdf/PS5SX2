@@ -355,10 +355,15 @@ const GROUPS = [
   { title: "Shelf", game: true, items: [
     { key: "PS5SX2/HideGame", label: "Hide from the shelf", type: "toggle", def: "false", short: "Hidden %",
       hint: "Takes this game off the shelf. Show hidden games (All games) puts hidden games back on the shelf, dimmed, to turn this off again. Set here, it applies the next time the shelf opens; on the shelf's own sheet, when the sheet closes." },
+    { key: "PS5SX2/Favorite", label: "Favorite", type: "toggle", def: "false", short: "Favorite %",
+      hint: "Marks this game as a favorite. Shelf view (All games) can show just favorites. Saved with this game's settings. Set here, it applies the next time the shelf opens." },
   ]},
   { title: "Shelf", global: true, items: [
     { key: "PS5SX2/ShowHiddenGames", label: "Show hidden games", type: "toggle", def: "false", short: "Hidden games %",
       hint: "Puts the games hidden from the shelf back on it, dimmed, so you can open one and turn Hide from the shelf off. Set here, it applies the next time the shelf opens." },
+    { key: "PS5SX2/ShelfView", label: "Shelf view", type: "seg", def: "all", short: "Shelf %",
+      options: [["all", "All games"], ["favorites", "Favorites"]],
+      hint: "Shows all games or just favorites. Search and hidden-game choices still apply. Set here, it applies the next time the shelf opens. With an empty shelf, Square opens settings so you can choose All games again." },
   ]},
   // vk-285-139: games start from the cheat disc (a GameShark: picked under it, all games), the game's own discs after it.
   { title: "Discs", items: [
@@ -710,7 +715,7 @@ function effective(item) {
   // 2026-10-08: a hardware fix while manual fixes are off: PCSX2 uses the game's own (its database's), so that shows.
   if (item.fix && data.gamefixes && data.gamefixes[item.key] !== undefined && !manualFixesOn())
     return { v: data.gamefixes[item.key], from: "game" };
-  if (data.id !== "@global" && data.global[item.key] !== undefined) return { v: data.global[item.key], from: "global" };
+  if (data.id !== "@global" && item.key !== "PS5SX2/Favorite" && data.global[item.key] !== undefined) return { v: data.global[item.key], from: "global" };
   return { v: item.def, from: "default" };
 }
 // 2026-10-08: PCSX2's manual hardware fixes (EmuCore/GS/UserHacks), on for this file or for all games.
