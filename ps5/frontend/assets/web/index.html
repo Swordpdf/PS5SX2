@@ -392,6 +392,10 @@ const GROUPS = [
     { key: "accurate_blending_unit", label: "Blending accuracy", type: "seg", def: "1", short: "Blending %",
       options: [["0","Min"],["1","Basic"],["2","Med"],["3","High"]],
       hint: "Higher fixes more effects and costs speed. Full and Max are left out for now: Max hung the GPU in Ratchet & Clank." },
+    // The existing core modes, with the same default as the native sheet. (AI-assisted)
+    { key: "dithering_ps2", label: "Dithering", type: "seg", def: "2", short: "Dithering %",
+      options: [["0","Off"],["1","Scaled"],["2","Unscaled"],["3","Force 32bit"]],
+      hint: "Unscaled is the default. Force 32bit can reduce color banding in some games; try it per game because effects may change." },
     { key: "hw_mipmap", label: "Mipmapping", type: "toggle", def: "true", short: "Mipmaps %" },
     { key: "LoadTextureReplacements", label: "Texture replacements", type: "toggle", def: "false", short: "Replacements %",
       hint: "Loads a texture pack's PNG and DDS files from <game serial>/replacements/ in a USB drive's PS5SX2/textures (or textures) folder, else in /data/PCSX2/textures. The Textures folder (Folders, all games) names the one folder to read from instead. DDS (DXT1 to DXT5, BC7 or uncompressed) is unpacked by the CPU as a game asks for it." },

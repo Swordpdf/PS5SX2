@@ -409,6 +409,9 @@ const std::vector<OptionGroup>& OptionGroups()
 				Seg("MaxAnisotropy", "Anisotropic filtering", "0", "AF %", {{"0", "Off"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}),
 				Seg("accurate_blending_unit", "Blending accuracy", "1", "Blending %", {{"0", "Min"}, {"1", "Basic"}, {"2", "Med"}, {"3", "High"}},
 					"Higher fixes more effects and costs speed. Full and Max are left out for now: Max hung the GPU in Ratchet & Clank."),
+				// Expose the core's existing dithering modes without changing its default. (AI-assisted)
+				Seg("dithering_ps2", "Dithering", "2", "Dithering %", {{"0", "Off"}, {"1", "Scaled"}, {"2", "Unscaled"}, {"3", "Force 32bit"}},
+					"Unscaled is the default. Force 32bit can reduce color banding in some games; try it per game because effects may change."),
 				Toggle("hw_mipmap", "Mipmapping", "true", "Mipmaps %"),
 				Toggle("LoadTextureReplacements", "Texture replacements", "false", "Replacements %",
 					"Loads a texture pack's PNG and DDS files from <game serial>/replacements/ in a USB drive's PS5SX2/textures (or textures) "
