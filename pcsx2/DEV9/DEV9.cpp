@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "common/Assertions.h"
+#include "common/FileSystem.h"
 #include "common/Path.h"
 #include "common/StringUtil.h"
 
@@ -25,6 +26,7 @@
 #include "DEV9.h"
 #include "Config.h"
 #include "smap.h"
+#include "ATA/HddCreate.h"
 
 #ifdef _WIN32
 #pragma warning(disable : 4244)
@@ -187,7 +189,26 @@ s32 DEV9open()
 
 	if (EmuConfig.DEV9.HddEnable)
 	{
-		if (dev9.ata->Open(hddPath) != 0)
+		// PS5SX2: PCSX2's Qt UI creates a missing image through a dialog; this frontend has none, so a missing
+		// file is created here (sparse where the filesystem allows it, 40 GiB = the smallest size PCSX2 offers).
+		// An existing file, e.g. a pre-formatted .raw image, is opened untouched.
+		if (!FileSystem::FileExists(hddPath.c_str()))
+		{
+			constexpr u64 kDefaultHddBytes = 40ULL * 1024 * 1024 * 1024;
+			FileSystem::CreateDirectoryPath(std::string(Path::GetDirectory(hddPath)).c_str(), true);
+
+			HddCreate create;
+			create.filePath = hddPath;
+			create.neededSize = kDefaultHddBytes;
+			create.Start();
+			if (create.errored.load())
+			{
+				Console.Error("DEV9: could not create HDD image '%s'", hddPath.c_str());
+				EmuConfig.DEV9.HddEnable = false;
+			}
+		}
+
+		if (EmuConfig.DEV9.HddEnable && dev9.ata->Open(hddPath) != 0)
 			EmuConfig.DEV9.HddEnable = false;
 	}
 
