@@ -31,6 +31,7 @@ PS5SX2 runs PCSX2 on a jailbroken PS5. Its renderer is PCSX2's Vulkan backend on
 Each path can also be set on its own: `RYML`, `PS5_PAYLOAD_SDK`, `GLSLANG`, `GLSLANG_BUILD` and `SHADERC_INCLUDE`.
 
 **Not written down yet:** the SDK's `target/lib` differs from the stock v0.42 release.
+
 - `crt1.o`, `libc++abi.a` and `libunwind.a` are the port's rebuilt copies.
 - It adds the AGC import stubs `libSceAgc` and `libSceAgcDriver`, as `.so` and `.prx`.
 
@@ -67,6 +68,7 @@ ORBIS_BUILD_TAG=my-build bash link-vk.sh
 PS5SX2 is GPL-3.0-or-later, like PCSX2; the licence text is `COPYING.GPLv3` at the root.
 
 Third-party parts keep their licences:
+
 - the stb headers: public domain or MIT;
 - Project Nayuki's QR Code generator: MIT;
 - the Font Awesome Free brands font and icons: SIL OFL 1.1 for the font, CC BY 4.0 for the icons (`frontend/assets/SOURCES.txt`, `frontend/assets/fonts/FontAwesome-LICENSE.txt`);
@@ -75,6 +77,7 @@ Third-party parts keep their licences:
 The Discord and X logos are their owners' trademarks, used only to link to the author's accounts.
 
 Thanks to:
+
 - the PCSX2 Dev Team;
 - [Mihawk-99](https://github.com/mihawk-99), for the Vulkan driver PS5SX2 runs on, in a version tweaked for it ([PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan)), and the RADV port ([PS5_Mesa](https://github.com/mihawk-99/PS5_Mesa));
 - BlackBearReloaded (ps5-native-app-boilerplate);
