@@ -80,6 +80,30 @@ bool Backend::Create(VkPhysicalDevice physical, VkDevice device, VmaAllocator al
 		m_notes = "the flow images in R8_UNORM";
 	SetLsfgFlowFormat(wide ? VK_FORMAT_R32_SFLOAT : LSFG_FLOW_FORMAT);
 
+	// The border samplers (2026-11-14: ps5vk refuses CLAMP_TO_BORDER and any border colour but transparent black; ps5vk_image.c):
+	// tried once here, so that the error says what the driver lacks rather than "vkCreateSampler failed".
+	for (const bool white : {false, true})
+	{
+		VkSamplerCreateInfo ci = {};
+		ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		ci.magFilter = ci.minFilter = VK_FILTER_LINEAR;
+		ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		ci.addressModeU = ci.addressModeV = ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+		ci.compareOp = VK_COMPARE_OP_NEVER;
+		ci.maxLod = VK_LOD_CLAMP_NONE;
+		ci.borderColor = white ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+		VkSampler probe = VK_NULL_HANDLE;
+		const VkResult res = vkCreateSampler(device, &ci, nullptr, &probe);
+		if (res != VK_SUCCESS)
+		{
+			error = std::string("the driver takes no sampler that clamps to a ") + (white ? "white" : "transparent black") +
+			        " border (" + VkResultName(res) + "), which Lossless Scaling's shaders read past the picture's edge; clamping to " +
+			        "the edge instead gives wrong frames, so a driver with border samplers is needed";
+			return false;
+		}
+		vkDestroySampler(device, probe, nullptr);
+	}
+
 	m_shaders = std::make_unique<LsfgShaders>(m_device, wide ? retyped : modules);
 	if (!m_shaders->IsValid())
 	{

@@ -40,6 +40,9 @@ public:
 	// `flow_scale` (1 = full size, 0.5 = half). false, with `error`, when something could not be made (all of it freed).
 	// `wide_flow`: the flow images in R32_SFLOAT with the shaders' r8 storage declarations retyped to r32f: -1 when the driver takes
 	// no R8_UNORM storage image (ps5vk), 0 never, 1 always (the host test compares the two). Notes() says what was chosen.
+	// The passes also need samplers that clamp to a border colour (transparent black and opaque white): a driver that refuses them
+	// (ps5vk) gets an error naming that. Clamping to the edge instead was tried and gives wrong frames (tests/lsfg, 2026-11-14:
+	// a mean error of 72 of 255 against the true halfway picture, 2.7 with the border samplers, 17 for a repeated frame).
 	bool Create(VkPhysicalDevice physical, VkDevice device, VmaAllocator allocator, const ShaderModules& modules, u32 width,
 		u32 height, VkFormat frame_format, f32 flow_scale, std::string& error, int wide_flow = -1);
 	const std::string& Notes() const { return m_notes; }

@@ -583,10 +583,15 @@ static void TestRealDll(const std::string& path, const std::string& dir)
 		return;
 	}
 	constexpr u32 W = 640, H = 360, SIDE = 48, Y = 156, STEP = 24, X0 = 160;
+	// R8_UNORM flow images as Lossless Scaling makes them, and R32_SFLOAT ones (ps5vk takes no R8_UNORM storage image). Clamping the
+	// border samplers to the edge (ps5vk takes no border sampler) was measured here too on 2026-11-14 and dropped: a mean error of
+	// 72 of 255 against the true halfway picture, against 2.7 with border samplers and 17 for a repeated frame.
+	constexpr int kSetups[] = {0, 1};
+	const char* const kSetupNames[] = {"R8_UNORM flow images", "R32_SFLOAT flow images"};
 	for (const VkFormat format : {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM})
 	{
 		for (const f32 flow : {1.0f, 0.5f})
-		for (const int wide : {0, 1}) // R8_UNORM flow images as Lossless Scaling makes them, and the R32_SFLOAT ones for ps5vk
+		for (const int wide : kSetups)
 		{
 			Backend fg;
 			std::string error;
@@ -644,69 +649,59 @@ static void TestRealDll(const std::string& path, const std::string& dir)
 		return p;
 	};
 	const std::vector<u8> truth = pattern(22.5); // halfway between frame 4 (20 px) and frame 5 (25 px)
-	const auto error_to_truth = [&](const std::vector<u8>& out) {
+	// The mean error against the truth inside (8 px in, 40 px from the left where the picture comes in from outside) or in the
+	// 32 px band along the edges (where the border samplers read past the picture).
+	const auto error_to_truth = [&](const std::vector<u8>& out, bool band) {
 		double sum = 0;
 		size_t n = 0;
-		for (u32 j = 8; j < H - 8; j++)
-			for (u32 i = 40; i < W - 8; i++) // left of 40 px the picture comes in from outside
+		for (u32 j = 0; j < H; j++)
+			for (u32 i = 0; i < W; i++)
+			{
+				const bool in_band = i < 32 || j < 32 || i >= W - 32 || j >= H - 32;
+				const bool inside = i >= 40 && j >= 8 && i < W - 8 && j < H - 8;
+				if (band ? !in_band : !inside)
+					continue;
 				for (int c = 0; c < 3; c++)
 				{
 					const size_t k = (static_cast<size_t>(j) * W + i) * 4 + c;
 					sum += std::abs(static_cast<int>(out[k]) - static_cast<int>(truth[k]));
 					n++;
 				}
+			}
 		return sum / n;
 	};
 	for (const f32 flow : {1.0f, 0.5f})
 	{
 		std::vector<u8> outs[2];
-		for (const int wide : {0, 1})
+		for (int s = 0; s < 2; s++)
 		{
 			Backend fg;
 			std::string error;
-			if (!fg.Create(g.physical, g.device, g.allocator, modules, W, H, VK_FORMAT_R8G8B8A8_UNORM, flow, error, wide))
+			if (!fg.Create(g.physical, g.device, g.allocator, modules, W, H, VK_FORMAT_R8G8B8A8_UNORM, flow, error, kSetups[s]))
 			{
-				CHECK(false, "the pattern chain, wide %d: %s", wide, error.c_str());
+				CHECK(false, "the pattern chain, %s: %s", kSetupNames[s], error.c_str());
 				continue;
 			}
 			bool gen = false;
 			for (int n = 0; n < 6; n++)
-				RunPictureFrame(g, fg, pattern(5.0 * n), outs[wide], gen);
-			CHECK(gen, "the pattern: generated (wide %d)", wide);
+				RunPictureFrame(g, fg, pattern(5.0 * n), outs[s], gen);
+			CHECK(gen, "the pattern: generated (%s)", kSetupNames[s]);
 		}
 		if (outs[0].size() != outs[1].size() || outs[0].empty())
 			continue;
-		std::vector<int> diffs;
-		double sum = 0;
-		for (size_t i = 0; i < outs[0].size(); i++)
-		{
-			if (i % 4 == 3)
-				continue;
-			const int d = std::abs(static_cast<int>(outs[0][i]) - static_cast<int>(outs[1][i]));
-			diffs.push_back(d);
-			sum += d;
-		}
-		std::sort(diffs.begin(), diffs.end());
-		const double mean = sum / diffs.size();
-		const int p99 = diffs[diffs.size() * 99 / 100], worst = diffs.back();
-		const size_t same = static_cast<size_t>(std::lower_bound(diffs.begin(), diffs.end(), 1) - diffs.begin());
-		std::printf("  pattern, flow %.1f: R32_SFLOAT against R8_UNORM flow images: mean difference %.3f, 99%% within %d, worst %d of 255; "
-					"%.1f%% of the values the same\n",
-			flow, mean, p99, worst, 100.0 * same / diffs.size());
-		const double err8 = error_to_truth(outs[0]), err32 = error_to_truth(outs[1]);
-		// What a frame without generation would show (the last game frame, 2.5 px off): the scale the two errors are read on.
-		const double err_repeat = error_to_truth(pattern(25.0));
-		std::printf("  pattern, flow %.1f: mean error against the true halfway picture: R8_UNORM flow %.2f, R32_SFLOAT flow %.2f "
-					"(showing the last game frame instead: %.2f)\n",
-			flow, err8, err32, err_repeat);
-		CHECK(err32 <= err8 * 1.10 + 0.25 && err32 < err_repeat * 0.75,
-			"R32_SFLOAT flow images are as good as R8_UNORM ones (flow %.1f: error %.2f against %.2f; a repeated frame %.2f)", flow, err32,
-			err8, err_repeat);
+		const std::vector<u8> repeat = pattern(25.0); // what a frame without generation would show: the last game frame, 2.5 px off
+		std::printf("  pattern, flow %.1f: mean error against the true halfway picture, inside / along the edges:\n", flow);
+		for (int s = 0; s < 2; s++)
+			std::printf("    %-34s %.2f / %.2f\n", kSetupNames[s], error_to_truth(outs[s], false), error_to_truth(outs[s], true));
+		std::printf("    %-34s %.2f / %.2f\n", "the last game frame repeated", error_to_truth(repeat, false), error_to_truth(repeat, true));
+		const double in8 = error_to_truth(outs[0], false), in_ps5 = error_to_truth(outs[1], false);
+		const double band8 = error_to_truth(outs[0], true), band_ps5 = error_to_truth(outs[1], true);
+		CHECK(in_ps5 <= in8 * 1.10 + 0.25, "R32_SFLOAT flow images are as good inside (flow %.1f: %.2f against %.2f)", flow, in_ps5, in8);
+		CHECK(band_ps5 < error_to_truth(repeat, true) * 0.75,
+			"R32_SFLOAT flow images beat a repeated frame along the edges (flow %.1f: %.2f; R8_UNORM %.2f; repeated %.2f)", flow, band_ps5,
+			band8, error_to_truth(repeat, true));
 		if (flow == 1.0f)
-		{
-			WritePpm(dir + "/pattern_r8.ppm", outs[0], W, H);
 			WritePpm(dir + "/pattern_r32f.ppm", outs[1], W, H);
-		}
 	}
 	FreeGpu(g);
 }

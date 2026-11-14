@@ -32,7 +32,6 @@ constexpr VkFormat LSFG_MOTION_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 // (ps5vk; the shaders' r8 declarations are retyped to match, lsfg_backend.cpp). Set by the chain's owner before it is built.
 VkFormat LsfgFlowFormat();
 void SetLsfgFlowFormat(VkFormat format);
-
 constexpr VkImageUsageFlags LSFG_DEFAULT_USAGE =
 	VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
