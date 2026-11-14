@@ -379,6 +379,10 @@ const GROUPS = [
     // 2026-10-08 (AI-assisted): frame generation (GSDeviceVK.cpp), read when the game starts.
     { key: "PS5SX2/FrameGeneration", label: "Frame generation", type: "toggle", def: "false", short: "Frame gen %", restart: true,
       hint: "Shows a frame made between two of the game's: a 60 fps game at 120, a PAL game at 50 fps at 100 (the TV switches to 120 Hz for the game), a 30 fps game at 60. The 120 Hz output needs a TV that takes it and the PS5's Settings > Screen and Video > Video Output with 120 Hz Output on and a resolution of Automatic or 4K (at 1080p the console refuses it). On a 60 Hz output, or where this build cannot switch to 120 Hz, only games at 30 fps or less (25 for PAL) get frames. Only while the game holds its frame rate (an uneven one shows the game's own frames); the FPS box then counts what the TV gets. A little more input lag, and small smears at the edges of fast movement. Experimental. Takes effect when the game starts." },
+    // 2026-11-14 (AI-assisted): the frame generation method (GSDeviceVK.cpp, orbis-shims/lsfg).
+    { key: "PS5SX2/FrameGenMethod", label: "Frame gen method", type: "seg", def: "PS5SX2", short: "FG %", restart: true,
+      options: [["PS5SX2","PS5SX2"],["Lossless","Lossless Scaling"]],
+      hint: "How Frame generation makes its frames: PS5SX2's own, or Lossless Scaling's. Lossless Scaling cannot come with PS5SX2: it needs your own copy of the program. On the PC where Lossless Scaling is installed, find Lossless.dll in its folder (with Steam: steamapps/common/Lossless Scaling) and copy it to the console as /data/PCSX2/lossless/Lossless.dll. Without that file Lossless Scaling is unavailable and PS5SX2's own frame generation is used (boot.log says why in its [fg] lsfg: lines). Experimental, not yet tried on a console. Takes effect when the game starts." },
   ]},
   { title: "Graphics", items: [
     { key: "PS5SX2/Renderer", label: "Renderer", type: "seg", def: "Hardware", short: "%", restart: true,

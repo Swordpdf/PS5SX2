@@ -55,9 +55,95 @@ void OrbisLatCapBeforePresent(void* vk_device); // 186: the display-queue cap (t
 #include "ps5/coreorbis/orbis-shims/OrbisFrameGenGate.h" // 2.11: the "[fg] status" line, the gate that stops frame generation
 #include "ps5/coreorbis/orbis-shims/OrbisInGameUi.h" // 2.31: the in-game menu's vertices (OrbisDrawUi)
 #include "ps5/coreorbis/orbis-shims/OrbisVideoOutMode.h" // 2.11: the app's own 120 Hz switch (flag fg120)
+#include "ps5/coreorbis/orbis-shims/lsfg/lsfg_backend.h" // 2026-11-14: Lossless Scaling frame generation (PS5SX2/FrameGenMethod)
+#include "ps5/coreorbis/orbis-shims/lsfg/lsfg_translate.h"
 #endif
 #define printf OrbisDeferredPrintf
 #define fflush OrbisDeferredFlush
+#ifdef ORBIS_VULKAN
+// 2026-11-14 (AI-assisted): Lossless Scaling frame generation (LSFG), the second frame generation method (orbis-shims/lsfg, ported from
+// the Eden emulator): PS5SX2/FrameGenMethod = Lossless (main-boot.cpp sets g_orbis_fg_method before the GS opens). Nothing of Lossless
+// Scaling ships with PS5SX2: the shaders are read from the player's own Lossless.dll in /data/PCSX2/lossless. They need the Vulkan memory
+// model and 16-bit floats, which the device enables only for this method (CreateDevice). Without the file, or when the device or the
+// driver refuses something, PS5SX2's own frame generation is used and the "[fg] lsfg:" lines say why. Untested on a console.
+int g_orbis_fg_method = 0; // 0: PS5SX2's own (ps5_framegen), 1: Lossless Scaling
+extern bool g_orbis_fg_wanted; // defined with frame generation below
+static constexpr const char* ORBIS_LSFG_FOLDER = "/data/PCSX2/lossless";
+namespace
+{
+	struct OrbisLsfgProbeState
+	{
+		bool probed = false;
+		lsfg::LosslessStatus status = lsfg::LosslessStatus::NotInstalled;
+		std::string path;
+		lsfg::ShaderModules modules;
+		// 2026-11-14, a real Lossless.dll: SPIR-V 1.0; Float16 (all but 2), StorageImageExtendedFormats (255, 302),
+		// StorageImageWriteWithoutFormat (256), ImageQuery; no memory model. Read from the shaders, so another version is followed.
+		bool needs_float16 = false, needs_memory_model = false, needs_int16 = false, needs_int8 = false, needs_extended_formats = false;
+		bool needs_storage_read_without_format = false, needs_storage_write_without_format = false;
+		// What CreateDevice found and enabled.
+		bool ext_memory_model = false, ext_float16 = false;
+		bool memory_model = false, float16 = false;
+		std::string device_text;
+	};
+	OrbisLsfgProbeState s_orbis_lsfg;
+
+	// Reads the DLL once (the first device of the process) and logs what is in it.
+	OrbisLsfgProbeState& OrbisLsfgProbe()
+	{
+		OrbisLsfgProbeState& p = s_orbis_lsfg;
+		if (p.probed)
+			return p;
+		p.probed = true;
+		p.path = lsfg::FindLosslessDll(ORBIS_LSFG_FOLDER);
+		lsfg::u64 size = 0;
+		const auto t0 = std::chrono::steady_clock::now();
+		p.status = lsfg::LoadShaderModules(p.path, p.modules, &size);
+		if (p.status != lsfg::LosslessStatus::Ok)
+		{
+			p.modules.clear();
+			printf("[fg] lsfg: Lossless Scaling frame generation is unavailable: %s: %s%s; PS5SX2's own frame generation is used\n",
+				p.path.c_str(), lsfg::LosslessStatusText(p.status),
+				p.status == lsfg::LosslessStatus::NotInstalled ? " (copy your own Lossless.dll from Lossless Scaling's folder there)" : "");
+			fflush(stdout);
+			return p;
+		}
+		std::map<u32, int> caps;
+		u32 version = 0;
+		for (const auto& [id, words] : p.modules)
+		{
+			const lsfg::SpirvInfo info = lsfg::DescribeSpirv(words);
+			version = std::max(version, info.version);
+			for (const u32 c : info.capabilities)
+				caps[c]++;
+		}
+		std::string caps_text;
+		for (const auto& [c, n] : caps)
+		{
+			caps_text += (caps_text.empty() ? "" : ", ") + lsfg::SpirvCapabilityName(c);
+			p.needs_float16 |= c == 9;
+			p.needs_int16 |= c == 22;
+			p.needs_int8 |= c == 39;
+			p.needs_extended_formats |= c == 49;
+			p.needs_storage_read_without_format |= c == 55;
+			p.needs_storage_write_without_format |= c == 56;
+			p.needs_memory_model |= c == 5345;
+		}
+		printf("[fg] lsfg: %s: %llu bytes, %zu shaders read in %.0f ms (SPIR-V %u.%u; capabilities: %s)\n", p.path.c_str(),
+			static_cast<unsigned long long>(size), p.modules.size(),
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), (version >> 16) & 0xff,
+			(version >> 8) & 0xff, caps_text.c_str());
+		fflush(stdout);
+		return p;
+	}
+
+	// The device is made with LSFG's features only when the method is chosen and its shaders were found.
+	bool OrbisLsfgWantsDevice()
+	{
+		return g_orbis_fg_wanted && g_orbis_fg_method == 1 && OrbisLsfgProbe().status == lsfg::LosslessStatus::Ok;
+	}
+} // namespace
+#endif
 #ifdef ORBIS_VULKAN
 // vk-285-51: the port's settings log (frontend/fe_ps5.cpp), for the GPU-hang exit. Weak: tools have none.
 extern "C" void orbis_event_log(const char* line) __attribute__((weak));
@@ -735,6 +821,15 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 
 	m_optional_extensions.vk_ext_fragment_shader_interlock = SupportsExtension(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME, false);
 
+#ifdef ORBIS_VULKAN
+	// 2026-11-14: Lossless Scaling frame generation's shaders (the Vulkan memory model, 16-bit floats), only when it is the method.
+	if (OrbisLsfgWantsDevice())
+	{
+		s_orbis_lsfg.ext_memory_model = SupportsExtension(VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME, false);
+		s_orbis_lsfg.ext_float16 = SupportsExtension(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME, false);
+	}
+#endif
+
 	return true;
 }
 
@@ -752,6 +847,21 @@ bool GSDeviceVK::SelectDeviceFeatures()
 	m_device_features.geometryShader = available_features.geometryShader;
 	m_device_features.fragmentStoresAndAtomics = available_features.fragmentStoresAndAtomics;
 	m_device_features.pipelineStatisticsQuery = available_features.pipelineStatisticsQuery;
+#ifdef ORBIS_VULKAN
+	// 2026-11-14: what Lossless Scaling frame generation's shaders declare (OrbisLsfgProbe), when it is the method and the device has it.
+	if (OrbisLsfgWantsDevice())
+	{
+		const OrbisLsfgProbeState& p = s_orbis_lsfg;
+		if (p.needs_int16)
+			m_device_features.shaderInt16 = available_features.shaderInt16;
+		if (p.needs_storage_read_without_format)
+			m_device_features.shaderStorageImageReadWithoutFormat = available_features.shaderStorageImageReadWithoutFormat;
+		if (p.needs_storage_write_without_format)
+			m_device_features.shaderStorageImageWriteWithoutFormat = available_features.shaderStorageImageWriteWithoutFormat;
+		if (p.needs_extended_formats)
+			m_device_features.shaderStorageImageExtendedFormats = available_features.shaderStorageImageExtendedFormats;
+	}
+#endif
 
 	return true;
 }
@@ -954,6 +1064,47 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		fragment_shader_interlock_ext_feature.fragmentShaderPixelInterlock = VK_TRUE;
 		Vulkan::AddPointerToChain(&device_info, &fragment_shader_interlock_ext_feature);
 	}
+#ifdef ORBIS_VULKAN
+	// 2026-11-14: Lossless Scaling frame generation (OrbisLsfgProbe): the Vulkan memory model and 16-bit floats (8-bit ints when its
+	// shaders ask), asked of the driver (vkGetPhysicalDeviceFeatures2) and enabled where it has them; the "[fg] lsfg: device" line
+	// says which. Only when that is the method and Lossless.dll was read: the default device is the same as before.
+	VkPhysicalDeviceVulkanMemoryModelFeatures lsfg_memory_model = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES};
+	VkPhysicalDeviceShaderFloat16Int8Features lsfg_float16 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+	if (OrbisLsfgWantsDevice())
+	{
+		OrbisLsfgProbeState& p = s_orbis_lsfg;
+		VkPhysicalDeviceVulkanMemoryModelFeatures have_mm = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES};
+		VkPhysicalDeviceShaderFloat16Int8Features have_f16 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+		have_f16.pNext = p.ext_memory_model ? &have_mm : nullptr;
+		VkPhysicalDeviceFeatures2 have = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+		have.pNext = p.ext_float16 ? static_cast<void*>(&have_f16) : (p.ext_memory_model ? static_cast<void*>(&have_mm) : nullptr);
+		if (vkGetPhysicalDeviceFeatures2)
+			vkGetPhysicalDeviceFeatures2(m_physical_device, &have);
+		if (p.needs_memory_model && p.ext_memory_model && have_mm.vulkanMemoryModel)
+		{
+			lsfg_memory_model.vulkanMemoryModel = VK_TRUE;
+			lsfg_memory_model.vulkanMemoryModelDeviceScope = have_mm.vulkanMemoryModelDeviceScope;
+			Vulkan::AddPointerToChain(&device_info, &lsfg_memory_model);
+			p.memory_model = true;
+		}
+		if (p.needs_float16 && p.ext_float16 && have_f16.shaderFloat16)
+		{
+			lsfg_float16.shaderFloat16 = VK_TRUE;
+			lsfg_float16.shaderInt8 = p.needs_int8 ? have_f16.shaderInt8 : VK_FALSE;
+			Vulkan::AddPointerToChain(&device_info, &lsfg_float16);
+			p.float16 = true;
+		}
+		p.device_text = std::string("VK_KHR_vulkan_memory_model ") + (p.ext_memory_model ? "offered" : "NOT offered") +
+		                ", vulkanMemoryModel " + (p.memory_model ? "on" : "off") + (p.memory_model && !lsfg_memory_model.vulkanMemoryModelDeviceScope ? " (no device scope)" : "") +
+		                "; VK_KHR_shader_float16_int8 " + (p.ext_float16 ? "offered" : "NOT offered") + ", shaderFloat16 " +
+		                (p.float16 ? "on" : "off") + "; shaderInt16 " + (m_device_features.shaderInt16 ? "on" : "off") +
+		                "; storage images without format: read " + (m_device_features.shaderStorageImageReadWithoutFormat ? "on" : "off") +
+		                ", write " + (m_device_features.shaderStorageImageWriteWithoutFormat ? "on" : "off") + "; extended storage formats " +
+		                (m_device_features.shaderStorageImageExtendedFormats ? "on" : "off");
+		printf("[fg] lsfg: device: %s\n", p.device_text.c_str());
+		fflush(stdout);
+	}
+#endif
 
 	VkResult res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);
 	if (res != VK_SUCCESS)
@@ -4719,6 +4870,13 @@ namespace
 		int logged_state = -1;   // the pacing's state the log last described
 		orbis_fg::Window win;    // 2.11: the vsyncs since the last "[fg] status" line (OrbisFrameGenGate.h)
 		float upscale = 0.0f;    // 186: the upscale multiplier the pacing's pauses were earned at
+		// 2026-11-14: Lossless Scaling frame generation (PS5SX2/FrameGenMethod = Lossless): its chain and the textures wrapping its two
+		// frame images (the output is `output` above, as for PS5SX2's own). Decided on the first frame of the game (OrbisLsfgUsable).
+		std::unique_ptr<lsfg::Backend> lsfg;
+		std::unique_ptr<GSTextureVK> lsfg_frames[2];
+		VkImage lsfg_images[2] = {};
+		bool method_decided = false;
+		bool use_lsfg = false;
 	};
 
 	OrbisFrameGenState s_orbis_fg;
@@ -4744,7 +4902,7 @@ void GSDeviceVK::OrbisFrameGenRelease()
 {
 	OrbisFrameGenState& s = s_orbis_fg;
 
-	if (!s.fg)
+	if (!s.fg && !s.lsfg)
 		return;
 
 	EndRenderPass();
@@ -4759,6 +4917,34 @@ void GSDeviceVK::OrbisFrameGenRelease()
 		if (t)
 			t->Destroy(false);
 		t.reset();
+	}
+	// 2026-11-14: Lossless Scaling frame generation's textures and chain.
+	for (auto& t : s.lsfg_frames)
+	{
+		if (t)
+			t->Destroy(false);
+		t.reset();
+	}
+	if (s.lsfg)
+	{
+		if (s.output)
+			s.output->Destroy(false);
+		s.output.reset();
+		if (s.barrier_target)
+			Recycle(s.barrier_target);
+		s.barrier_target = nullptr;
+		printf("[fg] lsfg: released: %llu game frames, %llu generated\n", static_cast<unsigned long long>(s.lsfg->Frames()),
+			static_cast<unsigned long long>(s.lsfg->Generated()));
+		fflush(stdout);
+		s.lsfg->Destroy();
+		s.lsfg.reset();
+		s.lsfg_images[0] = s.lsfg_images[1] = VK_NULL_HANDLE;
+		s.prepared = false;
+		s.reset_next = true;
+		s.have_output = false;
+		g_orbis_fg_active.store(false, std::memory_order_relaxed);
+		if (!s.fg)
+			return;
 	}
 	if (s.output)
 		s.output->Destroy(false);
@@ -4991,6 +5177,188 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 	const u32 h = (win_h + fg_div - 1) / fg_div;
 	const VkFormat format = m_swap_chain->GetTextureFormat();
 
+	// This frame as the present draws it into the swapchain: a pass of the swapchain's format cleared to black, and the present
+	// pipeline over the same rectangle (PresentRect with no target draws into the pass that is open, as between BeginPresent and
+	// EndPresent). Left in GENERAL for the generator's compute passes. (2026-11-14: shared by both methods.)
+	const auto draw_frame = [&](VkCommandBuffer cmd, GSTextureVK* target) -> bool {
+		static_cast<GSTextureVK*>(current)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
+		target->TransitionToLayout(cmd, GSTextureVK::Layout::ColorAttachment);
+		const VkFramebuffer fb = target->GetFramebuffer(false);
+
+		if (fb == VK_NULL_HANDLE)
+		{
+			printf("[fg] no framebuffer for the frame image; frame generation stays off in this game\n");
+			fflush(stdout);
+			s.failed = true;
+			g_orbis_fg_engaged = false;
+			g_orbis_fg_active.store(false, std::memory_order_relaxed);
+			return false;
+		}
+
+		const VkRenderPassBeginInfo rp = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr,
+			GetRenderPass(format, VK_FORMAT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE), fb, {{0, 0}, {w, h}}, 1u,
+			&s_present_clear_color};
+		vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+		const VkViewport vp{0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h), 0.0f, 1.0f};
+		const VkRect2D scissor{{0, 0}, {w, h}};
+		vkCmdSetViewport(cmd, 0, 1, &vp);
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+		// 186: the display's rectangle as it is: with no target PresentRect divides it by the window's size (DrawStretchRect), and the
+		// viewport above maps that onto the generator's smaller image (scaling it as well drew the picture in a quarter of the frame)
+		PresentRect(current, src_uv, nullptr, draw_rect, shader, shader_time, filter);
+		vkCmdEndRenderPass(cmd);
+		InvalidateCachedState(); // the pass and the state were set by hand
+
+		// 186: a draw that samples the frame image just drawn, into a 1x1 target. ps5vk splits the submission at a compute dispatch that
+		// samples an image this command buffer rendered into (ps5vk_dispatch -> ps5vk_cmd_buffer_split), while a draw takes its in-stream
+		// colour barrier (a RELEASE_MEM and a wait, vk_gpuwait), which marks every colour target flushed (ps5vk_cmd_buffer_gpu_barrier):
+		// after this draw the generator's first pass finds its input flushed and does not split. On firmware 4.03 each step starts on an
+		// idle GPU only at the next vblank; the split made a generated pair three steps, so three vblanks (40 fps at 119.88 Hz,
+		// swordpdf's original PS5, 2026-11-03; the driver's own counter said splits/frame compute=0.18). The flag fgnobarrierdraw leaves it out.
+		static const bool s_no_barrier_draw = OrbisFlag("fgnobarrierdraw");
+		if (!s_no_barrier_draw)
+		{
+			if (!s.barrier_target)
+				s.barrier_target = CreateRenderTarget(1, 1, GSTexture::Format::Color, false, false);
+			if (s.barrier_target)
+			{
+				StretchRect(target, GSVector4(0.0f, 0.0f, 1.0f, 1.0f), s.barrier_target, GSVector4(0.0f, 0.0f, 1.0f, 1.0f), ShaderConvert::COPY,
+					Nearest);
+				EndRenderPass();
+			}
+		}
+		target->TransitionToLayout(cmd, GSTextureVK::Layout::ComputeReadWriteImage);
+		InvalidateCachedState();
+		return true;
+	};
+
+	// 2026-11-14 (AI-assisted): Lossless Scaling frame generation (PS5SX2/FrameGenMethod = Lossless; orbis-shims/lsfg/lsfg_backend.h). Chosen
+	// on the game's first frame here; the pacing, the 60/120 Hz output and the presents above and in OrbisFrameGenDraw are the same as for
+	// PS5SX2's own, which is used instead when the player's Lossless.dll or the device lacks something (the "[fg] lsfg:" lines say what).
+	if (!s.method_decided)
+	{
+		s.method_decided = true;
+		s.use_lsfg = false;
+		if (g_orbis_fg_method == 1)
+		{
+			const OrbisLsfgProbeState& p = OrbisLsfgProbe();
+			std::string why;
+			// The driver PS5SX2 links (ps5vk) claims no optional feature it has not proven by a probe (ps5vk_physical_device.c: only
+			// robustBufferAccess and dualSrcBlend), so float16 and the storage-image features read as off although its shader
+			// compiler may take the shaders. The flag lsfgforce tries them anyway; a pipeline the driver refuses still ends in the
+			// fallback below ("could not start").
+			static const bool s_force = OrbisFlag("lsfgforce");
+			if (p.status != lsfg::LosslessStatus::Ok)
+				why = p.path + ": " + lsfg::LosslessStatusText(p.status);
+			else if (s_force)
+				printf("[fg] lsfg: flag lsfgforce: trying the shaders although the device does not claim what they declare (%s)\n",
+					p.device_text.empty() ? "not asked" : p.device_text.c_str());
+			else if ((p.needs_memory_model && !p.memory_model) || (p.needs_float16 && !p.float16) ||
+					 (p.needs_storage_write_without_format && !m_device_features.shaderStorageImageWriteWithoutFormat) ||
+					 (p.needs_storage_read_without_format && !m_device_features.shaderStorageImageReadWithoutFormat) ||
+					 (p.needs_extended_formats && !m_device_features.shaderStorageImageExtendedFormats) ||
+					 (p.needs_int16 && !m_device_features.shaderInt16))
+				why = "the device lacks what its shaders need (" + (p.device_text.empty() ? std::string("not asked") : p.device_text) +
+				      "; flag lsfgforce tries them anyway)";
+			s.use_lsfg = why.empty();
+			if (s.use_lsfg)
+				printf("[fg] lsfg: frame generation method: Lossless Scaling (%s)\n", p.path.c_str());
+			else
+			{
+				printf("[fg] lsfg: frame generation method Lossless Scaling is unavailable: %s; PS5SX2's own frame generation is used\n",
+					why.c_str());
+				const bool label = !OrbisFlag("nofgnote");
+				if (label)
+					OrbisOSDLabel(p.status == lsfg::LosslessStatus::NotInstalled ? "FG: NO LOSSLESS.DLL" : "FG: LOSSLESS SCALING UNAVAILABLE");
+			}
+			fflush(stdout);
+		}
+	}
+
+	if (s.use_lsfg && (!s.lsfg || s.lsfg->Width() != w || s.lsfg->Height() != h))
+	{
+		OrbisFrameGenRelease();
+		const auto t0 = std::chrono::steady_clock::now();
+		// The optical flow at half size above 2560x1440, as Lossless Scaling's own advice for 4K (and 186's for PS5SX2's own); flags
+		// lsfgfullflow (full anywhere), lsfghalfflow (half anywhere).
+		const bool half_flow = OrbisFlag("lsfghalfflow") || (static_cast<u64>(w) * h > 2560u * 1440u && !OrbisFlag("lsfgfullflow"));
+		const float flow_scale = half_flow ? 0.5f : 1.0f;
+		std::string error;
+		s.lsfg = std::make_unique<lsfg::Backend>();
+		bool ok = s.lsfg->Create(m_physical_device, m_device, m_allocator, s_orbis_lsfg.modules, w, h, format, flow_scale, error);
+		if (ok)
+		{
+			for (int i = 0; i < 2; i++)
+			{
+				s.lsfg_images[i] = s.lsfg->FrameImage(static_cast<u32>(i));
+				s.lsfg_frames[i] = GSTextureVK::Adopt(s.lsfg_images[i], GSTexture::RenderTarget, GSTexture::Format::Color, static_cast<int>(w),
+					static_cast<int>(h), 1, format);
+			}
+			s.output = GSTextureVK::Adopt(s.lsfg->OutputImage(), GSTexture::Texture, GSTexture::Format::Color, static_cast<int>(w),
+				static_cast<int>(h), 1, lsfg::Backend::kOutputFormat);
+			if (!s.lsfg_frames[0] || !s.lsfg_frames[1] || !s.output)
+			{
+				ok = false;
+				error = "its images could not be viewed";
+			}
+		}
+		if (!ok)
+		{
+			printf("[fg] lsfg: Lossless Scaling frame generation could not start at %ux%u: %s; PS5SX2's own frame generation is used\n", w,
+				h, error.c_str());
+			fflush(stdout);
+			OrbisFrameGenRelease();
+			s.lsfg.reset();
+			s.use_lsfg = false;
+			if (!OrbisFlag("nofgnote"))
+				OrbisOSDLabel("FG: LOSSLESS SCALING FAILED");
+		}
+		else
+		{
+			s.prepared = false;
+			s.reset_next = true;
+			printf("[fg] lsfg: ready for %ux%u (the display %ux%u%s, frames in format %d) in %.0f ms; the display at %.2f Hz; the optical "
+				   "flow at %s; %s\n",
+				w, h, win_w, win_h,
+				fg_div > 1 ? "; frames generated at half its size (firmware below 9.00 or flag fghalfres), flag fgfullres for its own" : "",
+				static_cast<int>(format), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), s.hz,
+				half_flow ? "half size (flag lsfgfullflow: full)" : "full size", s.lsfg->Notes().c_str());
+			fflush(stdout);
+		}
+	}
+
+	if (s.use_lsfg)
+	{
+		lsfg::Backend& fg = *s.lsfg;
+		VkCommandBuffer cmd = GetCurrentCommandBuffer();
+		EndRenderPass();
+
+		if (decision.reset || s.reset_next)
+			fg.Reset();
+		s.reset_next = false;
+
+		// The last frame's presents read the generated frame: back to the generator (which writes all of it: no contents kept).
+		s.output->TransitionToLayout(cmd, GSTextureVK::Layout::ComputeReadWriteImage);
+
+		GSTextureVK* const target = fg.FrameImage() == s.lsfg_images[0] ? s.lsfg_frames[0].get() : s.lsfg_frames[1].get();
+		if (!draw_frame(cmd, target))
+			return 0;
+
+		const bool made = fg.Record(cmd);
+		InvalidateCachedState(); // compute pipelines and sets were bound by hand
+		if (made)
+		{
+			s.output->OverrideImageLayout(GSTextureVK::Layout::ComputeReadWriteImage); // Record() wrote it in GENERAL
+			s.output->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);  // read in the present pass, which can't transition
+			s.have_output = decision.presents > 0;
+		}
+
+		s.win.made += s.have_output ? 1 : 0;
+		s.win.presents += s.have_output ? decision.presents : 0;
+		g_orbis_fg_active.store(true, std::memory_order_relaxed);
+		return s.have_output ? decision.presents : 0;
+	}
+
 	if (!s.fg || s.fg->width() != w || s.fg->height() != h)
 	{
 		OrbisFrameGenRelease();
@@ -5068,59 +5436,8 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 
 	GSTextureVK* const target = fg.frame_image() == s.frame_images[0] ? s.frames[0].get() : s.frames[1].get();
 
-	// This frame as the present draws it into the swapchain: a pass of the swapchain's format cleared to black, and the present
-	// pipeline over the same rectangle (PresentRect with no target draws into the pass that is open, as between BeginPresent and
-	// EndPresent).
-	{
-		static_cast<GSTextureVK*>(current)->TransitionToLayout(cmd, GSTextureVK::Layout::ShaderReadOnly);
-		target->TransitionToLayout(cmd, GSTextureVK::Layout::ColorAttachment);
-		const VkFramebuffer fb = target->GetFramebuffer(false);
-
-		if (fb == VK_NULL_HANDLE)
-		{
-			printf("[fg] no framebuffer for the frame image; frame generation stays off in this game\n");
-			fflush(stdout);
-			s.failed = true;
-			g_orbis_fg_engaged = false;
-			g_orbis_fg_active.store(false, std::memory_order_relaxed);
-			return 0;
-		}
-
-		const VkRenderPassBeginInfo rp = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr,
-			GetRenderPass(format, VK_FORMAT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE), fb, {{0, 0}, {w, h}}, 1u,
-			&s_present_clear_color};
-		vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
-		const VkViewport vp{0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h), 0.0f, 1.0f};
-		const VkRect2D scissor{{0, 0}, {w, h}};
-		vkCmdSetViewport(cmd, 0, 1, &vp);
-		vkCmdSetScissor(cmd, 0, 1, &scissor);
-		// 186: the display's rectangle as it is: with no target PresentRect divides it by the window's size (DrawStretchRect), and the
-		// viewport above maps that onto the generator's smaller image (scaling it as well drew the picture in a quarter of the frame)
-		PresentRect(current, src_uv, nullptr, draw_rect, shader, shader_time, filter);
-		vkCmdEndRenderPass(cmd);
-		InvalidateCachedState(); // the pass and the state were set by hand
-
-		// 186: a draw that samples the frame image just drawn, into a 1x1 target. ps5vk splits the submission at a compute dispatch that
-		// samples an image this command buffer rendered into (ps5vk_dispatch -> ps5vk_cmd_buffer_split), while a draw takes its in-stream
-		// colour barrier (a RELEASE_MEM and a wait, vk_gpuwait), which marks every colour target flushed (ps5vk_cmd_buffer_gpu_barrier):
-		// after this draw the generator's first pass finds its input flushed and does not split. On firmware 4.03 each step starts on an
-		// idle GPU only at the next vblank; the split made a generated pair three steps, so three vblanks (40 fps at 119.88 Hz,
-		// swordpdf's original PS5, 2026-11-03; the driver's own counter said splits/frame compute=0.18). The flag fgnobarrierdraw leaves it out.
-		static const bool s_no_barrier_draw = OrbisFlag("fgnobarrierdraw");
-		if (!s_no_barrier_draw)
-		{
-			if (!s.barrier_target)
-				s.barrier_target = CreateRenderTarget(1, 1, GSTexture::Format::Color, false, false);
-			if (s.barrier_target)
-			{
-				StretchRect(target, GSVector4(0.0f, 0.0f, 1.0f, 1.0f), s.barrier_target, GSVector4(0.0f, 0.0f, 1.0f, 1.0f), ShaderConvert::COPY,
-					Nearest);
-				EndRenderPass();
-			}
-		}
-		target->TransitionToLayout(cmd, GSTextureVK::Layout::ComputeReadWriteImage);
-		InvalidateCachedState();
-	}
+	if (!draw_frame(cmd, target))
+		return 0;
 
 	fg.set_generated(1);
 	const bool made = fg.record(cmd, decision.reset || s.reset_next);
