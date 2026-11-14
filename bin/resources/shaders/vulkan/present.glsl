@@ -31,6 +31,7 @@ layout(push_constant) uniform cb10
 	float u_time;
 	float u_orbis_sharp; // PS5 port (vk-285-12): DisplayConstantBuffer TimeAndPad.y, RCAS amount
 	float u_orbis_split; // TimeAndPad.z, split-screen x in target pixels (0 = off)
+	float u_orbis_flat;  // TimeAndPad.w, GitHub #75 (2.41): 1 = the CRT filter's tube is flat (PS5SX2/CrtFlat), 0 = curved
 };
 
 layout(location = 0) in vec2 v_tex;
@@ -560,8 +561,14 @@ void ps_filter_lottes()
 void ps_filter_lottes()
 {
 	vec2 c = tv_pos() * 2.0 - 1.0;
-	c *= vec2(1.0 / 0.90, 1.0 / 0.87);                            // the bezel
-	c *= vec2(1.0 + c.y * c.y * 0.045, 1.0 + c.x * c.x * 0.065); // the curve
+	// GitHub #75 (2.41): a flat tube (PS5SX2/CrtFlat) fills the picture: no bezel, no curve, square corners; the beam lines, the
+	// grille and the darker corners are the same.
+	const bool flat_tube = u_orbis_flat > 0.5;
+	if (!flat_tube)
+	{
+		c *= vec2(1.0 / 0.90, 1.0 / 0.87);                            // the bezel
+		c *= vec2(1.0 + c.y * c.y * 0.045, 1.0 + c.x * c.x * 0.065); // the curve
+	}
 	vec2 e = 1.0 - abs(c);
 	if (e.x <= 0.0 || e.y <= 0.0)
 	{
@@ -570,7 +577,7 @@ void ps_filter_lottes()
 	}
 	vec2 q = c * 0.5 + 0.5;
 	float corner = length(max(vec2(0.07) - e * vec2(1.0, 1.15), vec2(0.0)));
-	float edge = smoothstep(0.0, 0.006, min(e.x, e.y)) * (1.0 - smoothstep(0.062, 0.07, corner));
+	float edge = flat_tube ? 1.0 : smoothstep(0.0, 0.006, min(e.x, e.y)) * (1.0 - smoothstep(0.062, 0.07, corner));
 
 	vec3 col = tv_fetch(q);
 	float l = q.y * 240.0;

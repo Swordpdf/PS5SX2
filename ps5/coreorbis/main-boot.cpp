@@ -1665,6 +1665,14 @@ static void orbis_ps5opts_from(const SettingsInterface& si)
   si.GetBoolValue("PS5SX2", "Rumble", &rumble);
   si.GetBoolValue("PS5SX2", "RAChallengeIcons", &challenge); // 2026-10-08 (AI-assisted): the RetroAchievements challenge icons
   {
+    // GitHub #75 (2.41, AI-assisted): PS5SX2/CrtFlat, the CRT display filter's tube flat (no bezel, no curve) instead of curved.
+    // GSDeviceVK::PresentRect hands it to present.glsl as u_orbis_flat; live, like the filter itself.
+    extern float g_orbis_present_param[4];
+    bool flat = false;
+    si.GetBoolValue("PS5SX2", "CrtFlat", &flat);
+    g_orbis_present_param[2] = flat ? 1.0f : 0.0f;
+  }
+  {
     bool bezel = false; // 2026-10-08 (AI-assisted): the overlay picture
     std::string bezel_dir;
     si.GetBoolValue("PS5SX2", "Bezel", &bezel);
@@ -5075,6 +5083,26 @@ int main()
     printf("[boot] microphone: %s (PS5SX2/Microphone %s, serial %s%s)\n",
       mic == 1 ? "a USB microphone on USB port 2" : mic == 2 ? "a USB headset on USB port 2" : "off", mode.c_str(),
       serial.empty() ? "unknown" : serial.c_str(), needs ? ", a game that needs one" : "");
+    fflush(stdout);
+  }
+  // GitHub #37 (2.41, AI-assisted): PS5SX2/CVifUnpack, the game's file or gs.ini: auto (the default: on for Mafia, whose geometry the
+  // SSE unpack loop corrupts on the PS5 while the C unpackers draw it right: reporter's PAL German SLES-52279, the other releases
+  // taken to be the same code), 1 on, 0 off. On: every VIF unpack of the game through the C unpackers (pcsx2/Vif_Unpack.cpp), what
+  // the global flag cvif does for all games; it costs a little speed. Read once, before the game starts.
+  {
+    extern bool g_orbis_cvif_game;
+    MemorySettingsInterface peek = s_base_si;
+    orbis_apply_gs_ini(peek, true);
+    const std::string mode = peek.GetStringValue("PS5SX2", "CVifUnpack", "auto");
+    const std::string serial = fe::ReadSerial(s_game_path);
+    static const char* const needs_cvif[] = {"SLES-52278", "SLES-52279", "SLES-52280", "SLES-52281", "SLES-52282", "SLUS-20671"};
+    bool needs = false;
+    for (const char* s : needs_cvif)
+      needs = needs || serial == s;
+    g_orbis_cvif_game = mode == "1" || mode == "true" ? true : mode == "0" || mode == "false" ? false : needs;
+    if (g_orbis_cvif_game || mode != "auto")
+      printf("[boot] VIF unpacking: %s (PS5SX2/CVifUnpack %s, serial %s%s)\n", g_orbis_cvif_game ? "the C unpackers" : "the SSE unpackers",
+        mode.c_str(), serial.empty() ? "unknown" : serial.c_str(), needs ? ", a game whose geometry needs them" : "");
     fflush(stdout);
   }
   // live-7 (AI-assisted): swordpdf: a PAL disc's "PlayStation 2" logo came out scrambled on full boot with his only BIOS, a

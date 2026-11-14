@@ -10,6 +10,12 @@
 #include "MTVU.h"
 #include "OrbisPaths.h" // vk-285-33 (the port's include-orbis)
 
+// GitHub #37 (2.41, AI-assisted): the C unpackers (VIFfuncTable) for every unpack of this game, as the global flag cvif does for all
+// games. The PS5 build runs the SSE unpack loop below with the VIF dynarec off (Vif_Dynarec.h newVifDynaRec 0), a path upstream x86
+// never takes, and in Mafia (SLES-52279) it corrupts the geometry while the C unpackers draw it right. main-boot.cpp sets this before
+// the game starts, from PS5SX2/CVifUnpack (auto: on for Mafia's serials).
+bool g_orbis_cvif_game = false;
+
 enum UnpackOffset {
 	OFFSET_X = 0,
 	OFFSET_Y = 1,
@@ -516,7 +522,7 @@ __ri void _nVifUnpackLoop(const u8* data)
 		u8* dest = getVUptr(idx, vif.tag.addr);
 
 		static const bool s_ps5_cvif = OrbisFlag("cvif");
-		if (doMode || s_ps5_cvif)
+		if (doMode || s_ps5_cvif || g_orbis_cvif_game)
 		{
 			//if (1) {
 			ft(dest, data);

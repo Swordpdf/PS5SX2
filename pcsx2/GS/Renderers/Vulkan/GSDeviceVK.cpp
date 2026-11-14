@@ -4587,7 +4587,8 @@ void GSDeviceVK::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 	cb.SetTime(shaderTime);
 #ifdef ORBIS_VULKAN
 	// vk-285-12: u_orbis_sharp / u_orbis_split of the port's FSR present.glsl (cb10 after u_time).
-	cb.TimeAndPad = GSVector4(shaderTime, g_orbis_present_param[0], g_orbis_present_param[1], 0.0f);
+	// GitHub #75 (2.41): w = u_orbis_flat, the CRT filter's flat tube (PS5SX2/CrtFlat; main-boot.cpp orbis_ps5opts_from).
+	cb.TimeAndPad = GSVector4(shaderTime, g_orbis_present_param[0], g_orbis_present_param[1], g_orbis_present_param[2]);
 #endif
 	SetUtilityPushConstants(&cb, sizeof(cb));
 

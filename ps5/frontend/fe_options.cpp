@@ -66,6 +66,18 @@ std::vector<OptionChoice> TexOffsetChoices()
 constexpr const char* kTexOffsetHint = "Moves where textures are read from, in thousandths of a texel (500 is half a texel): for lines "
 									   "or stray pixels at the edges of textures when upscaled. A tester's Kingdom Hearts fix: X 525, Y 0.";
 
+// GitHub #73 (2.41, AI-assisted): PCSX2's skipdraw range (UserHacks_SkipDraw_Start/End; PCSX2 raises the end to the start), as the
+// page's SKIPDRAW.
+std::vector<OptionChoice> SkipDrawChoices()
+{
+	return {{"0", "Off"}, {"1", "1"}, {"2", "2"}, {"3", "3"}, {"4", "4"}, {"5", "5"}, {"6", "6"}, {"7", "7"}, {"8", "8"}, {"9", "9"},
+		{"10", "10"}, {"15", "15"}, {"20", "20"}, {"30", "30"}, {"50", "50"}, {"100", "100"}};
+}
+
+constexpr const char* kSkipDrawHint = "PCSX2's Skipdraw range: skips drawing the surfaces from Start up to End. For an effect that "
+									  "covers the picture when upscaled (fog, glow, a wrong shadow); it can also remove what should stay. "
+									  "End lower than Start counts as Start. Try 1 to 1, then widen.";
+
 std::vector<OptionDef> HardwareFixesGroup()
 {
 	return {
@@ -96,6 +108,8 @@ std::vector<OptionDef> HardwareFixesGroup()
 		Fix(Seg("UserHacks_TextureInsideRt", "Texture inside target", "0", "Texture in target %", {{"0", "Off"}, {"1", "Inside"}, {"2", "Merge"}},
 			"Lets a texture be read from inside a bigger picture the game drew earlier: for some missing or wrong effects. Merge also "
 			"joins pictures that touch.")),
+		Fix(Seg("UserHacks_SkipDraw_Start", "Skip draws: start", "0", "Skipdraw start %", SkipDrawChoices(), kSkipDrawHint)),
+		Fix(Seg("UserHacks_SkipDraw_End", "Skip draws: end", "0", "Skipdraw end %", SkipDrawChoices(), kSkipDrawHint)),
 	};
 }
 
@@ -391,6 +405,10 @@ const std::vector<OptionGroup>& OptionGroups()
 					"Uses the game's 16:9 patch when there is one."),
 				Seg("TVShader", "Display filter", "0", "%", {{"6", "FSR"}, {"7", "FSR soft"}, {"0", "Classic"}, {"5", "CRT"}, {"1", "Scanlines"}, {"2", "VHS soft"}, {"3", "VHS"}},
 					"How the picture reaches the TV. FSR sharpens the upscale; CRT is a curved tube with beam lines; Scanlines draws a thin dark line between the 480 lines; VHS soft and VHS look like a tape (VHS: a worn one that wobbles)."),
+				// GitHub #75 (2.41, AI-assisted): the CRT filter's tube (present.glsl u_orbis_flat), live.
+				Seg("PS5SX2/CrtFlat", "CRT shape", "false", "CRT %", {{"false", "Curved"}, {"true", "Flat"}},
+					"With the CRT display filter: a curved tube inside a black bezel, or a flat one that fills the picture (the beam lines and "
+					"the grille stay the same)."),
 				// 2026-10-08 (AI-assisted): frame generation (GSDeviceVK.cpp), read when the game starts (main-boot.cpp).
 				// review 2026-10-16 (lens 3): the sheet's help box shows four lines and cut the earlier, longer text after "Video Output with 120 Hz" (the
 				// settings page has the whole text); this one fits, and the box adds "Used when a game starts." itself.
@@ -416,6 +434,12 @@ const std::vector<OptionGroup>& OptionGroups()
 			}},
 		{"Performance",
 			{
+				// GitHub #38 (2.41, AI-assisted): PCSX2's Nominal speed (Framerate/NominalScalar), read when the game starts.
+				Seg("Framerate/NominalScalar", "Game speed", "1", "Speed %",
+					{{"0.5", "50%"}, {"0.75", "75%"}, {"1", "100%"}, {"1.2", "120% (PAL at 60)"}, {"1.5", "150%"}, {"2", "200%"}},
+					"How fast the game runs: 120% runs a 50 Hz PAL game at 60 frames a second, its sound and timing 20% fast too (a game's "
+					"own 60 Hz mode or patch is the real fix). Below 100% is slow motion, not a frame cap. Frame generation only at 100%.",
+					true),
 				Seg("EmuCore/Speedhacks/EECycleRate", "EE cycle rate", "0", "EE %",
 					{{"-3", "50%"}, {"-2", "60%"}, {"-1", "75%"}, {"0", "100%"}, {"1", "130%"}, {"2", "180%"}, {"3", "300%"}},
 					"Above 100% can smooth out slowdown the PS2 had; some games dislike it."),

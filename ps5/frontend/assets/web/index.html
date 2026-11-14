@@ -294,6 +294,10 @@ const CROP_HINT = "Cuts this many PS2 pixels off this side of the picture, for g
 const TC_OFFSETS = [["0","Off"],["100","100"],["200","200"],["250","250"],["300","300"],["400","400"],["500","500"],["525","525"],
                     ["550","550"],["600","600"],["700","700"],["750","750"],["800","800"],["900","900"],["1000","1000"]];
 const TC_HINT = "Moves where textures are read from, in thousandths of a texel (500 is half a texel): for lines or stray pixels at the edges of textures when upscaled. A tester's Kingdom Hearts fix: X 525, Y 0.";
+// GitHub #73 (2.41, AI-assisted): PCSX2's skipdraw range, as the sheet's SkipDrawChoices().
+const SKIPDRAW = [["0","Off"],["1","1"],["2","2"],["3","3"],["4","4"],["5","5"],["6","6"],["7","7"],["8","8"],["9","9"],
+                  ["10","10"],["15","15"],["20","20"],["30","30"],["50","50"],["100","100"]];
+const SKIPDRAW_HINT = "PCSX2's Skipdraw range: skips drawing the surfaces from Start up to End. For an effect that covers the picture when upscaled (fog, glow, a wrong shadow); it can also remove what should stay. End lower than Start counts as Start. Try 1 to 1, then widen.";
 // vk-285-116 (AI-assisted): what a controller button can press in games (ps5/coreorbis/orbis-shims/OrbisPadMap.h's names),
 // as the sheet's ButtonChoices() (frontend/fe_options.cpp). Applied while the game runs.
 const BUTTON_TARGETS = [["Cross","Cross"],["Circle","Circle"],["Square","Square"],["Triangle","Triangle"],["L1","L1"],["R1","R1"],
@@ -376,6 +380,10 @@ const GROUPS = [
     { key: "TVShader", label: "Display filter", type: "seg", def: "0", short: "%",
       options: [["6","FSR"],["7","FSR soft"],["0","Classic"],["5","CRT"],["1","Scanlines"],["2","VHS soft"],["3","VHS"]],
       hint: "How the picture reaches the TV. FSR sharpens the upscale; CRT is a curved tube with beam lines; Scanlines draws a thin dark line between the 480 lines; VHS soft and VHS look like a tape (VHS: a worn one that wobbles)." },
+    // GitHub #75 (2.41, AI-assisted): the CRT filter's tube.
+    { key: "PS5SX2/CrtFlat", label: "CRT shape", type: "seg", def: "false", short: "CRT %",
+      options: [["false","Curved"],["true","Flat"]],
+      hint: "With the CRT display filter: a curved tube inside a black bezel, or a flat one that fills the picture (the beam lines and the grille stay the same). Changes at once." },
     // 2026-10-08 (AI-assisted): frame generation (GSDeviceVK.cpp), read when the game starts.
     { key: "PS5SX2/FrameGeneration", label: "Frame generation", type: "toggle", def: "false", short: "Frame gen %", restart: true,
       hint: "Shows a frame made between two of the game's: a 60 fps game at 120, a PAL game at 50 fps at 100 (the TV switches to 120 Hz for the game), a 30 fps game at 60. The 120 Hz output needs a TV that takes it and the PS5's Settings > Screen and Video > Video Output with 120 Hz Output on and a resolution of Automatic or 4K (at 1080p the console refuses it). On a 60 Hz output, or where this build cannot switch to 120 Hz, only games at 30 fps or less (25 for PAL) get frames. Only while the game holds its frame rate (an uneven one shows the game's own frames); the FPS box then counts what the TV gets. A little more input lag, and small smears at the edges of fast movement. Experimental. Takes effect when the game starts." },
@@ -397,6 +405,10 @@ const GROUPS = [
       hint: "Loads a texture pack's PNG and DDS files from <game serial>/replacements/ in a USB drive's PS5SX2/textures (or textures) folder, else in /data/PCSX2/textures. The Textures folder (Folders, all games) names the one folder to read from instead. DDS (DXT1 to DXT5, BC7 or uncompressed) is unpacked by the CPU as a game asks for it." },
   ]},
   { title: "Performance", items: [
+    // GitHub #38 (2.41, AI-assisted): PCSX2's Nominal speed.
+    { key: "Framerate/NominalScalar", label: "Game speed", type: "seg", def: "1", short: "Speed %", restart: true,
+      options: [["0.5","50%"],["0.75","75%"],["1","100%"],["1.2","120% (PAL at 60)"],["1.5","150%"],["2","200%"]],
+      hint: "How fast the game runs: 120% runs a 50 Hz PAL game at 60 frames a second, its sound and timing 20% fast too (a game's own 60 Hz mode or patch is the real fix). Below 100% is slow motion, not a frame cap. Frame generation only works at 100%. Takes effect when the game starts." },
     { key: "EmuCore/Speedhacks/EECycleRate", label: "EE cycle rate", type: "seg", def: "0", short: "EE %",
       options: [["-3","50%"],["-2","60%"],["-1","75%"],["0","100%"],["1","130%"],["2","180%"],["3","300%"]],
       hint: "Above 100% can smooth out slowdown the PS2 had; some games dislike it." },
@@ -477,6 +489,10 @@ const GROUPS = [
     { key: "UserHacks_TextureInsideRt", label: "Texture inside target", type: "seg", def: "0", short: "Texture in target %", fix: true,
       options: [["0","Off"],["1","Inside"],["2","Merge"]],
       hint: "Lets a texture be read from inside a bigger picture the game drew earlier: for some missing or wrong effects. Merge also joins pictures that touch." },
+    { key: "UserHacks_SkipDraw_Start", label: "Skip draws: start", type: "pick", def: "0", short: "Skipdraw start %", fix: true,
+      options: SKIPDRAW, hint: SKIPDRAW_HINT },
+    { key: "UserHacks_SkipDraw_End", label: "Skip draws: end", type: "pick", def: "0", short: "Skipdraw end %", fix: true,
+      options: SKIPDRAW, hint: SKIPDRAW_HINT },
   ]},
   // vk-285-115: PCSX2's crop (EmuCore/GS/CropLeft, CropTop, CropRight, CropBottom: PS2 pixels cut from each side before the
   // picture is scaled to the screen, GSRenderer.cpp CalculateDrawSrcRect). Asked for to hide Shadow of the Colossus's
