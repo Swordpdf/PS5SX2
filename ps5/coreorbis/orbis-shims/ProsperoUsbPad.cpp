@@ -467,6 +467,16 @@ namespace
 				}
 				only_ep = t.ep_in & 0x0F;
 				Log("/dev/%s: %04x:%04x: gamepad interface %u, endpoint %#x", node.c_str(), vid, pid, t.iface, t.ep_in);
+				// GitHub #67 (2.41, AI-assisted): a DualShock 3, or a guitar adapter that says it is one (054c:0268), sends
+				// nothing until feature report 0xF4 turns its reports on (Ds3Enable). This route (13.60: control requests on
+				// the ugen node work, the device is read as a candidate) never sent it, so the adapter's endpoint stayed silent
+				// ("gamepad interface 0, endpoint 0x83", then nothing for minutes). The same request, on this node.
+				if (vid == 0x054C && pid == 0x0268)
+				{
+					uint8_t on[4] = {0x42, 0x0C, 0x00, 0x00};
+					const bool ok = UgenRequest(fd, 0x21, 0x09, 0x03F4, t.iface, on, sizeof(on), nullptr);
+					Log("/dev/%s: DualShock 3: reports turned on: %s", node.c_str(), ok ? "yes" : IoctlResult(-1));
+				}
 			}
 		}
 		// The device's endpoint nodes. One with endpoint numbers above 7 or 6 or more of them is taken for an internal
