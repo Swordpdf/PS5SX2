@@ -1760,9 +1760,28 @@ bool ReadAchievementExecutable(const std::string& path, std::string& name, std::
 					entry.resize(version);
 				if (Lower(entry) == Lower(wanted))
 				{
-					// Multi-extent executables require a different reader; don't hash partial data.
+					// Some ISO writers set the multi-extent bit on single-extent files.
+					// Real parts are adjacent records with the same full identifier.
 					if (data[off + 25] & 0x80)
-						return false;
+					{
+						size_t next_offset = off + n;
+						while (next_offset < data.size() && data[next_offset] == 0)
+							next_offset = (next_offset / 2048 + 1) * 2048;
+						if (next_offset < data.size())
+						{
+							const unsigned next_length = data[next_offset];
+							if (next_length < 34 || next_offset + next_length > data.size() ||
+								data[next_offset + 32] > next_length - 33)
+								return false;
+							const std::string next_identifier(
+								reinterpret_cast<const char*>(data.data() + next_offset + 33),
+								data[next_offset + 32]);
+							const std::string identifier(
+								reinterpret_cast<const char*>(data.data() + off + 33), data[off + 32]);
+							if (Lower(next_identifier) == Lower(identifier))
+								return false;
+						}
+					}
 					lba = Le32(data.data() + off + 2);
 					size = Le32(data.data() + off + 10);
 					is_dir = (data[off + 25] & 2) != 0;

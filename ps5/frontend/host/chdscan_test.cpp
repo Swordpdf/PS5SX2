@@ -273,6 +273,57 @@ static bool ElfPattern(const std::vector<uint8_t>& b)
 	return true;
 }
 
+// GitHub #83 (PR #98): a 64-sector ISO image with SYSTEM.CNF and the boot ELF (ElfPattern's 6000 bytes at sector 30) in its root,
+// every file record's flags set to `flags`. split: the ELF is a real multi-extent file, two records of the same name (sectors
+// 30-31 and 32-33, the first one flagged 0x80).
+static void WriteFlaggedIso(const std::string& path, uint8_t flags, bool split)
+{
+	std::vector<uint8_t> img(64 * 2048, 0);
+	const auto le32 = [&](size_t at, uint32_t v) {
+		for (int i = 0; i < 4; i++)
+			img[at + i] = static_cast<uint8_t>(v >> (8 * i));
+	};
+	const size_t pvd = 16 * 2048;
+	img[pvd] = 1;
+	std::memcpy(&img[pvd + 1], "CD001", 5);
+	img[pvd + 6] = 1;
+	const size_t root = pvd + 156;
+	img[root] = 34;
+	le32(root + 2, 18);
+	le32(root + 10, 2048);
+	img[root + 25] = 2;
+	img[root + 32] = 1;
+	const size_t term = 17 * 2048;
+	img[term] = 255;
+	std::memcpy(&img[term + 1], "CD001", 5);
+	const std::string cnf = "BOOT2 = cdrom0:\\SLES_520.55;1\r\nVER = 1.00\r\nVMODE = PAL\r\n";
+	std::memcpy(&img[19 * 2048], cnf.data(), cnf.size());
+	for (size_t i = 0; i < 6000; i++)
+		img[30 * 2048 + i] = static_cast<uint8_t>((i * 7 + 3) & 0xff);
+	size_t at = 18 * 2048;
+	const auto record = [&](const std::string& name, uint32_t lba, uint32_t size, uint8_t f) {
+		const size_t len = 33 + name.size() + ((33 + name.size()) & 1);
+		img[at] = static_cast<uint8_t>(len);
+		le32(at + 2, lba);
+		le32(at + 10, size);
+		img[at + 25] = f;
+		img[at + 32] = static_cast<uint8_t>(name.size());
+		std::memcpy(&img[at + 33], name.data(), name.size());
+		at += len;
+	};
+	record("SYSTEM.CNF;1", 19, static_cast<uint32_t>(cnf.size()), flags);
+	if (split)
+	{
+		record("SLES_520.55;1", 30, 4096, flags | 0x80);
+		record("SLES_520.55;1", 32, 6000 - 4096, flags & ~0x80);
+	}
+	else
+		record("SLES_520.55;1", 30, 6000, flags);
+	std::FILE* f = std::fopen(path.c_str(), "wb");
+	std::fwrite(img.data(), 1, img.size(), f);
+	std::fclose(f);
+}
+
 int main(int argc, char** argv)
 {
 	if (argc < 3)
@@ -329,6 +380,25 @@ int main(int argc, char** argv)
 		std::string name;
 		std::vector<uint8_t> bytes;
 		Check(!fe::ReadAchievementExecutable(fx + "/dvd2k.chd", name, bytes), "dvd2k.chd: no boot ELF file on it, none read");
+	}
+	// GitHub #83 (PR #98): rebuilt discs whose ISO writer set the multi-extent flag (0x80) on every single-extent file record are
+	// read; a boot ELF that really is in two extents is still refused (only its first part would be hashed).
+	{
+		std::system(("mkdir -p '" + work + "'").c_str());
+		const std::string plain = work + "/flags00.iso", flagged = work + "/flags80.iso", split = work + "/split.iso";
+		WriteFlaggedIso(plain, 0x00, false);
+		WriteFlaggedIso(flagged, 0x80, false);
+		WriteFlaggedIso(split, 0x00, true);
+		for (const std::string& p : {plain, flagged})
+		{
+			std::string name;
+			std::vector<uint8_t> bytes;
+			const bool ok = fe::ReadAchievementExecutable(p, name, bytes);
+			Check(ok && ElfPattern(bytes), p.substr(p.rfind('/') + 1) + ": the boot ELF read whole (" + name + ")");
+		}
+		std::string name;
+		std::vector<uint8_t> bytes;
+		Check(!fe::ReadAchievementExecutable(split, name, bytes), "split.iso: a boot ELF in two extents is not hashed from its first part");
 	}
 
 	// 3. The cache files: a folder with a PS2 DVD CHD, a CD CHD, an ISO, a CHD without an ISO 9660 volume (another system's disc) and a
