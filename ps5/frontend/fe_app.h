@@ -75,6 +75,9 @@ struct AppConfig
 	// 2026-10-16: the games folder the player set (the first of them) while only those are listed; "" = the usual places. The empty
 	// shelf names it where it says /data/PCSX2/games (a typo or an unplugged drive then explains itself).
 	std::string games_folder_note;
+	// GitHub #17 (2.41): a line under "No games" when PS5SX2 could not leave its sandbox (no jailbreak request or port answered, so
+	// /data/PCSX2 and the USB drives can't be listed); "" otherwise.
+	std::string no_access_note;
 	// chdscan (AI-assisted): true while the images not seen before are being read (`done` of `total`): the shelf came up without its games
 	// (App::SetGames brings them) and says so where it would say there are none. Unset: no scan.
 	std::function<bool(int& done, int& total)> scan_progress;

@@ -74,6 +74,9 @@ struct KernelTimesec
 	uint32_t dst_sec;
 };
 
+// GitHub #17: main-boot.cpp's 1 when a jailbreak request or port answered. Weak: the PC builds of this file have none (taken as 1).
+extern "C" int g_jailbreak_ok __attribute__((weak));
+
 extern "C" {
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(VkInstance instance, const char* pName);
 int scePadInit(void);
@@ -2730,6 +2733,16 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.bios_open_in_use = paths.bios_open_in_use;
 	acfg.bios_pending_launch = paths.bios_pending_launch;
 	acfg.games_folder_note = paths.games_folder_note; // 2026-10-16: the empty shelf names the folder you set
+	// GitHub #17: an empty shelf says why when PS5SX2 is still in its sandbox: no jailbreak answered and /data/PCSX2 can't be listed
+	// (the report's "permission to /data was denied"). A setup that reads /data some other way gets no note.
+	if (&g_jailbreak_ok && !g_jailbreak_ok)
+	{
+		DIR* d = opendir("/data/PCSX2");
+		if (d)
+			closedir(d);
+		else
+			acfg.no_access_note = Tr(Str::NoGamesNoAccess);
+	}
 	if (scanning)
 		acfg.scan_progress = [&scan](int& done, int& total) { return scan.Progress(done, total); }; // chdscan
 	// live-22 (AI-assisted): while a PS2 disc is being copied (orbis-shims/ProsperoDiscDump.cpp), the shelf shows a

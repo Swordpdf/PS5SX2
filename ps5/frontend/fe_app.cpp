@@ -1868,6 +1868,10 @@ void App::Build(FrameDesc& f, const std::string& clock)
 					none = Fit(*m_fonts, none, 64.0f * k, W * 0.9f); // a long path is cut, not drawn off the screen
 				}
 				m_fonts->AddText(ui, none.c_str(), W * 0.5f, H * 0.5f, 64.0f * k, white, 0.4f, Fonts::Center);
+				// GitHub #17: why, when the app could not leave its sandbox (the helper isn't running)
+				if (!m_cfg.no_access_note.empty())
+					m_fonts->AddText(ui, Fit(*m_fonts, m_cfg.no_access_note, 36.0f * k, W * 0.9f).c_str(), W * 0.5f, H * 0.57f, 36.0f * k,
+						dim, 0.3f, Fonts::Center);
 			}
 			else
 			{

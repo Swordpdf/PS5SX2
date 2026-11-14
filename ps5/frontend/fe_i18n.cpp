@@ -228,6 +228,7 @@ const char* const kKeys[kCount] = {
 	"ingame.just_now",
 	"ingame.saved_this_next",
 	"ingame.saved_all_next",
+	"shelf.no_access",
 };
 
 const char* const kEnglish[kCount] = {
@@ -447,6 +448,7 @@ const char* const kEnglish[kCount] = {
 	"Just now",
 	"Saved for this game \xC2\xB7 used when the game starts next",
 	"Saved for all games \xC2\xB7 used when a game starts next",
+	"PS5SX2 could not reach your files: load the PS5SX2 Helper (or turn on your HEN's jailbreak), then start PS5SX2 again",
 };
 
 const char* const kSpanish[kCount] = {

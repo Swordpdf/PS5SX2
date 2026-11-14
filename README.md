@@ -64,7 +64,7 @@ No Sony BIOS, games or keys come with PS5SX2.
 
 ## Getting started
 
-For the main release, use PS5SX2Helper.elf and PS5SX2Installer.elf to launch PS5SX2 and automatically keep your build up to date.
+For the main release, use PS5SXHelper.elf and PS5SX2Installer.elf to launch PS5SX2 and automatically keep your build up to date. If the shelf says PS5SX2 could not reach your files, the helper isn't running: load it, then start PS5SX2 again.
 
 For now, updates are planned to roll out weekly as we work toward full compatibility across the PS2 library. Bug fixes, compatibility improvements, and new features will be bundled into batches rather than pushed one by one.
 
@@ -72,7 +72,7 @@ Thanks again for all the testing, logs, and feedback. It genuinely helps move th
 
 TO GET IT RUNNING:
 
--Put PS5SX2Helper.elf and PS5SX2Installer.elf in your autoload. They’ll make sure you always get the latest build directly from GitHub.
+-Put PS5SXHelper.elf and PS5SX2Installer.elf in your autoload. They’ll make sure you always get the latest build directly from GitHub.
 
 -Place your legally acquired PS2 BIOS in:
 /data/PCSX2/bios

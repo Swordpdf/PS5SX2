@@ -242,6 +242,7 @@ enum class Str : int
 	IngameJustNow,          // "Just now": a state saved while the menu is open
 	IngameSavedThisNext,    // "Saved for this game · used when the game starts next"
 	IngameSavedAllNext,     // "Saved for all games · used when a game starts next"
+	NoGamesNoAccess,        // GitHub #17: under "No games" when PS5SX2 could not leave its sandbox (no jailbreak answered)
 	Count
 };
 
