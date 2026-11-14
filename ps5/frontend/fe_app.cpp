@@ -1218,7 +1218,9 @@ void App::Update(double dt, const Input& in)
 	m_account.Poll(m_cfg.achievements);
 	PollGameAchievements();
 	const float fdt = static_cast<float>(std::min(dt, 0.1));
-	m_dump_spin += fdt; // live-22: the dump disc's rotation, advanced whether or not a dump is on
+	// live-22: the dump disc's rotation, advanced whether or not a dump is on. GitHub #92 (2.41): backwards, so that the disc (its art, its
+	// glints, the loading arc) turns clockwise as a disc does in the drive; the box front's angles grow counter-clockwise.
+	m_dump_spin -= fdt;
 	PollDiscAsk();
 	m_ask_anim += ((m_ask_on ? 1.0f : 0.0f) - m_ask_anim) * (1.0f - std::exp(-fdt * 16.0f));
 	m_bios_anim += ((m_bios_ask ? 1.0f : 0.0f) - m_bios_anim) * (1.0f - std::exp(-fdt * 16.0f)); // bioscheck
