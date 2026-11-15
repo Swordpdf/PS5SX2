@@ -1797,17 +1797,20 @@ static void OrbisDrawPanels()
 extern std::atomic<bool> g_orbis_fg_active; // GSDeviceVK.cpp
 #endif
 
-static void OrbisGLOSD(bool generated = false)
+// 2026-11-15 (build 320, swordpdf: "burnout 30 is at 90 for some reason"): `counted` is false for a generated frame's second and later
+// presents. A 30 fps game on the 119.88 Hz output gets its generated frame presented twice (two refreshes) before its own, and the box
+// counted both: 30 + 60 = 90, where the TV gets 60 different pictures a second.
+static void OrbisGLOSD(bool generated = false, bool counted = true)
 {
 	if (!s_orbis_gl || !g_gs_device)
 		return;
 	static u64 s_count = 0, s_generated = 0;
 	static auto s_t0 = std::chrono::steady_clock::now();
 	static unsigned s_fps = 0;
-	static unsigned s_out_fps = 0; // vk-285-135: the game's frames and the generated ones, as the TV gets them
+	static unsigned s_out_fps = 0; // vk-285-135: the game's frames and the generated ones, as the TV gets them (320: each picture once)
 	if (!generated)
 		s_count++;
-	else
+	else if (counted)
 		s_generated++;
 	const auto now = std::chrono::steady_clock::now();
 	const double dt = std::chrono::duration<double>(now - s_t0).count();
@@ -3125,7 +3128,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				OrbisVkFrameGenDraw();
 				OrbisDrawBezel(); // 2026-10-08
 				OrbisWatermark();
-				OrbisGLOSD(true);
+				OrbisGLOSD(true, i == 0);
 				OrbisUiDrawHold(); // 2.31
 				EndPresentFrame();
 			}

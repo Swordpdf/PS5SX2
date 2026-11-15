@@ -702,29 +702,108 @@ void OptionsSheet::SetTab(int tab)
 }
 
 // 2.41 (AI-assisted) newsheet: the pages of a game's Settings tab.
-const char* OptionsSheet::PageTagline(int page)
+const char* OptionsSheet::PageTagline(int page, bool global)
 {
 	static const char* const lines[kPageCount] = {"Filters, sharpness and what's on screen", "How fast and how smoothly the game runs",
 		"For drawing problems in this game", "Patches, cheats and fetching more", "The cards in the slots",
-		"Shelf, home screen, cheat disc and reset"};
+		"Shelf, home screen, cheat disc and reset", "Game folders, BIOS, shelf and discs", "Session logs and reset"};
+	if (global && page == kPageSpeed)
+		return "How fast and how smoothly games run";
+	if (global && page == kPageFixes)
+		return "Language, network, hard drive and the PS2's menu";
 	return page >= 0 && page < kPageCount ? lines[page] : "";
 }
 
-const char* OptionsSheet::PageName(int page)
+const char* OptionsSheet::PageName(int page, bool global)
 {
-	static const char* const names[kPageCount] = {"Picture", "Speed", "Fixes", "Patches and cheats", "Memory cards", "Game options"};
+	static const char* const names[kPageCount] = {"Picture", "Speed", "Fixes", "Patches and cheats", "Memory cards", "Game options",
+		"Library", "PS5SX2"};
+	if (global && page == kPageFixes)
+		return "PS2 console";
 	return page >= 0 && page < kPageCount ? names[page] : "";
 }
 
-int OptionsSheet::PageOfGroup(const std::string& g)
+int OptionsSheet::PageOfGroup(const std::string& g, bool global)
 {
 	if (g == "Performance")
 		return kPageSpeed;
 	if (g == "Hardware fixes" || g == "Game")
 		return kPageFixes;
+	if (g == "Folders")
+		return kPageLibrary;
 	if (g == "Shelf" || g == "Discs" || g == "Home screen" || g == "ELF")
-		return kPageGame;
+		return global ? kPageLibrary : kPageGame;
 	return kPagePicture; // Display, Graphics, On screen, Crop (and a group added later, until it gets a page)
+}
+
+std::string OptionsSheet::EffectiveValue(const std::string& key) const
+{
+	for (const OptionGroup& g : OptionGroups())
+		for (const OptionDef& d : g.items)
+			if (d.key == key)
+				return Get(d.key, d.def).value;
+	return {};
+}
+
+std::string OptionsSheet::EffectiveLabel(const std::string& key) const
+{
+	for (const OptionGroup& g : OptionGroups())
+		for (const OptionDef& d : g.items)
+			if (d.key == key)
+			{
+				const std::string v = Get(d.key, d.def).value;
+				const int i = ChoiceIndex(d, v);
+				return i >= 0 ? d.choices[static_cast<size_t>(i)].label : v;
+			}
+	return {};
+}
+
+// 318: the home's page rows are tiles, two a line (fe_sheetcards.h draws them so).
+int OptionsSheet::Neighbour(int row, int dv, int dh) const
+{
+	const int n = static_cast<int>(m_rows.size());
+	if (row < 0 || row >= n)
+		return -1;
+	const auto tile = [&](int i) { return i >= 0 && i < n && m_rows[static_cast<size_t>(i)].kind == Kind::Category; };
+	const auto step = [&](int from, int dir) {
+		for (int r = from + dir; r >= 0 && r < n; r += dir)
+			if (Selectable(m_rows[static_cast<size_t>(r)]))
+				return r;
+		return -1;
+	};
+	if (GridColumns() < 2 || !tile(row))
+	{
+		if (dh != 0 || dv == 0)
+			return -1;
+		int r = step(row, dv);
+		if (dv < 0 && tile(r)) // up into the tiles from below them: the left one of that line
+		{
+			int first = r;
+			while (tile(first - 1))
+				first--;
+			r = first + ((r - first) / 2) * 2;
+		}
+		return r;
+	}
+	int first = row, last = row;
+	while (tile(first - 1))
+		first--;
+	while (tile(last + 1))
+		last++;
+	const int at = row - first;
+	if (dh != 0)
+	{
+		const int to = row + dh;
+		return ((dh > 0) == (at % 2 == 0)) && to >= first && to <= last ? to : -1;
+	}
+	if (dv == 0)
+		return -1;
+	int to = row + dv * 2;
+	if (to > last && at / 2 < (last - first) / 2)
+		to = last; // down from the right column onto a last line of one tile
+	if (to >= first && to <= last)
+		return to;
+	return dv < 0 ? step(first, -1) : step(last, 1);
 }
 
 bool OptionsSheet::IsHomeKey(const std::string& key)
@@ -755,9 +834,15 @@ std::string OptionsSheet::PageSummary(int page) const
 		return own ? (v == "@none" ? std::string("Slot 1 empty") : v) : std::string();
 	}
 	std::vector<std::string> set;
+	if (page == kPageLibrary) // 318: the sheet for all games: how many game folders were added
+	{
+		const size_t folders = SplitFolderList(OwnValue(kGameFoldersKey)).size();
+		if (folders > 0)
+			set.push_back(std::to_string(folders) + (folders == 1 ? " game folder" : " game folders"));
+	}
 	for (const OptionGroup& g : OptionGroups())
 	{
-		if (g.tab != kTabSettings || g.global_only || PageOfGroup(g.title) != page)
+		if (g.tab != kTabSettings || (g.game_only && m_global) || (g.global_only && !m_global) || PageOfGroup(g.title, m_global) != page)
 			continue;
 		for (const OptionDef& d : g.items)
 		{
@@ -804,6 +889,13 @@ void OptionsSheet::BuildRows()
 	const bool paged = Paged();
 	if (paged && m_page < 0)
 	{
+		// 318 (the owner: "i also want the button to check for updates visible in the redesign, bring it to the top-ish"): the sheet for
+		// all games starts with PS5SX2's own update, a card of its own.
+		if (m_global && m_update_rows)
+		{
+			add(Kind::SystemUpdate, Tr(Str::UpdateRow));
+			add(Kind::Header, "");
+		}
 		for (const char* key : {"upscale_multiplier", "AspectRatio", "EmuCore/EnableWideScreenPatches", "PS5SX2/FrameGeneration"})
 			for (const OptionGroup& g : OptionGroups())
 				if (g.tab == kTabSettings && !g.global_only)
@@ -811,13 +903,17 @@ void OptionsSheet::BuildRows()
 						if (d.key == key)
 							add(Kind::Option, d.label).def = &d;
 		add(Kind::Header, "");
-		for (int page = 0; page < kPageCount; page++)
+		static const int game_pages[] = {kPagePicture, kPageSpeed, kPageFixes, kPagePatches, kPageCards, kPageGame};
+		static const int global_pages[] = {kPagePicture, kPageSpeed, kPageFixes, kPageCards, kPageLibrary, kPageApp};
+		const int* const pages = m_global ? global_pages : game_pages;
+		for (int i = 0; i < 6; i++)
 		{
+			const int page = pages[i];
 			if (page == kPagePatches && m_patches.empty() && m_cheats.empty() && !(m_online_patch_row && !m_serial.empty()))
 				continue;
 			if (page == kPageCards && m_paths.memcards_dir.empty())
 				continue;
-			add(Kind::Category, PageName(page)).slot = page;
+			add(Kind::Category, PageName(page, m_global)).slot = page;
 		}
 		return; // 2.41 newsheet: "Clear this game's settings" is at the foot of Game options
 	}
@@ -825,16 +921,17 @@ void OptionsSheet::BuildRows()
 	int page_groups = 0;
 	if (paged)
 	{
-		add(Kind::Header, std::string("\xE2\x80\xB9  ") + PageName(m_page));
+		add(Kind::Header, std::string("\xE2\x80\xB9  ") + PageName(m_page, m_global));
 		for (const OptionGroup& g : OptionGroups())
-			page_groups += (g.tab == m_tab && !g.global_only && PageOfGroup(g.title) == m_page) ? 1 : 0;
+			page_groups += (g.tab == m_tab && !(g.game_only && m_global) && !(g.global_only && !m_global) &&
+							PageOfGroup(g.title, m_global) == m_page) ? 1 : 0;
 	}
 	if (settings && !paged && (m_has_preset || !m_global))
 		add(Kind::Recommended, m_global ? "Recommended for all games" : "Recommended settings");
 	// vk-285-135 (AI-assisted; swordpdf: "i also want to pick a folder though the browser in the shelf"): where the games and the
 	// BIOS are, on the sheet for all games (the app runs the picker and the share list). vk-285-135b: at the top (swordpdf
 	// looked for them: at the bottom, under the memory cards, they were too far down).
-	if (settings && m_global && m_folder_rows)
+	if (settings && m_global && m_folder_rows && on_page(kPageLibrary))
 	{
 		add(Kind::Header, "Folders");
 		add(Kind::GameFolders, "Game folders");
@@ -848,7 +945,7 @@ void OptionsSheet::BuildRows()
 					add(Kind::Option, d.label).def = &d;
 	}
 	// 2026-10-08 (AI-assisted; testers: "ELF properties: disc path"): an ELF's disc, first, as PCSX2's ELF properties have it.
-	if (settings && m_elf)
+	if (settings && m_elf && on_page(kPageGame)) // 318: on Game options, not on every page
 	{
 		add(Kind::Header, "ELF");
 		add(Kind::ElfDisc, "Disc image");
@@ -866,7 +963,7 @@ void OptionsSheet::BuildRows()
 			continue; // 2026-10-16: its rows came with the folder rows above
 		if (g.title == "Shelf" && !m_global && !m_hide_row)
 			continue; // gamedb (2026-10-30): a disc entry's sheet
-		if (paged && PageOfGroup(g.title) != m_page)
+		if (paged && PageOfGroup(g.title, m_global) != m_page)
 			continue; // 2.41 newsheet: another page's group
 		if (!paged || (page_groups > 1 && m_page != kPageGame))
 			add(Kind::Header, g.title); // 2.41 newsheet: a page of one group has the page's title only; Game options' few rows share one card
@@ -896,22 +993,25 @@ void OptionsSheet::BuildRows()
 	}
 	// 2026-10-08 (AI-assisted; testers asked for the PS2's own boot and menu): the PS2's menu with no disc, from the sheet
 	// for all games.
-	if (settings && m_global && m_system_menu_row)
+	if (settings && m_global && m_system_menu_row && on_page(kPageFixes))
 	{
 		add(Kind::Header, "PS2");
 		add(Kind::SystemMenu, "PS2 system menu");
 	}
 	// 180 (AI-assisted; the owner: an in-app updater like PS5SX3's): PS5SX2 itself, its updates and its session logs (the app draws and
-	// runs both rows: fe_update.h).
-	if (settings && m_global && m_update_rows)
+	// runs both rows: fe_update.h). 318: with pages the update is the home's first card, and the logs are the PS5SX2 page's.
+	if (settings && m_global && m_update_rows && on_page(kPageApp))
 	{
-		add(Kind::Header, Tr(Str::UpdateHeader));
-		add(Kind::SystemUpdate, Tr(Str::UpdateRow));
+		if (!paged)
+		{
+			add(Kind::Header, Tr(Str::UpdateHeader));
+			add(Kind::SystemUpdate, Tr(Str::UpdateRow));
+		}
 		add(Kind::LogUpload, Tr(Str::LogsRow));
 	}
 	// b185 (AI-assisted; the owner: "allow people to actually delete the reload disc tile, and it won't come back"): the helper's Reload PS2 Disc
 	// tile, kept on the home screen or not (the app reads and sets the helper's flag file flags/disctile_noreload: fe_ps5.cpp).
-	if (settings && m_global && m_reload_tile_row)
+	if (settings && m_global && m_reload_tile_row && on_page(kPageLibrary))
 	{
 		add(Kind::Header, "Home screen");
 		add(Kind::ReloadTile, Tr(Str::ReloadTileRow));
@@ -944,6 +1044,11 @@ void OptionsSheet::BuildRows()
 		{
 			add(Kind::Header, "");
 			add(Kind::Recommended, "Reset to defaults");
+		}
+		if (m_page == kPageApp) // 318: the sheet for all games' reset, at the foot of its PS5SX2 page
+		{
+			add(Kind::Header, "");
+			add(Kind::ResetAll, "Reset to PCSX2's defaults");
 		}
 		return;
 	}
@@ -1127,10 +1232,15 @@ std::string OptionsSheet::Help(const Row& r) const
 				"Fixes for drawing problems: PCSX2's manual hardware fixes and the game's own fixes.",
 				"The game's patches and cheats, and fetching more.",
 				"Which memory cards are in the slots, and making a new one.",
-				"The game's place on the shelf and the home screen, and the cheat disc."};
+				"The game's place on the shelf and the home screen, and the cheat disc.",
+				"Where the games, the BIOS and texture packs are, hidden games, what a disc put in does, and the cheat disc.",
+				"PS5SX2 itself: whether session logs are sent, and every setting back to PCSX2's defaults."};
 			const std::string summary = PageSummary(r.slot);
-			return std::string(r.slot >= 0 && r.slot < kPageCount ? what[r.slot] : "") + " Cross opens it" +
-				   (summary.empty() ? std::string(".") : ". Set here: " + summary + ".") + " Circle comes back here.";
+			const char* text = r.slot >= 0 && r.slot < kPageCount ? what[r.slot] : "";
+			if (m_global && r.slot == kPageFixes) // 318: the sheet for all games' "PS2 console"
+				text = "The PS2 itself: the language it tells games, its network adapter and hard drive, fast boot, and its own menu.";
+			return std::string(text) + " Cross opens it" + (summary.empty() ? std::string(".") : ". Set here: " + summary + ".") +
+				   " Circle comes back here.";
 		}
 		case Kind::Option:
 		{

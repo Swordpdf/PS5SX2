@@ -5,6 +5,7 @@
 
 #include "fe_app.h"
 #include "fe_sheeticons.h" // 2.41 newsheet
+#include "fe_sheetcards.h" // 318: the sheet's cards, shared with the in-game menu
 #include "fe_i18n.h"
 #include "fe_roots.h" // 2026-10-16: kScanSubfoldersKey (the picker's game count)
 #include "fe_settings.h" // bioscheck: EditSettingsFile (the BIOS question writes PS5SX2/OpenBios)
@@ -2013,8 +2014,26 @@ void App::Build(FrameDesc& f, const std::string& clock)
 	{
 		// vk-285-114: the options sheet's buttons.
 		hint(icon::DpadUpDown, nullptr, Tr(Str::HintMove));
-		hint(icon::DpadLeftRight, nullptr, Tr(Str::HintChange));
-		hint(icon::Triangle, nullptr, m_sheet.tab() == kTabAchievements ? Tr(Str::AchievementRefresh) : Tr(Str::HintReset));
+		// 319: on a page's tile of the home, and on a row that Cross runs or opens: what Cross does, not "Change" and "Reset"
+		bool runs = false;
+		if (m_sheet.tab() != kTabAchievements && !m_picker.open)
+		{
+			const auto& hint_rows = m_sheet.rows();
+			if (m_sheet_row >= 0 && m_sheet_row < static_cast<int>(hint_rows.size()))
+			{
+				using K = OptionsSheet::Kind;
+				const K kind = hint_rows[static_cast<size_t>(m_sheet_row)].kind;
+				runs = kind == K::Category || kind == K::SystemUpdate || kind == K::Recommended || kind == K::ResetAll || kind == K::SystemMenu ||
+				       kind == K::OnlinePatches || kind == K::GameFolders || kind == K::BiosFolder || kind == K::TexturesFolder || kind == K::NfsShares;
+			}
+		}
+		if (runs)
+			hint(icon::Cross, nullptr, Tr(Str::HintSelect));
+		else
+		{
+			hint(icon::DpadLeftRight, nullptr, Tr(Str::HintChange));
+			hint(icon::Triangle, nullptr, m_sheet.tab() == kTabAchievements ? Tr(Str::AchievementRefresh) : Tr(Str::HintReset));
+		}
 		hint(icon::Circle, nullptr, Tr(Str::HintBack));
 		if (n > 0)
 		{
@@ -2306,6 +2325,7 @@ void App::OpenSheet(bool global)
 		SheetFocusPage(it != m_sheet_last_page.end() ? it->second : -1);
 	}
 	m_sheet_scroll_target = 0;
+	m_sheet_focus[3] = 0; // 319: the focus starts on its row
 	m_sheet_status.clear();
 	m_sheet_held_v = m_sheet_held_h = 0;
 	if (m_sheet.tab() == kTabAchievements)
@@ -2335,6 +2355,8 @@ void App::SheetFocusPage(int page)
 void App::SheetTab(int tab)
 {
 	m_sheet.SetTab(tab);
+	m_sheet_focus[3] = 0; // 319
+	m_sheet_page_time = m_time;
 	if (tab != kTabAchievements && m_cfg.game_achievements.cancel)
 		m_cfg.game_achievements.cancel();
 	if (tab == kTabAchievements)
@@ -2413,16 +2435,10 @@ void App::CloseSheet()
 
 bool App::SheetMove(int dir)
 {
-	const auto& rows = m_sheet.rows();
-	int r = m_sheet_row;
-	for (;;)
-	{
-		r += dir;
-		if (r < 0 || r >= static_cast<int>(rows.size()))
-			return false;
-		if (m_sheet.Selectable(rows[static_cast<size_t>(r)]))
-			break;
-	}
+	// 318: the sheet knows its rows' places (the home's pages are tiles, two a line): up and down move by a line of them.
+	const int r = m_sheet.Neighbour(m_sheet_row, dir, 0);
+	if (r < 0)
+		return false;
 	m_sheet_row = r;
 	return true;
 }
@@ -2457,6 +2473,19 @@ void App::UpdateSheet(double dt, const Input& in)
 		return;
 	}
 	m_sheet_row = std::max(0, std::min(m_sheet_row, static_cast<int>(rows.size()) - 1));
+	// 319: the cards' focus glides to where the last frame put it (BuildSheet)
+	if (m_sheet_focus[3] > 0 && m_sheet_focus_goal[3] > 0)
+	{
+		const float g = 1.0f - std::exp(-static_cast<float>(dt) * 22.0f);
+		for (int i = 0; i < 4; i++)
+		{
+			m_sheet_focus[i] += (m_sheet_focus_goal[i] - m_sheet_focus[i]) * g;
+			if (std::fabs(m_sheet_focus_goal[i] - m_sheet_focus[i]) < 0.5f)
+				m_sheet_focus[i] = m_sheet_focus_goal[i];
+		}
+	}
+	else if (m_sheet_focus_goal[3] <= 0)
+		m_sheet_focus[3] = 0;
 
 	// 2026-10-05: a texture pack that came in while the sheet is open: the game's file has Texture replacements on now.
 	if (m_cfg.texture_packs && !m_sheet_global && !m_games.empty())
@@ -2497,6 +2526,8 @@ void App::UpdateSheet(double dt, const Input& in)
 		m_sheet.OpenPage(-1);
 		SheetFocusPage(page);
 		m_sheet_scroll = m_sheet_scroll_target = 0;
+		m_sheet_focus[3] = 0; // 319
+		m_sheet_page_time = m_time;
 		Sound(Sfx::Move, -0.3f);
 		return;
 	}
@@ -2694,12 +2725,24 @@ void App::UpdateSheet(double dt, const Input& in)
 	// 2.41 newsheet: a page's row of the home: Cross (or Right) opens the page, from its first row.
 	if (row.kind == OptionsSheet::Kind::Category)
 	{
-		if (pressed(in.cross, m_prev.cross) || pressed(in.right, m_prev.right))
+		// 318: the pages are tiles, two a line: left and right go to the tile beside this one, Cross opens the page.
+		const int side = pressed(in.left, m_prev.left) ? -1 : pressed(in.right, m_prev.right) ? 1 : 0;
+		if (side != 0 && m_sheet.GridColumns() > 1)
+		{
+			const int to = m_sheet.Neighbour(m_sheet_row, 0, side);
+			if (to >= 0)
+				m_sheet_row = to;
+			Sound(to >= 0 ? Sfx::Move : Sfx::Edge, 0.3f);
+			return;
+		}
+		if (pressed(in.cross, m_prev.cross) || (side > 0 && m_sheet.GridColumns() < 2))
 		{
 			m_sheet_last_page[m_sheet.file_label()] = row.slot;
 			m_sheet.OpenPage(row.slot);
 			SheetFocusPage(-1);
 			m_sheet_scroll = m_sheet_scroll_target = 0;
+			m_sheet_focus[3] = 0; // 319: the focus starts on the page's first row, and the page rises
+			m_sheet_page_time = m_time;
 			Sound(Sfx::Move, 0.3f);
 		}
 		return;
@@ -3634,7 +3677,158 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 	const float view_h = (list_bottom - list_top) / k;
 	std::vector<float> offs(rows.size());
 	// 2.41 newsheet: rows in cards (rounded panels, thin lines between rows), a page's title with a line under it
-	const bool cards = m_sheet.Paged() && m_cfg.symbol_font >= 0;
+	// 318: drawn by fe_sheetcards.h, which the in-game menu uses too; the rows only the shelf knows come through `look` and `help`.
+	// 319: the Controls tab too (its groups on cards, its values as chips).
+	if (m_cfg.paged_sheet && m_cfg.symbol_font >= 0)
+	{
+		using K = OptionsSheet::Kind;
+		using Tone = sheetcards::Tone;
+		const size_t list_begin = ui.size();
+		sheetcards::Context c;
+		c.paint.rect = [&ui](float rx, float ry, float rw, float rh, float radius, uint32_t color) {
+			Fonts::AddRoundedRect(ui, rx, ry, rw, rh, radius, color);
+		};
+		c.paint.text = [&ui, this](const char* s, float tx, float baseline, float px, uint32_t color, float weight, Fonts::Align align) {
+			return m_fonts->AddText(ui, s, tx, baseline, px, color, weight, align);
+		};
+		c.fonts = m_fonts;
+		c.sheet = &m_sheet;
+		c.focus = m_sheet_row;
+		c.x = x;
+		c.y = y;
+		c.sw = sw;
+		c.sh = sh;
+		c.k = k;
+		c.list_top = list_top;
+		c.list_bottom = list_bottom;
+		c.scroll = m_sheet_scroll;
+		c.scroll_target = &m_sheet_scroll_target;
+		for (int i = 0; i < 3; i++)
+			c.accent[i] = m_glow[i];
+		c.now = m_time;
+		c.focus_drawn = m_sheet_focus;
+		c.focus_goal = m_sheet_focus_goal;
+		const auto pack_of = [this](TexturePackStatus& pack, int& pick) {
+			const std::string& serial = m_games[static_cast<size_t>(m_selected)].serial;
+			pack = m_cfg.texture_packs.status(serial);
+			const auto it = m_texpack_pick.find(serial);
+			pick = it != m_texpack_pick.end() ? it->second : std::max(0, pack.job_pack);
+			return serial;
+		};
+		c.look = [&, this](size_t, const OptionsSheet::Row& r, bool, sheetcards::RowLook& look) {
+			switch (r.kind)
+			{
+				case K::OnlinePatches: // 2026-10-08
+					look.value = OnlinePatchValue();
+					look.arrows = false;
+					break;
+				case K::HomeTile: // 2.12: the helper's word for the game's tile
+				{
+					using TP = gametile::Phase;
+					const TP p = m_tile_view.phase;
+					look.value = HomeTileValue();
+					look.arrows = false;
+					look.tone = p == TP::On ? Tone::Good : (p == TP::Failed || p == TP::NoAnswer || p == TP::Stuck || p == TP::NoHelper) ? Tone::Warn : Tone::Plain;
+					break;
+				}
+				case K::SystemUpdate: // 180; 318: the first card of the sheet for all games
+				{
+					look.value = UpdateRowValue(r);
+					look.arrows = false;
+					if (m_cfg.updates)
+					{
+						using S = UpdateStatus::State;
+						const S st = m_cfg.updates.status().state;
+						look.tone = (st == S::Available || st == S::Interrupted) ? Tone::Action : (st == S::Current || st == S::Newer) ? Tone::Good :
+						            (st == S::Failed || st == S::StartFailed) ? Tone::Warn : st == S::Idle ? Tone::Set : Tone::Plain;
+						const std::string& tag = m_cfg.updates.this_tag.empty() ? m_cfg.build_tag : m_cfg.updates.this_tag;
+						if (!tag.empty())
+							look.note = "This is " + tag;
+					}
+					break;
+				}
+				case K::LogUpload:
+					look.value = UpdateRowValue(r);
+					look.tone = m_cfg.updates && m_cfg.updates.log_upload() ? Tone::Set : Tone::Plain;
+					break;
+				case K::ReloadTile: // b185
+					if (m_cfg.reload_tile_on)
+					{
+						const bool on = m_cfg.reload_tile_on();
+						look.value = Tr(on ? Str::ReloadTileOn : Str::ReloadTileOff);
+						look.tone = on ? Tone::Plain : Tone::Set;
+					}
+					break;
+				case K::TexturePack: // 2026-10-05: the pack, the download's progress or the installed pack
+					if (m_cfg.texture_packs && !m_games.empty())
+					{
+						using TS = TexturePackStatus::State;
+						TexturePackStatus pack;
+						int pick = 0;
+						const std::string serial = pack_of(pack, pick);
+						look.value = TexturePackValue(pack, pick);
+						look.wide = true;
+						look.arrows = pack.packs.size() > 1 && (pack.state == TS::Available || pack.state == TS::Failed || pack.state == TS::NeedSpace);
+						look.tone = pack.state == TS::Installed ? Tone::Good : (pack.state == TS::Failed || pack.state == TS::NeedSpace) ? Tone::Warn : Tone::Plain;
+						if (m_texpack_armed == serial && m_time <= m_texpack_armed_until)
+						{
+							look.value = "Press again";
+							look.tone = Tone::Action;
+							look.arrows = false;
+						}
+						if (pack.total > 0 && (pack.state == TS::Checking || pack.state == TS::Downloading || pack.state == TS::Unpacking))
+							look.progress = static_cast<float>(pack.done) / static_cast<float>(pack.total);
+					}
+					break;
+				case K::GameFolders: // vk-285-135: Cross opens a list; left and right don't change them
+				case K::BiosFolder:
+				case K::TexturesFolder:
+				case K::NfsShares:
+					look.arrows = false;
+					look.chevron = true;
+					break;
+				default:
+					break;
+			}
+		};
+		c.help = [&, this](const OptionsSheet::Row& r) -> std::string {
+			if (r.kind == K::TexturePack && m_cfg.texture_packs && !m_games.empty())
+			{
+				TexturePackStatus pack;
+				int pick = 0;
+				const std::string serial = pack_of(pack, pick);
+				return TexturePackHelp(pack, pick, serial);
+			}
+			if (r.kind == K::HomeTile) // 2.12
+				return HomeTileHelp();
+			if (r.kind == K::SystemUpdate || r.kind == K::LogUpload) // 180
+				return UpdateRowHelp(r);
+			if (r.kind == K::ReloadTile) // b185
+				return Tr(Str::ReloadTileHelp);
+			return m_sheet.Help(r);
+		};
+		sheetcards::Draw(c);
+		if (m_sheet_focus[3] <= 0)
+			std::copy(m_sheet_focus_goal, m_sheet_focus_goal + 4, m_sheet_focus);
+		// 319: a page that was just opened or left rises into place
+		const float since = static_cast<float>(m_time - m_sheet_page_time);
+		if (since >= 0.0f && since < 0.20f)
+		{
+			const float p = Smoothstep(0.0f, 1.0f, since / 0.20f);
+			for (size_t i = list_begin; i < ui.size(); i++)
+				ui[i].y += (1.0f - p) * 22 * k;
+			FadeRange(ui, list_begin, ui.size(), p);
+		}
+		if (!m_sheet_status.empty() && m_time - m_sheet_status_time < 3.0)
+		{
+			const float a = 1.0f - Smoothstep(2.2f, 3.0f, static_cast<float>(m_time - m_sheet_status_time));
+			const uint32_t sc = (own & 0x00FFFFFFu) | (static_cast<uint32_t>(a * 255.0f) << 24);
+			m_fonts->AddText(ui, Fit(*m_fonts, m_sheet_status, 30 * k, inner * 0.56f).c_str(), cx, y + sh - 40 * k, 30 * k, sc, 0.4f);
+		}
+		FadeRange(ui, begin, ui.size(), Clamp(e * 1.4f, 0.0f, 1.0f));
+		return;
+	}
+	const bool cards = false; // 318: the cards are drawn above; what follows is the plain list (the Controls tab, and the sheet without the flag)
 	const auto row_height = [&](size_t i) -> float {
 		const OptionsSheet::Row& rr = rows[i];
 		if (rr.kind == OptionsSheet::Kind::Header)

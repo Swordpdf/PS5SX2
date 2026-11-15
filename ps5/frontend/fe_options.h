@@ -157,6 +157,11 @@ public:
 	// 2.41 (AI-assisted; the owner: "this section needs a redesign, too cluttered and too many entries"; flag newsheet): a game's Settings
 	// tab as a short home (Recommended, the four everyday rows, one row a page with what is set in it) and a page a category.
 	// OpenPage(-1) is the home. A page's rows are the groups of before, unchanged (the same keys and files).
+	// 318 (AI-assisted; the owner: "make it pretty", "i also want the button to check for updates visible in the redesign, bring it to
+	// the top-ish"): the sheet for all games has a home and pages too. Its home starts with PS5SX2's own update, a card of its own; its
+	// pages are Picture, Speed, PS2 console (kPageFixes there: the PS2's own settings and its menu), Memory cards, Library (the folders,
+	// the shelf and the discs) and PS5SX2 (the session logs and the reset). The home's page rows are drawn two a line, as tiles
+	// (GridColumns, Neighbour).
 	enum Page
 	{
 		kPagePicture,
@@ -165,17 +170,27 @@ public:
 		kPagePatches,
 		kPageCards,
 		kPageGame,
+		kPageLibrary, // all games
+		kPageApp,     // all games
 		kPageCount
 	};
 	void SetPaged(bool on) { m_paged = on; }
-	bool Paged() const { return m_paged && m_tab == kTabSettings && !m_global; }
+	bool Paged() const { return m_paged && m_tab == kTabSettings; }
 	int Page() const { return Paged() ? m_page : -1; }
 	void OpenPage(int page);
-	static const char* PageName(int page);
-	static const char* PageTagline(int page); // the line under a page's title
+	static const char* PageName(int page, bool global = false);
+	static const char* PageTagline(int page, bool global = false); // the line under a page's title
 	std::string PageSummary(int page) const; // "EE cycle rate 130% · MTVU On", "2 on", ""
-	static int PageOfGroup(const std::string& group_title);
+	static int PageOfGroup(const std::string& group_title, bool global = false);
 	static bool IsHomeKey(const std::string& key); // the four everyday rows of the home
+	// How many of the home's page rows share a line (2 on the home, 1 elsewhere), and the row a move from `row` lands on: dv -1 / +1
+	// (up, down) or dh -1 / +1 (left, right); -1 when there is none that way. Both sheets' drawing and both menus' buttons use these.
+	int GridColumns() const { return Paged() && m_page < 0 ? 2 : 1; }
+	int Neighbour(int row, int dv, int dh) const;
+	// 319: an option's value as the sheet has it now, by its key ("" when no option has the key): as the file holds it ("true",
+	// "Lossless") and as its row shows it ("On", "Lossless Scaling").
+	std::string EffectiveValue(const std::string& key) const;
+	std::string EffectiveLabel(const std::string& key) const;
 	bool TakeSystemMenu()
 	{
 		const bool asked = m_system_menu;

@@ -35,6 +35,8 @@ void OrbisLatCapBeforePresent(void* vk_device); // 186: the display-queue cap (t
 #endif
 #ifdef ORBIS_VULKAN
 #include <unistd.h> // vk-285-14: fsync, _exit (GPU-hang forensics)
+#include <sys/stat.h> // 2026-11-15: mkdir, stat (flag lsfgdump)
+#include <atomic> // 2026-11-15: g_orbis_stick_deflection (flag lsfgdump)
 #include <chrono> // 2026-10-08: frame generation's pacing
 #include <string>
 #include "OrbisPaths.h" // vk-285-33 (the port's include-orbis)
@@ -4837,11 +4839,14 @@ bool OrbisVkUiReady()
 bool g_orbis_fg_wanted = false; // main-boot.cpp sets it from PS5SX2/FrameGeneration before the GS opens
 std::atomic<bool> g_orbis_fg_active{false}; // frames are being generated (the FPS box says "FG"; 186: and the latency cap stands aside)
 extern unsigned g_orbis_fw_version; // 186: main-boot.cpp, the console's firmware in BCD (0x04030000 = 4.03; 0 unknown)
+extern std::atomic<unsigned> g_orbis_stick_deflection; // 2026-11-15 (flag lsfgdump): main-boot.cpp, player 1's sticks, 0-127
 bool g_orbis_fg_engaged = false; // vk-285-133: the pacing has room for generated frames (GSRenderer.cpp skips the repeats then)
 
 // The driver's measured refresh of the output its swapchain presents to (ps5vk's high-frame-rate output, 2026-10-08); a driver
 // without it presents at 59.94 Hz.
 extern "C" uint32_t ps5vk_output_refresh_millihertz(void) __attribute__((weak));
+// 318: 1 when the driver ends every compute dispatch with its cache barrier (ps5vk_debug.h; a driver from before it has no such function).
+extern "C" uint32_t ps5vk_debug_compute_barrier(VkDevice device) __attribute__((weak));
 // 2.11: the refresh of the display mode the swapchain was made for (VKSwapChain.cpp), in millihertz: the display's rate when the
 // driver measures none and the app's own switch (OrbisVideoOutMode.cpp) did not run (OrbisDisplayHz.h has the order).
 extern uint32_t g_orbis_display_refresh_mhz;
@@ -4878,6 +4883,28 @@ namespace
 		VkImage lsfg_images[2] = {};
 		bool method_decided = false;
 		bool use_lsfg = false;
+		// 2026-11-15 (diagnostic, flag lsfgdump; AI-assisted): a burst of the frames Lossless Scaling was given and the frames it made, kept
+		// in memory and written to /data/PCSX2/lsfg-dump when the burst is over, to compare with the same shaders on the PC
+		// (OrbisFrameGenRecord).
+		u32 dump_left = 0;           // generated frames still to capture in this burst
+		u32 dump_bursts = 0;         // bursts written so far
+		u32 dump_poll = 0;
+		u32 dump_flow_poll = 0;
+		float lsfg_flow = 0.0f;      // the optical flow's size asked for through lsfg-dump/flow; 0: the default
+		// 318: the optical flow's size above 2560x1440 when no flag and no file sets it: the frame's full size, and a size down (75%, 50%)
+		// once the console could not keep the game at full speed with it (OrbisFrameGenStatus; kept in cache/lsfg-flow.txt)
+		float lsfg_auto = 1.0f;
+		bool lsfg_auto_on = false;   // that size is the one in use
+		bool lsfg_auto_read = false; // cache/lsfg-flow.txt was looked at
+		u32 lsfg_short = 0;          // status windows in a row below full speed with the generator running
+		bool dump_in_window = false; // a burst was written in this status window: its stall is not the console's speed
+		bool dump_made_last = false; // the last call generated: the output and the last frame drawn are a pair
+		u32 dump_wait_move = 0;      // a go file that says "move": calls left to wait for a stick to be held; 0: not waiting
+		u32 dump_move_run = 0;       // calls in a row with a stick past half way
+		bool dump_moved = false;     // this burst started on stick movement
+		u32 dump_stick = 0;          // the sticks' deflection when it started
+		std::unique_ptr<GSDownloadTexture> dump_dl;
+		std::vector<std::vector<u8>> dump_frames, dump_gens;
 	};
 
 	OrbisFrameGenState s_orbis_fg;
@@ -4926,6 +4953,14 @@ void GSDeviceVK::OrbisFrameGenRelease()
 			t->Destroy(false);
 		t.reset();
 	}
+	// 2026-11-15 (flag lsfgdump): a burst in flight goes with the images it was reading.
+	s.dump_dl.reset();
+	s.dump_frames.clear();
+	s.dump_gens.clear();
+	s.dump_left = 0;
+	s.dump_made_last = false;
+	s.dump_wait_move = 0;
+	s.dump_move_run = 0;
 	if (s.lsfg)
 	{
 		if (s.output)
@@ -5099,6 +5134,31 @@ namespace
 			in.gpu = fmt::format("; GPU {:.2f} ms a frame ({:.2f} the optical flow), most {:.2f}", gpu_ms, flow_ms, gpu_max);
 		printf("%s\n", orbis_fg::FormatStatus(in).c_str());
 		fflush(stdout);
+		// 318: Lossless Scaling's optical flow at the frame's full size is the best picture and the most GPU time. Two 10 s windows in a row
+		// with the generator running and the game below full speed: the next size down, for this console from now on.
+		if (s.use_lsfg && s.lsfg && s.lsfg_auto_on && s.lsfg_auto > 0.5f && !s.dump_in_window)
+		{
+			const bool running = in.w.recorded > 0 && in.w.made * 2 > in.w.recorded;
+			s.lsfg_short = (running && speed < 96.0f) ? s.lsfg_short + 1 : 0;
+			if (s.lsfg_short >= 2)
+			{
+				s.lsfg_short = 0;
+				s.lsfg_auto = s.lsfg_auto > 0.75f ? 0.75f : 0.5f;
+				printf("[fg] lsfg: the game ran at %.0f%% of its speed for 20 s with the optical flow at %.0f%% of the frame's size: %.0f%% from now on "
+					   "(kept in /data/PCSX2/cache/lsfg-flow.txt; the flag lsfgfullflow keeps the full size)\n",
+					speed, s.lsfg->FlowScale() * 100.0f, s.lsfg_auto * 100.0f);
+				fflush(stdout);
+				mkdir("/data/PCSX2/cache", 0777);
+				if (FILE* const f = fopen("/data/PCSX2/cache/lsfg-flow.txt", "wb"))
+				{
+					fprintf(f, "%ux%u %.2f\n", s.lsfg->Width(), s.lsfg->Height(), s.lsfg_auto);
+					fclose(f);
+				}
+			}
+		}
+		else
+			s.lsfg_short = 0;
+		s.dump_in_window = false;
 		s.stat_start = now;
 		s.win = orbis_fg::Window{};
 	}
@@ -5141,7 +5201,16 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 		}
 		s.upscale = GSConfig.UpscaleMultiplier;
 	}
-	const orbis_fg::Decision decision = s.pacing.Frame(vsyncs, already, ps2_hz, s.hz, now_s, speed, nominal);
+	orbis_fg::Decision decision = s.pacing.Frame(vsyncs, already, ps2_hz, s.hz, now_s, speed, nominal);
+	// 2026-11-15 (flag lsfgdump): a capture burst reads two 4K images back a frame, which makes those frames long. The pacing's verdict
+	// on them is set aside, so that the chain keeps giving each frame its neighbour until the burst is over.
+	if (s.dump_left > 0 && s.lsfg && s.dump_made_last)
+	{
+		decision.engaged = true;
+		decision.reset = false;
+		if (decision.presents == 0)
+			decision.presents = 1;
+	}
 	OrbisFrameGenLogEvent(s, s.pacing.TakeEvent());
 	OrbisFrameGenLogState(s, now, ps2_hz);
 	g_orbis_fg_engaged = decision.engaged;
@@ -5249,18 +5318,33 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 			// compiler may take the shaders. The flag lsfgforce tries them anyway; a pipeline the driver refuses still ends in the
 			// fallback below ("could not start").
 			static const bool s_force = OrbisFlag("lsfgforce");
+			// 318: ps5vk runs these shaders although it claims none of what they declare: on the PS5 Pro its frames were the PC's
+			// (2026-11-15: the same game frames through the same shaders on a PC, 0.01% to 0.16% of the pixels apart), once every compute
+			// dispatch ended with the driver's cache barrier. Without the barrier a later pass samples what an earlier one stored a moment
+			// before and the frame is warped wherever the picture moves (18% of the pixels), so the driver is asked for it: an older
+			// driver has no such function, and vk_gpuwait off or the flag vk_nocsbarrier answer 0.
+			const bool barrier = ps5vk_debug_compute_barrier && ps5vk_debug_compute_barrier(m_device) != 0;
+			const bool claims = !((p.needs_memory_model && !p.memory_model) || (p.needs_float16 && !p.float16) ||
+								  (p.needs_storage_write_without_format && !m_device_features.shaderStorageImageWriteWithoutFormat) ||
+								  (p.needs_storage_read_without_format && !m_device_features.shaderStorageImageReadWithoutFormat) ||
+								  (p.needs_extended_formats && !m_device_features.shaderStorageImageExtendedFormats) ||
+								  (p.needs_int16 && !m_device_features.shaderInt16));
+			const std::string device_text = p.device_text.empty() ? std::string("not asked") : p.device_text;
 			if (p.status != lsfg::LosslessStatus::Ok)
 				why = p.path + ": " + lsfg::LosslessStatusText(p.status);
 			else if (s_force)
-				printf("[fg] lsfg: flag lsfgforce: trying the shaders although the device does not claim what they declare (%s)\n",
-					p.device_text.empty() ? "not asked" : p.device_text.c_str());
-			else if ((p.needs_memory_model && !p.memory_model) || (p.needs_float16 && !p.float16) ||
-					 (p.needs_storage_write_without_format && !m_device_features.shaderStorageImageWriteWithoutFormat) ||
-					 (p.needs_storage_read_without_format && !m_device_features.shaderStorageImageReadWithoutFormat) ||
-					 (p.needs_extended_formats && !m_device_features.shaderStorageImageExtendedFormats) ||
-					 (p.needs_int16 && !m_device_features.shaderInt16))
-				why = "the device lacks what its shaders need (" + (p.device_text.empty() ? std::string("not asked") : p.device_text) +
-				      "; flag lsfgforce tries them anyway)";
+				printf("[fg] lsfg: flag lsfgforce: trying the shaders whatever the device claims (%s) and whatever the driver's compute passes "
+					   "end with (%s)\n",
+					device_text.c_str(), barrier ? "the cache barrier" : "no cache barrier: expect warped frames");
+			else if (ps5vk_debug_compute_barrier && !barrier)
+				why = "the driver's compute passes do not end with its cache barrier now (the flag vk_gpuwait is off, or vk_nocsbarrier is "
+				      "set), and Lossless Scaling's frames are warped without it; flag lsfgforce tries anyway";
+			else if (barrier && !claims)
+				printf("[fg] lsfg: the device claims none of what the shaders declare (%s); the driver runs them, its compute passes ending with "
+					   "the cache barrier\n",
+					device_text.c_str());
+			else if (!claims)
+				why = "the device lacks what its shaders need (" + device_text + "; flag lsfgforce tries them anyway)";
 			s.use_lsfg = why.empty();
 			if (s.use_lsfg)
 				printf("[fg] lsfg: frame generation method: Lossless Scaling (%s)\n", p.path.c_str());
@@ -5276,14 +5360,53 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 		}
 	}
 
-	if (s.use_lsfg && (!s.lsfg || s.lsfg->Width() != w || s.lsfg->Height() != h))
+	// The optical flow's size. Up to 2560x1440: the frame's. Above (4K): 314 made it half, Lossless Scaling's own advice for a PC; 318:
+	// the frame's full size (the half size misplaces the fine detail of whatever moves, and the PS5 Pro held 60 frames a second and 60
+	// generated at the full size in Ratchet & Clank 3), and a size down where the console cannot keep the game at full speed with it
+	// (lsfg_auto: OrbisFrameGenStatus). Flags: lsfgfullflow (full anywhere, whatever the speed), lsfghalfflow (half anywhere).
+	const bool flow_half_flag = OrbisFlag("lsfghalfflow");
+	s.lsfg_auto_on = !flow_half_flag && s.lsfg_flow <= 0.0f && static_cast<u64>(w) * h > 2560u * 1440u && !OrbisFlag("lsfgfullflow");
+	if (s.lsfg_auto_on && !s.lsfg_auto_read)
+	{
+		s.lsfg_auto_read = true;
+		if (FILE* const f = fopen("/data/PCSX2/cache/lsfg-flow.txt", "rb"))
+		{
+			unsigned fw = 0, fh = 0;
+			float flow = 0.0f;
+			if (fscanf(f, "%ux%u %f", &fw, &fh, &flow) == 3 && fw == w && fh == h && flow >= 0.5f && flow < 1.0f)
+				s.lsfg_auto = flow >= 0.74f ? 0.75f : 0.5f;
+			fclose(f);
+		}
+	}
+	const float flow_default = flow_half_flag ? 0.5f : s.lsfg_auto_on ? s.lsfg_auto : 1.0f;
+	// 2026-11-15 (diagnostic, flag lsfgdump): another size for the optical flow while the game runs: a number from 0.25 to 1 in
+	// /data/PCSX2/lsfg-dump/flow (looked for twice a second, removed once read) makes the chain again at that size, with a label.
+	static const bool s_flow_file = OrbisFlag("lsfgdump");
+	if (s_flow_file && s.use_lsfg && s.dump_left == 0 && (s.dump_flow_poll++ % 30) == 0)
+	{
+		static constexpr const char* kFlowFile = "/data/PCSX2/lsfg-dump/flow";
+		if (FILE* const f = fopen(kFlowFile, "rb"))
+		{
+			char text[32] = {};
+			const size_t got = fread(text, 1, sizeof(text) - 1, f);
+			fclose(f);
+			remove(kFlowFile);
+			const float asked = got ? strtof(text, nullptr) : 0.0f;
+			if (asked >= 0.25f && asked <= 1.0f)
+			{
+				s.lsfg_flow = asked;
+				printf("[fg] lsfg dump: the optical flow asked for at %.0f%% of the frame's size\n", asked * 100.0f);
+				fflush(stdout);
+			}
+		}
+	}
+	const float flow_wanted = s.lsfg_flow > 0.0f ? s.lsfg_flow : flow_default;
+
+	if (s.use_lsfg && (!s.lsfg || s.lsfg->Width() != w || s.lsfg->Height() != h || s.lsfg->FlowScale() != flow_wanted))
 	{
 		OrbisFrameGenRelease();
 		const auto t0 = std::chrono::steady_clock::now();
-		// The optical flow at half size above 2560x1440, as Lossless Scaling's own advice for 4K (and 186's for PS5SX2's own); flags
-		// lsfgfullflow (full anywhere), lsfghalfflow (half anywhere).
-		const bool half_flow = OrbisFlag("lsfghalfflow") || (static_cast<u64>(w) * h > 2560u * 1440u && !OrbisFlag("lsfgfullflow"));
-		const float flow_scale = half_flow ? 0.5f : 1.0f;
+		const float flow_scale = flow_wanted;
 		std::string error;
 		s.lsfg = std::make_unique<lsfg::Backend>();
 		bool ok = s.lsfg->Create(m_physical_device, m_device, m_allocator, s_orbis_lsfg.modules, w, h, format, flow_scale, error);
@@ -5318,19 +5441,201 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 		{
 			s.prepared = false;
 			s.reset_next = true;
+			char flow_text[160];
+			if (s.lsfg_flow > 0.0f)
+				snprintf(flow_text, sizeof(flow_text), "%.0f%% of the frame's size (asked for through lsfg-dump/flow)", flow_scale * 100.0f);
+			else if (flow_half_flag)
+				snprintf(flow_text, sizeof(flow_text), "half size (flag lsfghalfflow)");
+			else if (s.lsfg_auto_on && flow_scale < 1.0f)
+				snprintf(flow_text, sizeof(flow_text), "%.0f%% of the frame's size (this console fell short of full speed with more; "
+					"cache/lsfg-flow.txt)", flow_scale * 100.0f);
+			else
+				snprintf(flow_text, sizeof(flow_text), "full size");
 			printf("[fg] lsfg: ready for %ux%u (the display %ux%u%s, frames in format %d) in %.0f ms; the display at %.2f Hz; the optical "
 				   "flow at %s; %s\n",
 				w, h, win_w, win_h,
 				fg_div > 1 ? "; frames generated at half its size (firmware below 9.00 or flag fghalfres), flag fgfullres for its own" : "",
 				static_cast<int>(format), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), s.hz,
-				half_flow ? "half size (flag lsfgfullflow: full)" : "full size", s.lsfg->Notes().c_str());
+				flow_text, s.lsfg->Notes().c_str());
 			fflush(stdout);
+			if (s.lsfg_flow > 0.0f)
+				OrbisOSDLabel(flow_scale >= 0.99f ? "LSFG FLOW 100%" : flow_scale >= 0.74f ? "LSFG FLOW 75%" :
+				              flow_scale >= 0.49f ? "LSFG FLOW 50%" : "LSFG FLOW 25%");
 		}
 	}
 
 	if (s.use_lsfg)
 	{
 		lsfg::Backend& fg = *s.lsfg;
+
+		// 2026-11-15 (diagnostic, flag lsfgdump; AI-assisted): what Lossless Scaling was given and what it made, to compare with the same
+		// shaders on the PC. When /data/PCSX2/lsfg-dump/go appears (looked for twice a second), the next kBurst generated frames are read
+		// back, each with the game's frame it was made for, and for the first one the frame before it too. They are kept in memory and
+		// written there when the burst is over: bNN-frameK.raw in the frame format's bytes, bNN-genK.raw in R8G8B8A8 (gen K lies between
+		// frames K-1 and K), and bNN.txt, written last, with the sizes and formats. Before this frame is drawn: the two frame images
+		// and the output still hold the last pair.
+		static const bool s_dump = OrbisFlag("lsfgdump");
+		if (s_dump)
+		{
+			static constexpr u32 kBurst = 3;
+			static constexpr const char* kFolder = "/data/PCSX2/lsfg-dump";
+			// A go file whose text starts with "move" waits for the player: the burst starts once a stick has been held past half way
+			// for 0.4 s (the picture is moving by then), or after 90 s without that. A capture started from the PC at a moment of its
+			// own choosing caught a still picture five times out of six, and a still picture says nothing about the generation.
+			static constexpr u32 kMoveCalls = 24, kMoveWaitCalls = 90 * 60;
+			if (s.dump_left == 0 && s.dump_wait_move == 0 && (s.dump_poll++ % 30) == 0)
+			{
+				if (s.dump_poll == 1)
+				{
+					mkdir(kFolder, 0777);
+					printf("[fg] lsfg dump: flag lsfgdump: %u generated frames and the game's frames around them are written to %s each "
+						   "time a file named go appears there (go with the text \"move\": once a stick is held)\n",
+						kBurst, kFolder);
+					fflush(stdout);
+				}
+				const std::string go = std::string(kFolder) + "/go";
+				struct stat st;
+				if (stat(go.c_str(), &st) == 0)
+				{
+					char text[8] = {};
+					if (FILE* const f = fopen(go.c_str(), "rb"))
+					{
+						if (fread(text, 1, sizeof(text) - 1, f) == 0)
+							text[0] = '\0';
+						fclose(f);
+					}
+					remove(go.c_str());
+					s.dump_frames.clear();
+					s.dump_gens.clear();
+					s.dump_moved = false;
+					s.dump_stick = g_orbis_stick_deflection.load(std::memory_order_relaxed);
+					if (std::strncmp(text, "move", 4) == 0)
+					{
+						s.dump_wait_move = kMoveWaitCalls;
+						s.dump_move_run = 0;
+						printf("[fg] lsfg dump: burst %u waits for a stick to be held\n", s.dump_bursts + 1);
+					}
+					else
+					{
+						s.dump_left = kBurst;
+						printf("[fg] lsfg dump: burst %u starts\n", s.dump_bursts + 1);
+					}
+					fflush(stdout);
+				}
+			}
+			if (s.dump_wait_move > 0)
+			{
+				const u32 stick = g_orbis_stick_deflection.load(std::memory_order_relaxed);
+				s.dump_move_run = stick >= 64 ? s.dump_move_run + 1 : 0;
+				const bool moved = s.dump_move_run >= kMoveCalls && s.dump_made_last;
+				if (moved || --s.dump_wait_move == 0)
+				{
+					s.dump_wait_move = 0;
+					s.dump_move_run = 0;
+					s.dump_left = kBurst;
+					s.dump_moved = moved;
+					s.dump_stick = stick;
+					printf("[fg] lsfg dump: burst %u starts (%s; the sticks at %u of 127)\n", s.dump_bursts + 1,
+						moved ? "a stick held past half way for 0.4 s" : "no stick held within 90 s", stick);
+					fflush(stdout);
+				}
+			}
+			if (s.dump_left > 0 && !s.dump_made_last && !s.dump_frames.empty())
+			{
+				// The chain started over inside the burst: the frames taken so far have lost their neighbours.
+				s.dump_frames.clear();
+				s.dump_gens.clear();
+				s.dump_left = kBurst;
+			}
+			else if (s.dump_left > 0 && s.dump_made_last && s.output)
+			{
+				const auto t0 = std::chrono::steady_clock::now();
+				const GSVector4i rc(0, 0, static_cast<int>(w), static_cast<int>(h));
+				if (!s.dump_dl)
+					s.dump_dl = CreateDownloadTexture(w, h, GSTexture::Format::Color);
+				const auto grab = [&](GSTextureVK* tex, std::vector<u8>& out) -> bool {
+					if (!s.dump_dl || !tex)
+						return false;
+					s.dump_dl->CopyFromTexture(rc, tex, rc, 0, true);
+					s.dump_dl->Flush();
+					if (!s.dump_dl->Map(rc))
+						return false;
+					out.resize(static_cast<size_t>(w) * h * 4);
+					const u8* const src = s.dump_dl->GetMapPointer();
+					const u32 pitch = s.dump_dl->GetMapPitch();
+					for (u32 y = 0; y < h; y++)
+						std::memcpy(&out[static_cast<size_t>(y) * w * 4], src + static_cast<size_t>(y) * pitch, static_cast<size_t>(w) * 4);
+					s.dump_dl->Unmap();
+					return true;
+				};
+				// The chain's next frame image still holds the frame before the last; the other one the last, which the output was made for.
+				GSTextureVK* const older = fg.FrameImage() == s.lsfg_images[0] ? s.lsfg_frames[0].get() : s.lsfg_frames[1].get();
+				GSTextureVK* const last = older == s.lsfg_frames[0].get() ? s.lsfg_frames[1].get() : s.lsfg_frames[0].get();
+				bool ok = true;
+				if (s.dump_frames.empty())
+				{
+					s.dump_frames.emplace_back();
+					ok = grab(older, s.dump_frames.back());
+				}
+				s.dump_frames.emplace_back();
+				ok = ok && grab(last, s.dump_frames.back());
+				s.dump_gens.emplace_back();
+				ok = ok && grab(s.output.get(), s.dump_gens.back());
+				const double read_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+				if (!ok)
+				{
+					printf("[fg] lsfg dump: a readback failed; the burst is dropped\n");
+					fflush(stdout);
+					s.dump_frames.clear();
+					s.dump_gens.clear();
+					s.dump_left = 0;
+				}
+				else if (--s.dump_left == 0)
+				{
+					const u32 burst = ++s.dump_bursts;
+					s.dump_in_window = true; // 318: this status window's speed is the write's, not the console's
+					const auto tw = std::chrono::steady_clock::now();
+					size_t written = 0;
+					const auto put = [&](const char* name, const std::vector<u8>& data) {
+						const std::string path = std::string(kFolder) + "/" + name;
+						if (FILE* const f = fopen(path.c_str(), "wb"))
+						{
+							written += fwrite(data.data(), 1, data.size(), f);
+							fclose(f);
+						}
+					};
+					char name[64];
+					for (size_t i = 0; i < s.dump_frames.size(); i++)
+					{
+						snprintf(name, sizeof(name), "b%02u-frame%zu.raw", burst, i);
+						put(name, s.dump_frames[i]);
+					}
+					for (size_t i = 0; i < s.dump_gens.size(); i++)
+					{
+						snprintf(name, sizeof(name), "b%02u-gen%zu.raw", burst, i + 1);
+						put(name, s.dump_gens[i]);
+					}
+					snprintf(name, sizeof(name), "b%02u.txt", burst);
+					if (FILE* const f = fopen((std::string(kFolder) + "/" + name).c_str(), "wb"))
+					{
+						fprintf(f, "width %u\nheight %u\nframe_vk_format %d\ngen_vk_format %d\nflow_scale %.2f\nframes %zu\ngens %zu\n"
+								   "display_hz %.2f\nbytes %zu\nnotes %s\ntrigger %s\nstick %u\n",
+							w, h, static_cast<int>(format), static_cast<int>(lsfg::Backend::kOutputFormat), fg.FlowScale(),
+							s.dump_frames.size(), s.dump_gens.size(), s.hz, written, fg.Notes().c_str(),
+							s.dump_moved ? "stick held" : "at once", s.dump_stick);
+						fclose(f);
+					}
+					printf("[fg] lsfg dump: burst %u written to %s: %zu frames of the game and %zu generated, %.0f MB in %.0f ms (the last "
+						   "readback took %.0f ms)\n",
+						burst, kFolder, s.dump_frames.size(), s.dump_gens.size(), written / 1048576.0,
+						std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tw).count(), read_ms);
+					fflush(stdout);
+					std::vector<std::vector<u8>>().swap(s.dump_frames);
+					std::vector<std::vector<u8>>().swap(s.dump_gens);
+				}
+			}
+		}
+
 		VkCommandBuffer cmd = GetCurrentCommandBuffer();
 		EndRenderPass();
 
@@ -5346,6 +5651,7 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 			return 0;
 
 		const bool made = fg.Record(cmd);
+		s.dump_made_last = made; // flag lsfgdump
 		InvalidateCachedState(); // compute pipelines and sets were bound by hand
 		if (made)
 		{

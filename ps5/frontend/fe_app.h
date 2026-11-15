@@ -484,6 +484,10 @@ public:
 	static std::vector<uint32_t> SheetIconCodepoints(); // 2.41 newsheet: the icons the pages and the Recommended row draw (Font Awesome Solid)
 private:
 	float m_sheet_scroll = 0, m_sheet_scroll_target = 0;
+	// 319: the sheet's cards: the focus's outline as it is drawn and where it belongs (x, y, w, h in pixels; h 0: none), so that it
+	// glides to its row as the in-game menu's does; and when a page was opened or left, for its short rise
+	float m_sheet_focus[4] = {0, 0, 0, 0}, m_sheet_focus_goal[4] = {0, 0, 0, 0};
+	double m_sheet_page_time = -10.0;
 	int m_sheet_held_v = 0, m_sheet_held_h = 0;
 	double m_sheet_held_for = 0, m_sheet_next_repeat = 0;
 	std::string m_sheet_status;

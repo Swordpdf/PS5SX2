@@ -110,6 +110,9 @@ bool g_orbis_sw_on_gl = false;
 std::atomic<int> g_orbis_filter_cycle{0};
 extern std::atomic<int> g_orbis_state_request; // eerec-282 (StubHost.cpp)
 std::atomic<int> g_orbis_ingame_request{0}; // 2.31: the in-game menu combo asks; StubHost.cpp pauses the game for it
+// 2026-11-15 (diagnostic, flag lsfgdump; AI-assisted): how far player 1's sticks are from their centres (0-127, the larger axis of the
+// two), for the frame capture that waits until the player moves (GSDeviceVK.cpp, OrbisFrameGenRecord).
+std::atomic<unsigned> g_orbis_stick_deflection{0};
 bool OrbisVkUiReady(); // 2.31 (GSDeviceVK.cpp): the in-game menu's pipeline was made
 // vk-285-48: back to the menu. The pad thread asks with request 3: since vk-285-49 on a touchpad
 // click with L1+R1 held (48 used L3+R3 + D-pad Left). StubHost's PumpMessagesOnCPUThread then calls
@@ -1134,6 +1137,12 @@ static void *orbis_pad_thread(void *)
         printf("[pad] keyboard: %s\n", hotkey == 1 ? "F1, save the state" : hotkey == 2 ? "F3, load the state" : "Esc held, back to the menu");
         fflush(stdout);
       }
+    }
+    {
+      // 2026-11-15 (flag lsfgdump): the sticks' deflection, for the capture that waits for movement.
+      const auto off = [](uint8_t v) { return static_cast<unsigned>(v > 128 ? v - 128 : 128 - v); };
+      g_orbis_stick_deflection.store(
+        rc == 0 ? std::max(std::max(off(d.lx), off(d.ly)), std::max(off(d.rx), off(d.ry))) : 0u, std::memory_order_relaxed);
     }
     if (rc == 0 && orbis_ingame_take_pad(port1, d))
     {

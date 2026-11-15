@@ -1906,7 +1906,7 @@ void orbis_ingame_prepare(const OrbisFrontendPaths& paths)
 		fe::InGameMenu::Config cfg;
 		cfg.fonts = fonts;
 		cfg.icon_font = icon_font;
-		cfg.paged_sheet = OrbisFlag("newsheet"); // 2.41: the game sheet and the Game tab in the new style
+		cfg.paged_sheet = !OrbisFlag("oldsheet"); // 2.41: the game sheet and the Game tab in the new style (318: unless the flag oldsheet is set)
 		// The files the shelf's sheet and the settings page edit, logged as they log.
 		cfg.paths.settings_dir = paths.settings_dir;
 		cfg.paths.gs_ini = paths.gs_ini;
@@ -2391,7 +2391,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		fonts_ok = fonts->Init(fe_font_text, static_cast<size_t>(fe_font_text_end - fe_font_text), fe_font_icons,
 			static_cast<size_t>(fe_font_icons_end - fe_font_icons), fe_font_brands, static_cast<size_t>(fe_font_brands_end - fe_font_brands));
 		// 2.41 newsheet: the game sheet's icons (Font Awesome Solid, the in-game menu's font), only with the new sheet
-		if (fonts_ok && OrbisFlag("newsheet"))
+		if (fonts_ok && !OrbisFlag("oldsheet"))
 		{
 			sheet_symbols = fonts->AddFont(fe_font_symbols);
 			if (sheet_symbols >= 0)
@@ -2650,7 +2650,9 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		acfg.options.cheats_dir = paths.cheats_dir;
 	}
 	acfg.system_menu = true; // 2026-10-08: the sheet for all games offers the PS2 system menu (main-boot.cpp boots it)
-	acfg.paged_sheet = OrbisFlag("newsheet"); // 2.41: the redesigned game sheet (a home and pages), until it replaces the old one
+	// 2.41: the redesigned sheet (a home and pages). 318 (the owner: "add the ui changes we discussed yesterday - the game settings redesign
+	// and make it pretty"): it is the sheet now, for a game and for all games; the flag oldsheet brings the plain list back.
+	acfg.paged_sheet = !OrbisFlag("oldsheet");
 	acfg.symbol_font = sheet_symbols;
 	// 2.12 / 179: the Home screen tile row (see orbis_web_start): ON by default; the flag file flags/gametile_off switches it off. The cover goes to the helper for the tile's art.
 	acfg.tiles_dir = !OrbisFlag("gametile_off") ? paths.top_dir + "/tiles" : std::string();

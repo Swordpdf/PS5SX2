@@ -293,6 +293,8 @@ private:
 
 	float m_focus_y = -1;      // the focused row's highlight, gliding to m_focus_target (screen pixels; Update moves it)
 	float m_focus_target = -1; // where Build last put the focused row
+	// 318: the sheet's cards (fe_sheetcards.h): the highlight as it is drawn and where it belongs (x, y, w, h in pixels; h 0: none)
+	float m_focus_rect[4] = {0, 0, 0, 0}, m_focus_goal[4] = {0, 0, 0, 0};
 	int v_held = 0, h_held = 0;
 	double v_next = 0, h_next = 0;
 

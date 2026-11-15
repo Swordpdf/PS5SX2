@@ -5,6 +5,7 @@
 
 #include "fe_ingame.h"
 #include "fe_sheeticons.h" // 2.41 newsheet
+#include "fe_sheetcards.h" // 318: the sheet's cards, the shelf's own drawing
 
 #include "fe_i18n.h"
 #include "fe_math.h"
@@ -611,6 +612,19 @@ void InGameMenu::Update(double now, const InGamePad& pad)
 		if (std::fabs(m_focus_target - m_focus_y) < 0.5f)
 			m_focus_y = m_focus_target;
 	}
+	// 318: the sheet's cards: the highlight as a rectangle (a tile of the home is half as wide as a row)
+	if (m_focus_rect[3] > 0 && m_focus_goal[3] > 0)
+	{
+		const float g = 1.0f - std::exp(-static_cast<float>(dt) * 22.0f);
+		for (int i = 0; i < 4; i++)
+		{
+			m_focus_rect[i] += (m_focus_goal[i] - m_focus_rect[i]) * g;
+			if (std::fabs(m_focus_goal[i] - m_focus_rect[i]) < 0.5f)
+				m_focus_rect[i] = m_focus_goal[i];
+		}
+	}
+	else if (m_focus_goal[3] <= 0)
+		m_focus_rect[3] = 0; // the focused row left the window: it starts on its row when it is back
 	m_sheet_scroll += (m_sheet_scroll_target - m_sheet_scroll) * a;
 	if (std::fabs(m_sheet_scroll_target - m_sheet_scroll) < 0.5f)
 		m_sheet_scroll = m_sheet_scroll_target;
@@ -643,6 +657,7 @@ void InGameMenu::Update(double now, const InGamePad& pad)
 		const int page = m_sheet.Page();
 		m_sheet.OpenPage(-1);
 		SheetFocusPage(page);
+		m_tab_time = now; // 319: the home rises into place, as a tab does
 		return;
 	}
 	if (down(ingame_pad::Circle) || down(ingame_pad::Options))
@@ -854,16 +869,10 @@ bool InGameMenu::WrapSheet(int dir)
 
 bool InGameMenu::MoveSheet(int dir)
 {
-	const auto& rows = m_sheet.rows();
-	int r = m_sheet_row;
-	for (;;)
-	{
-		r += dir;
-		if (r < 0 || r >= static_cast<int>(rows.size()))
-			return false;
-		if (m_sheet.Selectable(rows[static_cast<size_t>(r)]))
-			break;
-	}
+	// 318: the sheet knows its rows' places (the home's pages are tiles, two a line): up and down move by a line of them.
+	const int r = m_sheet.Neighbour(m_sheet_row, dir, 0);
+	if (r < 0)
+		return false;
 	m_sheet_row = r;
 	return true;
 }
@@ -877,12 +886,21 @@ void InGameMenu::UpdateSheet(double now, const InGamePad& pad, int v, int h)
 	if (v && !MoveSheet(v) && (pad.pressed & (ingame_pad::Up | ingame_pad::Down)))
 		WrapSheet(v); // 2.41: a fresh press past the last row goes to the first, and up from the first to the last (held, it stops at the end)
 	const OptionsSheet::Row row = rows[static_cast<size_t>(m_sheet_row)];
-	if (row.kind == OptionsSheet::Kind::Category) // 2.41 newsheet: Cross or Right opens the page, from its first row
+	if (row.kind == OptionsSheet::Kind::Category) // 2.41 newsheet: Cross opens the page, from its first row
 	{
+		// 318: the pages are tiles, two a line: left and right go to the tile beside this one.
+		if (h != 0 && m_sheet.GridColumns() > 1)
+		{
+			const int to = m_sheet.Neighbour(m_sheet_row, 0, h);
+			if (to >= 0)
+				m_sheet_row = to;
+			return;
+		}
 		if ((pad.pressed & ingame_pad::Cross) || h > 0)
 		{
 			m_sheet.OpenPage(row.slot);
 			SheetFocusPage(-1);
+			m_tab_time = now; // 319: the page rises into place
 		}
 		return;
 	}
@@ -1243,6 +1261,14 @@ void InGameMenu::BuildGameRows(InGameFrame& out, float x, float y, float sw, flo
 	const float list_top = y + kListTop * k + 10 * k, list_bottom = y + sh - kHelpH * k;
 	const uint32_t hi = kHi, mid = kMid, lo = kLo, accent = Mixed(0.3f);
 	const float bx = x + 32 * k, bw = sw - 64 * k;
+	// 318: the sheet's own tiles and outline (fe_sheetcards.h), so the Game tab and the Settings tab are one design
+	sheetcards::Painter paint;
+	paint.rect = [&out](float rx, float ry0, float rw, float rh, float radius, uint32_t color) { Rect(out, rx, ry0, rw, rh, radius, color); };
+	paint.text = [&out, &f](const char* s, float tx, float baseline, float px, uint32_t color, float weight, Fonts::Align align) {
+		return Text(out, f, s, tx, baseline, px, color, weight, align);
+	};
+	const float house[3] = {Mix(kHouse[0], 1.0f, 0.3f), Mix(kHouse[1], 1.0f, 0.3f), Mix(kHouse[2], 1.0f, 0.3f)};
+	const float panel[3] = {0.048f, 0.051f, 0.108f};
 	float ry = list_top;
 	float focus_target = -1;
 	std::vector<float> ys(m_actions.size());
@@ -1267,7 +1293,7 @@ void InGameMenu::BuildGameRows(InGameFrame& out, float x, float y, float sw, flo
 			size_t j = i;
 			while (j + 1 < m_actions.size() && m_actions[j + 1].action != Action::Header)
 				j++;
-			Rect(out, bx, ys[i], bw, ys[j] + kActionRowH * k - ys[i], 30 * k, Rgba(1, 1, 1, 0.05f));
+			Rect(out, bx, ys[i], bw, ys[j] + kActionRowH * k - ys[i], 30 * k, Rgba(1, 1, 1, 0.055f));
 			i = j + 1;
 		}
 	if (focus_target >= 0)
@@ -1277,11 +1303,8 @@ void InGameMenu::BuildGameRows(InGameFrame& out, float x, float y, float sw, flo
 		if (m_focus_y < 0)
 			m_focus_y = focus_target;
 		const float fy = m_focus_y;
-		if (cards)
-		{
-			Rect(out, bx + 6 * k, fy + 6 * k, bw - 12 * k, bh - 12 * k, 25 * k, Rgba(1, 1, 1, 0.10f));
-			Rect(out, bx + 14 * k, fy + bh * 0.32f, 6 * k, bh * 0.36f, 3 * k, accent);
-		}
+		if (cards) // 318: the sheet's own outline (fe_sheetcards.h)
+			sheetcards::FocusRing(paint, house, panel, bx + 6 * k, fy + 5 * k, bw - 12 * k, bh - 10 * k, 26 * k, k);
 		else
 		{
 			Rect(out, bx, fy, bw, bh, 26 * k, Rgba(1, 1, 1, 0.11f));
@@ -1294,7 +1317,10 @@ void InGameMenu::BuildGameRows(InGameFrame& out, float x, float y, float sw, flo
 		const float y0 = ys[i];
 		if (r.action == Action::Header)
 		{
-			Text(out, f, r.label.c_str(), cx, y0 + 54 * k, 26 * k, lo, 0.45f);
+			if (cards) // 318: a group's name over its card, as on the sheet
+				Text(out, f, r.label.c_str(), bx + 16 * k, y0 + 58 * k, 24 * k, lo, 0.5f);
+			else
+				Text(out, f, r.label.c_str(), cx, y0 + 54 * k, 26 * k, lo, 0.45f);
 			continue;
 		}
 		const bool focused = static_cast<int>(i) == m_action_row;
@@ -1308,11 +1334,11 @@ void InGameMenu::BuildGameRows(InGameFrame& out, float x, float y, float sw, flo
 		{
 			// 2.41 newsheet: the icon in a rounded tile, as the game sheet's rows
 			static const uint32_t tile_icons[] = {0, kIconPlay, kIconSave, kIconLoad, kIconForward, kIconDisc, kIconPhone, kIconFlag, kIconHouse};
-			const float box = 68 * k, ix = bx + 34 * k, iy = y0 + (bh - box) * 0.5f;
-			Rect(out, ix, iy, box, box, 20 * k, focused ? Faded(accent, 0.95f) : Rgba(1, 1, 1, 0.08f));
-			Text(out, f, Utf8(tile_icons[static_cast<int>(r.action)]).c_str(), ix + box * 0.5f, iy + box * 0.5f + 12 * k, 30 * k,
-				focused ? kInk : (disabled ? lo : mid), 0.0f, Fonts::Center);
-			lx = ix + box + 30 * k;
+			// 318: tinted in the shelf's colour, as the sheet's everyday rows (a row that cannot be used: grey)
+			static const float grey[3] = {0.52f, 0.50f, 0.64f};
+			const float box = 68 * k, ix = bx + 30 * k, iy = y0 + (bh - box) * 0.5f;
+			sheetcards::IconTile(paint, ix, iy, box, disabled ? grey : house, tile_icons[static_cast<int>(r.action)], focused);
+			lx = ix + box + 28 * k;
 		}
 		else if (m_cfg.icon_font >= 0)
 		{
@@ -1353,7 +1379,10 @@ void InGameMenu::BuildGameRows(InGameFrame& out, float x, float y, float sw, flo
 	}
 
 	// The help box: what the focused row does; the slots under Save and Load, the code beside Settings on your phone.
-	Rect(out, cx, list_bottom + 44 * k, inner, 2 * k, 0, Rgba(1, 1, 1, 0.12f));
+	if (cards) // 319: on a card, as the sheet's help
+		Rect(out, bx, list_bottom + 44 * k, bw, y + sh - 22 * k - (list_bottom + 44 * k), 28 * k, Rgba(1, 1, 1, 0.035f));
+	else
+		Rect(out, cx, list_bottom + 44 * k, inner, 2 * k, 0, Rgba(1, 1, 1, 0.12f));
 	if (m_actions.empty())
 		return;
 	const ActionRow& focus = m_actions[static_cast<size_t>(m_action_row)];
@@ -1449,9 +1478,9 @@ void InGameMenu::BuildQr(InGameFrame& out, float x, float y, float side, float k
 
 void InGameMenu::BuildSheetRows(InGameFrame& out, float x, float y, float sw, float sh, float k)
 {
-	if (m_sheet.Paged())
+	if (m_cfg.paged_sheet)
 	{
-		BuildSheetCards(out, x, y, sw, sh, k); // 2.41 newsheet
+		BuildSheetCards(out, x, y, sw, sh, k); // 2.41 newsheet; 319: the Controls tab too
 		return;
 	}
 	const Fonts& f = *m_cfg.fonts;
@@ -1599,203 +1628,62 @@ void InGameMenu::BuildSheetRows(InGameFrame& out, float x, float y, float sw, fl
 // game starts. The highlight glides as on the old sheet.
 void InGameMenu::BuildSheetCards(InGameFrame& out, float x, float y, float sw, float sh, float k)
 {
+	// 318: the cards are the shelf's (fe_sheetcards.h): one drawing for both, so the in-game menu cannot look different. What is this
+	// menu's own: the highlight glides, a row read when a game starts says "next start", and the help says what applies on resume.
 	const Fonts& f = *m_cfg.fonts;
-	const float cx = x + 64 * k, inner = sw - 128 * k;
-	const uint32_t hi = kHi, mid = kMid, lo = kLo, accent = Mixed(0.3f), own = Mixed(0.45f);
-	const auto& rows = m_sheet.rows();
-	const float list_top = y + kListTop * k, list_bottom = y + sh - kHelpH * k;
-	const float view_h = (list_bottom - list_top) / k;
-	const auto row_height = [&](size_t i) -> float {
-		const OptionsSheet::Row& rr = rows[i];
-		if (rr.kind == OptionsSheet::Kind::Header)
-			return (i == 0 && m_sheet.Page() >= 0) ? 150.0f : rr.label.empty() ? 40.0f : 78.0f;
-		return rr.kind == OptionsSheet::Kind::Category ? 132.0f : 112.0f;
+	sheetcards::Context c;
+	c.paint.rect = [&out](float rx, float ry, float rw, float rh, float radius, uint32_t color) { Rect(out, rx, ry, rw, rh, radius, color); };
+	c.paint.text = [&out, &f](const char* s, float tx, float baseline, float px, uint32_t color, float weight, Fonts::Align align) {
+		return Text(out, f, s, tx, baseline, px, color, weight, align);
 	};
-	std::vector<float> offs(rows.size());
-	float acc = 0, focus_top = 0, focus_bottom = 0;
-	for (size_t i = 0; i < rows.size(); i++)
+	c.fonts = &f;
+	c.sheet = &m_sheet;
+	c.focus = m_sheet_row;
+	c.x = x;
+	c.y = y;
+	c.sw = sw;
+	c.sh = sh;
+	c.k = k;
+	c.list_top = y + kListTop * k;
+	c.list_bottom = y + sh - kHelpH * k;
+	c.scroll = m_sheet_scroll;
+	c.scroll_target = &m_sheet_scroll_target;
+	for (int i = 0; i < 3; i++)
+		c.accent[i] = Mix(kHouse[i], 1.0f, 0.3f);
+	c.panel[0] = 0.048f;
+	c.panel[1] = 0.051f;
+	c.panel[2] = 0.108f;
+	c.icons = m_cfg.icon_font >= 0;
+	c.now = m_now;
+	c.press_again = Tr(Str::IngamePressAgain);
+	if (m_focus_y < 0) // the sheet, the tab or the page changed: the highlight starts on its row
 	{
-		offs[i] = acc;
-		const float hgt = row_height(i);
-		if (static_cast<int>(i) == m_sheet_row)
-		{
-			focus_top = (i > 0 && rows[i - 1].kind == OptionsSheet::Kind::Header) ? offs[i - 1] : acc;
-			focus_bottom = acc + hgt;
-		}
-		acc += hgt;
+		m_focus_rect[3] = 0;
+		m_focus_y = m_focus_target = 0;
 	}
-	const float total = acc;
-	if (focus_top < m_sheet_scroll_target + 20.0f)
-		m_sheet_scroll_target = std::max(0.0f, focus_top - 20.0f);
-	if (focus_bottom > m_sheet_scroll_target + view_h - 20.0f)
-		m_sheet_scroll_target = focus_bottom - view_h + 20.0f;
-	m_sheet_scroll_target = std::max(0.0f, std::min(m_sheet_scroll_target, std::max(0.0f, total - view_h)));
-
-	const float bx = x + 32 * k, bw = sw - 64 * k;
-	// The cards: each run of rows between headers (the part in the list's window).
-	for (size_t i = 0; i < rows.size();)
+	c.focus_drawn = m_focus_rect;
+	c.focus_goal = m_focus_goal;
+	// 319: a row read when a game starts carries a small clock; the legend says what it means (without the icon font: the words)
+	const std::string next_start = c.icons ? sheetcards::Utf8(sheeticons::kNextStart) : std::string(Tr(Str::IngameNextStart));
+	if (c.icons)
 	{
-		if (rows[i].kind == OptionsSheet::Kind::Header)
-		{
-			i++;
-			continue;
-		}
-		size_t j = i;
-		while (j + 1 < rows.size() && rows[j + 1].kind != OptionsSheet::Kind::Header)
-			j++;
-		const float top = list_top + (offs[i] - m_sheet_scroll) * k, bottom = list_top + (offs[j] + row_height(j) - m_sheet_scroll) * k;
-		const float t = std::max(top, list_top - 2 * k), b = std::min(bottom, list_bottom + 2 * k);
-		if (b > t + 8 * k)
-			Rect(out, bx, t, bw, b - t, 30 * k, Rgba(1, 1, 1, 0.05f));
-		i = j + 1;
+		c.legend_tag = next_start;
+		c.legend_tag_text = Tr(Str::IngameNextStart);
 	}
-	// The highlight, gliding to the focused row.
-	if (m_sheet_row >= 0 && m_sheet_row < static_cast<int>(rows.size()))
-	{
-		const size_t fi = static_cast<size_t>(m_sheet_row);
-		const float fh = row_height(fi) * k;
-		const float target = list_top + (offs[fi] - m_sheet_scroll) * k;
-		m_focus_target = target;
-		if (m_focus_y < 0)
-			m_focus_y = target;
-		const float fy = m_focus_y;
-		if (fy > list_top - 4 * k && fy + fh < list_bottom + 4 * k)
-		{
-			Rect(out, bx + 6 * k, fy + 6 * k, bw - 12 * k, fh - 12 * k, 25 * k, Rgba(1, 1, 1, 0.10f));
-			Rect(out, bx + 14 * k, fy + fh * 0.32f, 6 * k, fh * 0.36f, 3 * k, accent);
-		}
-	}
-	for (size_t i = 0; i < rows.size(); i++)
-	{
-		const OptionsSheet::Row& r = rows[i];
-		const float ry = list_top + (offs[i] - m_sheet_scroll) * k;
-		const float rh = row_height(i) * k;
-		if (ry < list_top - 2 * k || ry + rh > list_bottom + 2 * k)
-			continue;
-		if (r.kind == OptionsSheet::Kind::Header)
-		{
-			if (i == 0 && m_sheet.Page() >= 0)
-			{
-				const int page = m_sheet.Page();
-				if (m_cfg.icon_font >= 0)
-					Text(out, f, Utf8(sheeticons::kBack).c_str(), x + 56 * k, ry + 66 * k, 30 * k, mid, 0.4f, Fonts::Center);
-				Text(out, f, OptionsSheet::PageName(page), x + 86 * k, ry + 72 * k, 50 * k, hi, 0.5f);
-				Text(out, f, OptionsSheet::PageTagline(page), x + 86 * k, ry + 120 * k, 30 * k, mid, 0.2f);
-			}
-			else if (!r.label.empty())
-			{
-				std::string upper = r.label;
-				for (char& c : upper)
-					c = static_cast<char>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
-				Text(out, f, upper.c_str(), x + 76 * k, ry + 58 * k, 24 * k, lo, 0.5f);
-			}
-			continue;
-		}
-		const bool focused = static_cast<int>(i) == m_sheet_row;
-		const float bh = rh, mid_y = ry + bh * 0.5f + 13 * k;
-		const uint32_t row_icon = m_cfg.icon_font < 0 ? 0u
-		                          : r.kind == OptionsSheet::Kind::Category ? (r.slot >= 0 && r.slot < OptionsSheet::kPageCount ? sheeticons::kPage[r.slot] : 0u)
-		                          : (m_sheet.Page() < 0 && r.kind == OptionsSheet::Kind::Option) ? sheeticons::HomeIcon(r.def)
-		                          : r.kind == OptionsSheet::Kind::Recommended ? sheeticons::kReset : 0u;
-		const float icon_box = 68 * k, icon_x = bx + 34 * k;
-		const float lx0 = row_icon ? icon_x + icon_box + 30 * k : bx + 44 * k;
-		if (i > 0 && rows[i - 1].kind != OptionsSheet::Kind::Header && !focused && static_cast<int>(i) - 1 != m_sheet_row)
-			Rect(out, lx0, ry - 1 * k, bx + bw - 34 * k - lx0, 2 * k, 0, Rgba(1, 1, 1, 0.07f));
-		if (row_icon)
-		{
-			const float iy = ry + (bh - icon_box) * 0.5f;
-			Rect(out, icon_x, iy, icon_box, icon_box, 20 * k, focused ? Rgba(1, 1, 1, 0.16f) : Rgba(1, 1, 1, 0.08f));
-			Text(out, f, Utf8(row_icon).c_str(), icon_x + icon_box * 0.5f, iy + icon_box * 0.5f + 12 * k, 32 * k, focused ? hi : mid, 0.4f, Fonts::Center);
-		}
-		if (r.kind == OptionsSheet::Kind::Category)
-		{
-			const std::string summary = m_sheet.Value(r);
-			const float room = bw - (lx0 - bx) - 90 * k;
-			if (summary.empty())
-				Text(out, f, Fit(f, r.label, 40 * k, room).c_str(), lx0, mid_y, 40 * k, hi, 0.25f);
-			else
-			{
-				Text(out, f, Fit(f, r.label, 40 * k, room).c_str(), lx0, ry + bh * 0.5f - 6 * k, 40 * k, hi, 0.25f);
-				Text(out, f, Fit(f, summary, 30 * k, room).c_str(), lx0, ry + bh * 0.5f + 38 * k, 30 * k, mid, 0.2f);
-			}
-			Text(out, f, "\xE2\x80\xBA", bx + bw - 44 * k, mid_y + 1 * k, 48 * k, focused ? hi : lo, 0.4f, Fonts::Center);
-			continue;
-		}
-		const float lpx = 40 * k, vpx = 38 * k;
-		const bool action = r.kind == OptionsSheet::Kind::Recommended || r.kind == OptionsSheet::Kind::ResetAll;
-		std::string value = m_sheet.Value(r);
-		const bool armed = m_sheet.Armed(r, m_now);
-		if (armed)
-			value = Tr(Str::IngamePressAgain);
-		else if (action)
-			value.clear(); // a reset row shows nothing until it is pressed
-		if (r.kind == OptionsSheet::Kind::NewCard && focused)
-			value += "  \xC2\xB7  Create";
-		const bool arrows = focused && !action && r.kind != OptionsSheet::Kind::NewCard;
-		const bool restart = r.kind == OptionsSheet::Kind::Option && r.def && r.def->restart;
-		std::string lglyph, lname, vglyph, vname;
-		const bool lsym = SplitSymbol(r.label, lglyph, lname), vsym = SplitSymbol(value, vglyph, vname);
-		const float slot = lsym ? 66 * k : 0.0f;
-		const float value_room = bw * 0.46f;
-		const std::string label = Fit(f, lsym ? lname : r.label, lpx,
-			bw - (lx0 - bx) - 32 * k - slot - (value.empty() ? 0.0f : std::min(value_room, f.Measure(value.c_str(), vpx)) + 90 * k));
-		const uint32_t lc = r.kind == OptionsSheet::Kind::Recommended ? own : action ? (focused ? hi : mid) : hi;
-		if (lsym && lglyph != icon::Blank)
-			Text(out, f, lglyph.c_str(), lx0 + slot * 0.42f, mid_y + kSymbolDrop * lpx, lpx * kSymbolScale, lc, 0.25f, Fonts::Center);
-		Text(out, f, label.c_str(), lx0 + slot, mid_y, lpx, lc, 0.25f);
-		if (value.empty())
-			continue;
-		const std::string shown = Fit(f, vsym ? vname : value, vpx, value_room - (vsym ? 64 * k : 0.0f));
-		const OptionsSheet::From from = m_sheet.Source(r);
-		uint32_t vc = from == OptionsSheet::From::Own ? own : mid;
-		if (armed || (action && focused))
-			vc = own;
-		const float vx = bx + bw - 44 * k - (arrows ? 30 * k : 0.0f);
-		const bool src = r.kind == OptionsSheet::Kind::Option && from != OptionsSheet::From::Default && !armed;
-		const bool caption = src || (restart && !armed);
-		const float vy = caption ? mid_y - 12 * k : mid_y;
-		float vw = Text(out, f, shown.c_str(), vx, vy, vpx, vc, 0.5f, Fonts::Right);
-		if (vsym && vglyph != icon::Blank)
-			vw += 14 * k + Text(out, f, vglyph.c_str(), vx - vw - 14 * k, vy + kSymbolDrop * vpx, vpx * kSymbolScale, vc, 0.5f, Fonts::Right);
-		if (arrows)
-		{
-			Text(out, f, "\xE2\x80\xB9", vx - vw - 26 * k, vy + 1 * k, 44 * k, hi, 0.4f, Fonts::Center);
-			Text(out, f, "\xE2\x80\xBA", vx + 26 * k, vy + 1 * k, 44 * k, hi, 0.4f, Fonts::Center);
-		}
-		if (caption)
-		{
-			// Where the value comes from, and "next start" (amber) for a row read when a game starts.
-			float right = vx;
-			if (src)
-			{
-				const bool mine = from == OptionsSheet::From::Own;
-				right -= Text(out, f, mine ? "set for this game" : "from all games", right, mid_y + 26 * k, 24 * k,
-								 mine ? Rgba(0.93f, 0.62f, 0.72f) : Rgba(0.62f, 0.74f, 0.95f), 0.3f, Fonts::Right) + 22 * k;
-			}
-			if (restart)
-				Text(out, f, Tr(Str::IngameNextStart), right, mid_y + 26 * k, 24 * k, kAmber, 0.3f, Fonts::Right);
-		}
-	}
-	if (m_sheet_scroll > 4.0f)
-		Text(out, f, "\xE2\x80\xA2 \xE2\x80\xA2 \xE2\x80\xA2", x + sw * 0.5f, list_top - 10 * k, 22 * k, lo, 0.3f, Fonts::Center);
-	if (m_sheet_scroll + view_h < total - 4.0f)
-		Text(out, f, "\xE2\x80\xA2 \xE2\x80\xA2 \xE2\x80\xA2", x + sw * 0.5f, list_bottom + 22 * k, 22 * k, lo, 0.3f, Fonts::Center);
-
-	Rect(out, cx, list_bottom + 44 * k, inner, 2 * k, 0, Rgba(1, 1, 1, 0.12f));
-	if (m_sheet_row >= 0 && m_sheet_row < static_cast<int>(rows.size()))
-	{
-		const OptionsSheet::Row& r = rows[static_cast<size_t>(m_sheet_row)];
+	c.look = [&next_start](size_t, const OptionsSheet::Row& r, bool, sheetcards::RowLook& look) {
+		if (r.kind == OptionsSheet::Kind::Option && r.def && r.def->restart)
+			look.tag = next_start;
+	};
+	c.help = [this](const OptionsSheet::Row& r) {
 		std::string help = m_sheet.Help(r);
 		const bool restart = r.kind == OptionsSheet::Kind::Option && r.def && r.def->restart;
 		if ((r.kind == OptionsSheet::Kind::Option && !restart) || r.kind == OptionsSheet::Kind::Patch || r.kind == OptionsSheet::Kind::Cheat)
 			help += std::string(" ") + Tr(Str::IngameAppliesResume);
-		float hy = list_bottom + 110 * k;
-		for (const std::string& line : Wrap(f, help, 32 * k, inner, 4))
-		{
-			Text(out, f, line.c_str(), cx, hy, 32 * k, mid, 0.1f);
-			hy += 46 * k;
-		}
-	}
+		return help;
+	};
+	sheetcards::Draw(c);
+	if (m_focus_rect[3] <= 0)
+		std::copy(m_focus_goal, m_focus_goal + 4, m_focus_rect);
 }
 
 void InGameMenu::BuildAchievementRows(InGameFrame& out, float x, float y, float sw, float sh, float k)
@@ -1924,8 +1812,17 @@ void InGameMenu::BuildHints(InGameFrame& out, float W, float H, float k, float e
 	}
 	else if (m_tab == Tab::Settings || m_tab == Tab::Controls)
 	{
-		hint(icon::DpadLeftRight, nullptr, Tr(Str::HintChange));
-		hint(icon::Triangle, nullptr, Tr(Str::HintReset));
+		// 319: on a page's tile of the home and on a reset row: what Cross does, not "Change" and "Reset"
+		const auto& rows = m_sheet.rows();
+		const OptionsSheet::Kind kind = m_sheet_row >= 0 && m_sheet_row < static_cast<int>(rows.size()) ? rows[static_cast<size_t>(m_sheet_row)].kind :
+		                                                                                                  OptionsSheet::Kind::Option;
+		if (kind == OptionsSheet::Kind::Category || kind == OptionsSheet::Kind::Recommended || kind == OptionsSheet::Kind::ResetAll)
+			hint(icon::Cross, nullptr, Tr(Str::HintSelect));
+		else
+		{
+			hint(icon::DpadLeftRight, nullptr, Tr(Str::HintChange));
+			hint(icon::Triangle, nullptr, Tr(Str::HintReset));
+		}
 	}
 	hint(icon::Circle, nullptr, Tr(Str::IngameHintResume));
 	if ((m_tab == Tab::Settings || m_tab == Tab::Controls) && m_s.has_game)
