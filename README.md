@@ -633,7 +633,19 @@ The PS5 layer lives in [`ps5/`](ps5/). [`ps5/README.md`](ps5/README.md) covers t
 - **OnionHEN,** which the PS5SX2 Helper is based on.
 - **drakmor,** for [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus), and **VoidWhisper,** for ShadowMount, which it's based on.
 - **Tamariba Devs,** for [OpenPS2BIOS](https://github.com/TamaribaEmu/OpenPS2BIOS) (MIT), the open-source BIOS PS5SX2 ships for players without their own.
+- **The [Eden](https://git.eden-emu.dev) emulator project** and **lsfg-vk,** whose port of Lossless Scaling's frame generation PS5SX2's is based on (GPL-3.0-or-later). Lossless Scaling itself is not included: its shaders come from the player's own Lossless.dll.
 - **Project Nayuki's QR Code generator and Font Awesome Free:** see [`ps5/README.md`](ps5/README.md) for their licences; **Mbed TLS, libarchive** and the other libraries in [`ps5/third_party/`](ps5/third_party/README.md): see its README.
+
+## Contributors
+
+Thanks to everyone who sent a pull request. These went into PS5SX2 2.50, ported by hand into the release's commits:
+
+- **[heni0xyz](https://github.com/heni0xyz):** the Polish translation ([#62](https://github.com/Swordpdf/PS5SX2/pull/62))
+- **[dann1k](https://github.com/dann1k):** the Russian translation ([#63](https://github.com/Swordpdf/PS5SX2/pull/63))
+- **[Gtes](https://github.com/Gtes):** the Ukrainian translation ([#80](https://github.com/Swordpdf/PS5SX2/pull/80))
+- **[phoenixbearded](https://github.com/phoenixbearded):** the PS2 HDD image settings ([#60](https://github.com/Swordpdf/PS5SX2/pull/60))
+- **[Shadow1363](https://github.com/Shadow1363):** Buzz! buzzer support ([#91](https://github.com/Swordpdf/PS5SX2/pull/91))
+- **[bobrass](https://github.com/bobrass):** achievements on discs whose files are flagged multi-extent ([#98](https://github.com/Swordpdf/PS5SX2/pull/98))
 
 ## Licence
 
