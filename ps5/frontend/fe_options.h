@@ -112,6 +112,7 @@ public:
 		SystemUpdate, // 180: the sheet for all games: look for and install a newer PS5SX2 (the app's: fe_update.h)
 		LogUpload,    // 180: the sheet for all games: the session logs sent or not (the app's: fe_update.h)
 		ReloadTile,   // b185: the sheet for all games: the helper's "Reload PS2 Disc" tile on the home screen or not (the app's: AppConfig::reload_tile_on)
+		Category,     // 2.41 (newsheet): a game's Settings home: one of the pages (slot: the page), Cross opens it
 	};
 
 	enum class From
@@ -153,6 +154,28 @@ public:
 	// 2.31 (AI-assisted): the in-game menu (fe_ingame.h) lists these groups after the others ("Shelf", "Discs"): a running game wants
 	// Display first. Empty (the shelf's sheet): OptionGroups()' order.
 	void SetGroupsLast(std::vector<std::string> titles) { m_groups_last = std::move(titles); }
+	// 2.41 (AI-assisted; the owner: "this section needs a redesign, too cluttered and too many entries"; flag newsheet): a game's Settings
+	// tab as a short home (Recommended, the four everyday rows, one row a page with what is set in it) and a page a category.
+	// OpenPage(-1) is the home. A page's rows are the groups of before, unchanged (the same keys and files).
+	enum Page
+	{
+		kPagePicture,
+		kPageSpeed,
+		kPageFixes,
+		kPagePatches,
+		kPageCards,
+		kPageGame,
+		kPageCount
+	};
+	void SetPaged(bool on) { m_paged = on; }
+	bool Paged() const { return m_paged && m_tab == kTabSettings && !m_global; }
+	int Page() const { return Paged() ? m_page : -1; }
+	void OpenPage(int page);
+	static const char* PageName(int page);
+	static const char* PageTagline(int page); // the line under a page's title
+	std::string PageSummary(int page) const; // "EE cycle rate 130% · MTVU On", "2 on", ""
+	static int PageOfGroup(const std::string& group_title);
+	static bool IsHomeKey(const std::string& key); // the four everyday rows of the home
 	bool TakeSystemMenu()
 	{
 		const bool asked = m_system_menu;
@@ -242,6 +265,8 @@ private:
 	bool m_update_rows = false; // 180
 	bool m_reload_tile_row = false; // b185
 	std::vector<std::string> m_groups_last; // 2.31
+	bool m_paged = false; // 2.41 newsheet
+	int m_page = -1;      // -1: the home
 	Kind m_folder_request = Kind::Header;
 	bool m_elf = false; // 2026-10-08: this sheet's game is an ELF (the Disc image row)
 	int m_armed_row = -1;

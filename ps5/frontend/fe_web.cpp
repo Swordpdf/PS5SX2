@@ -6,6 +6,7 @@
 #include "fe_web.h"
 #include "fe_settings.h"
 #include "fe_i18n.h"
+#include "fe_pnach.h" // 2.41: the game's CRC (cache/game-crcs.txt) for its patch files
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -991,12 +992,13 @@ void WebServer::ApiSettings(const Request& req, Response& res)
 	if (g)
 	{
 		bool first = true;
-		const std::vector<PatchGroup> groups = PatchGroups(m_cfg.patches_dir, g->serial);
+		const std::vector<PatchGroup> groups = PatchGroups(m_cfg.patches_dir, g->serial, fe::pnach::KnownCrc(m_cfg.top_dir + "/cache/game-crcs.txt", g->serial), g->stem);
 		for (const PatchGroup& p : groups)
 		{
 			const bool on = std::find(enabled.begin(), enabled.end(), p.name) != enabled.end();
 			out += std::string(first ? "" : ",") + "{\"name\":" + Json(p.name) + ",\"file\":" + Json(p.file) +
-			       ",\"description\":" + Json(p.description) + ",\"enabled\":" + (on ? "true" : "false") + "}";
+			       ",\"description\":" + Json(p.description) + ",\"enabled\":" + (on ? "true" : "false") +
+			       (p.other_version ? ",\"other_version\":true" : "") + "}";
 			first = false;
 		}
 		// An enabled group whose patch file is gone still shows, so it can be turned off.
@@ -1022,12 +1024,13 @@ void WebServer::ApiSettings(const Request& req, Response& res)
 		if (g)
 		{
 			bool first = true;
-			const std::vector<PatchGroup> groups = PatchGroups(m_cfg.cheats_dir, g->serial);
+			const std::vector<PatchGroup> groups = PatchGroups(m_cfg.cheats_dir, g->serial, fe::pnach::KnownCrc(m_cfg.top_dir + "/cache/game-crcs.txt", g->serial), g->stem);
 			for (const PatchGroup& c : groups)
 			{
 				const bool on = std::find(cheats_on.begin(), cheats_on.end(), c.name) != cheats_on.end();
 				out += std::string(first ? "" : ",") + "{\"name\":" + Json(c.name) + ",\"file\":" + Json(c.file) +
-				       ",\"description\":" + Json(c.description) + ",\"enabled\":" + (on ? "true" : "false") + "}";
+				       ",\"description\":" + Json(c.description) + ",\"enabled\":" + (on ? "true" : "false") +
+				       (c.other_version ? ",\"other_version\":true" : "") + "}";
 				first = false;
 			}
 			for (const std::string& e : cheats_on)
@@ -1044,6 +1047,29 @@ void WebServer::ApiSettings(const Request& req, Response& res)
 			}
 		}
 		out += "]";
+	}
+	// 2.41 (AI-assisted): the .pnach files of patches/ and cheats/ that no game of the shelf can be matched to (fe_pnach.h's rules), so a
+	// file that is never loaded is seen (the page lists them under the game's patches).
+	if (g)
+	{
+		std::vector<std::pair<std::string, std::string>> keys;
+		for (const GameInfo& gi : Games())
+			keys.emplace_back(gi.serial, gi.stem);
+		std::string list; // only when there is one (a page from before answers as it did)
+		bool first = true;
+		const auto add_unmatched = [&](const std::string& dir, const char* folder) {
+			if (dir.empty())
+				return;
+			for (const std::string& n : UnmatchedPnach(dir, keys))
+			{
+				list += std::string(first ? "" : ",") + Json(std::string(folder) + "/" + n);
+				first = false;
+			}
+		};
+		add_unmatched(m_cfg.patches_dir, "patches");
+		add_unmatched(m_cfg.cheats_dir, "cheats");
+		if (!list.empty())
+			out += ",\"pnach_unmatched\":[" + list + "]";
 	}
 	// 2026-10-08 (AI-assisted): the game's own hardware-renderer fixes (the game database's), as the settings that set them by
 	// hand (fe_settings.cpp ManualFixSettings): the page's Hardware fixes rows show them while manual fixes are off and write
@@ -1372,6 +1398,20 @@ void WebServer::ApiReport(const Request& req, Response& res)
 		names(m_cfg.top_dir + "/flags", "switch files in flags/");
 		names(m_cfg.patches_dir, "patch files");
 		names(m_cfg.top_dir + "/cheats", "cheat files");
+		{
+			// 2.41: the ones no game of the shelf can be matched to (fe_pnach.h)
+			std::vector<std::pair<std::string, std::string>> keys;
+			for (const GameInfo& gi : Games())
+				keys.emplace_back(gi.serial, gi.stem);
+			std::vector<std::string> list;
+			for (const std::string& n : UnmatchedPnach(m_cfg.patches_dir, keys))
+				list.push_back("patches/" + n);
+			for (const std::string& n : UnmatchedPnach(m_cfg.top_dir + "/cheats", keys))
+				list.push_back("cheats/" + n);
+			out += "\n===== .pnach files no game matches (no serial, CRC, gametitle line or game file name): " + std::to_string(list.size()) + " =====\n";
+			for (const std::string& n : list)
+				out += n + "\n";
+		}
 	}
 	{
 		const std::vector<GameInfo> games = Games();

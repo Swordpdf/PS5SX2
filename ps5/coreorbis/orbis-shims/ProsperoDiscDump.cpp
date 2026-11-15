@@ -92,6 +92,7 @@
 #include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <csignal> // 194: kill(pid, 0), is the disc helper alive
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -500,6 +501,55 @@ namespace
 		fclose(f);
 		out.assign(buf, n);
 		return n > 0;
+	}
+
+	// 194 (AI-assisted): why the watcher leaves the drive `path` alone this pass; nullptr: it looks. An open or a close of /dev/cdN takes the
+	// kernel's GEOM topology lock: on one 8.60 console such an open never returned, and the thread asleep on that lock kept the app from
+	// ever ending (back to the menu froze the console). So the drive is opened only when it has to be (see the file's 194 note).
+	const char* DriveLeftAlone(const std::string& path)
+	{
+		if (s_game_starting.load())
+			return "a game runs in this process, not from this drive: left alone until the shelf is back";
+		if (OrbisFlag("disc_ownpoll"))
+			return nullptr;
+		const size_t slash = path.rfind('/');
+		const std::string dev = slash == std::string::npos ? path : path.substr(slash + 1);
+		if (dev.size() != 3 || dev.compare(0, 2, "cd") != 0 || dev[2] < '0' || dev[2] > '3')
+			return nullptr; // not one of the helper's cd0..cd3
+		std::string text;
+		if (!ReadSmallFile(OrbisLogPath("ps5sx2-helper.txt"), text))
+			return nullptr; // no helper: the app looks itself, as before
+		long long t = 0;
+		int pid = 0;
+		std::string state;
+		size_t at = 0;
+		while (at < text.size())
+		{
+			size_t end = text.find('\n', at);
+			if (end == std::string::npos)
+				end = text.size();
+			const std::string line = text.substr(at, end - at);
+			if (line.compare(0, 4, "pid=") == 0)
+				pid = atoi(line.c_str() + 4);
+			else if (line.compare(0, 5, "time=") == 0)
+				t = atoll(line.c_str() + 5);
+			else if (line.compare(0, 4, dev + "=") == 0)
+				state = line.substr(4);
+			at = end + 1;
+		}
+		if (pid <= 0 || t <= 0 || state.empty())
+			return nullptr; // an older helper (no drive lines): as before
+		const bool alive = kill(pid, 0) == 0 || errno == EPERM;
+		if (!alive)
+			return nullptr;
+		const long long age = static_cast<long long>(time(nullptr)) - t;
+		if (age > 5 || age < -5)
+			return "the disc helper runs but is quiet (its status is old): the drive is its own";
+		if (state == "empty")
+			return "the disc helper says it is empty";
+		if (state == "yield")
+			return "the disc helper says its disc is not a PS2 disc";
+		return nullptr; // ps2, looking: the app looks
 	}
 
 	// 2.04: the shelf's answer for the disc daemon (disclaunch/disc_launch.c): "<serial> copy|play|later", removed when the disc leaves.
@@ -1082,6 +1132,30 @@ namespace
 					continue;
 				}
 				const bool log = std::find(logged.begin(), logged.end(), path) == logged.end();
+				// 194: the drive is opened only when it has to be (DriveLeftAlone): as an empty drive otherwise, said once a reason
+				{
+					static std::map<std::string, std::string> s_alone_said;
+					const char* const why_not = DriveLeftAlone(path);
+					if (why_not)
+					{
+						if (s_alone_said[path] != why_not)
+						{
+							s_alone_said[path] = why_not;
+							Log("%s: not opened: %s", path.c_str(), why_not);
+						}
+						ProbeCache& pc0 = probes[path];
+						if (!s_game_starting.load() && (pc0.media != 0 || pc0.iso))
+							pc0 = ProbeCache{}; // the helper says the disc went: as an empty drive
+						if (log)
+							logged.push_back(path);
+						continue;
+					}
+					if (!s_alone_said[path].empty())
+					{
+						s_alone_said[path].clear();
+						Log("%s: looked at again (the disc helper says a disc is in, or no longer speaks for the drive)", path.c_str());
+					}
+				}
 				// vk-285-160l: reuse the last probe while the media size is unchanged (no disc reads, so the drive can rest).
 				const uint64_t media = QuietMediaSize(path);
 				ProbeCache& pc = probes[path];

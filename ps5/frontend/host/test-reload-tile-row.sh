@@ -26,7 +26,7 @@ run() {
     failed=1
   fi
 }
-to_row=("game 2" "wait 1" "press square" "wait 0.4" "press r1" "wait 0.3" "press down 70" "press up" "wait 0.2")
+to_row=("game 2" "wait 1" "press square" "wait 0.4" "press r1" "wait 0.3" "hold down 7" "press up" "wait 0.2")
 run switch --reload-tile "${to_row[@]}" "expect reloadfocus=1" "expect reloadtile=1" "shot reload-on" "press cross" "wait 0.3" \
   "expect reloadtile=0" "shot reload-off" "press right" "wait 0.3" "expect reloadtile=1" "press left" "wait 0.3" "expect reloadtile=0"
 [[ -f $work/switch/flags/disctile_noreload ]] || { echo "FAILED: switch (flags/disctile_noreload not made by Off)"; failed=1; }

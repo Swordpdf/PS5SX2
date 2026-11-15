@@ -95,7 +95,7 @@ run chosen-pick "$d" "${nobios[@]}" --open-bios "game 0" "wait 1" "press cross" 
 d="$work/switch-back"
 mkdir -p "$d"
 printf 'PS5SX2/OpenBios=true\n' > "$d/gs.ini"
-run switch-back "$d" "${nobios[@]}" --open-bios "game 0" "wait 1" "press square" "wait 0.4" "press r1" "wait 0.3" "press up 80" "wait 0.1" \
+run switch-back "$d" "${nobios[@]}" --open-bios "game 0" "wait 1" "press square" "wait 0.4" "press r1" "wait 0.3" "hold up 7" "wait 0.1" \
   "press down 7" "wait 0.2" "shot bios-sheet-row" "press cross" "wait 0.3" "expect openchosen=0" "press circle" "wait 0.5" "expect sheet=0" \
   "expect biosmissing=1" "press cross" "wait 0.4" "expect biosask=1" "expect done=0"
 

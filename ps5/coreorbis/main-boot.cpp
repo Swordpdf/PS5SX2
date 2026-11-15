@@ -23,6 +23,7 @@
 
 #include "Config.h"
 #include "GameDatabase.h" // vk-285-115: the GameDB's MTVU for the live apply
+#include "USB/USB.h"               // (AI-assisted) the Buzz! buzzers (OrbisBuzzPump)
 #include "VMManager.h"
 #include "R5900.h"
 #include "R3000A.h"
@@ -79,6 +80,7 @@ extern volatile unsigned long long g_orbis_map_addr;
 #include "orbis-shims/OrbisTextureRoots.h" // vk-285-113: a game's texture pack on a USB drive
 #include "orbis-shims/ProsperoKbdMouse.h" // vk-285-72, vk-285-113: the PS5's USB keyboard and mouse
 #include "orbis-shims/OrbisPadMap.h"     // vk-285-116: the controller remapping
+#include "orbis-shims/OrbisBuzzMap.h"    // (AI-assisted) the Buzz! buzzers' buttons
 #include "orbis-shims/ProsperoUsbPad.h"  // vk-285-140: USB guitars and pads the PS5 doesn't take as controllers
 #include "orbis-shims/ProsperoDiscDump.h" // vk-285-144: PS2 discs in the drive
 #include "orbis-shims/OrbisDiscDrive.h"   // PR #34: PS2 discs played straight from a drive (flag bootdisc)
@@ -476,6 +478,15 @@ std::atomic<int> g_orbis_fast_speed{0};
 static std::mutex g_orbis_padmap_mutex;
 static orbis_padmap::Config g_orbis_padmap;
 static std::atomic<unsigned> g_orbis_padmap_version{0};
+// (AI-assisted) the Buzz! buzzers (orbis-shims/OrbisBuzzMap.h: PS5SX2/Buzz, BuzzRed..BuzzYellow). g_orbis_buzz: PCSX2's Buzz
+// device is on a PS2 USB port for this game (set at boot); the controllers then press its buttons instead of a DualShock 2's.
+// The map is set by orbis_ps5opts_from like the remapping; the pad thread writes what each player holds into
+// g_orbis_buzz_held (5 bits a player, players 1 to 4) and OrbisBuzzPump hands it to the device on the CPU thread.
+static std::atomic<bool> g_orbis_buzz{false};
+static std::mutex g_orbis_buzzmap_mutex;
+static orbis_buzzmap::Config g_orbis_buzzmap;
+static std::atomic<unsigned> g_orbis_buzzmap_version{0};
+static std::atomic<uint32_t> g_orbis_buzz_held{0};
 extern "C" void orbis_pad_vibration(unsigned pad_index, float large, float small)
 {
   if (pad_index > 7)
@@ -689,6 +700,7 @@ static int g_orbis_extra_count = 0;
 // vk-285-140 (AI-assisted): PS2 port 1 is PCSX2's Guitar controller (a USB guitar found at the start, or Pad1/Type=Guitar in
 // gs.ini or the game's file): the pad thread then sets the guitar's inputs instead of a DualShock 2's.
 static std::atomic<bool> g_orbis_port1_guitar{false};
+static std::atomic<bool> g_orbis_guitar_usual_frets{false}; // 2.41: PS5SX2/GuitarFrets=usual (the USB guitar's yellow and blue as 143 had them, swapped back)
 static int32_t g_orbis_extra_user[3] = {-1, -1, -1};
 static u32 g_orbis_extra_index[3] = {1, 0, 0};
 
@@ -828,8 +840,9 @@ static void orbis_pad_apply_guitar(OrbisPadPort &p, const OrbisPadData &d, const
     const orbis_usbpad::GuitarOut &g = usb->strings;
     if (g.green) v[PadGuitar::Inputs::GREEN] = 1.0f;
     if (g.red) v[PadGuitar::Inputs::RED] = 1.0f;
-    if (g.yellow) v[PadGuitar::Inputs::YELLOW] = 1.0f;
-    if (g.blue) v[PadGuitar::Inputs::BLUE] = 1.0f;
+    const bool usual = g_orbis_guitar_usual_frets.load(std::memory_order_relaxed); // 2.41: PS5SX2/GuitarFrets
+    if (usual ? g.blue : g.yellow) v[PadGuitar::Inputs::YELLOW] = 1.0f;
+    if (usual ? g.yellow : g.blue) v[PadGuitar::Inputs::BLUE] = 1.0f;
     if (g.orange) v[PadGuitar::Inputs::ORANGE] = 1.0f;
     if (g.strum_up) v[PadGuitar::Inputs::STRUM_UP] = 1.0f;
     if (g.strum_down) v[PadGuitar::Inputs::STRUM_DOWN] = 1.0f;
@@ -846,6 +859,28 @@ static void orbis_pad_apply_guitar(OrbisPadPort &p, const OrbisPadData &d, const
       Pad::SetControllerState(p.port, static_cast<u32>(i), v[i]);
       p.last_value[i] = v[i];
     }
+  }
+}
+
+// (AI-assisted) a controller as buzzer `player` (0..3): the buttons the Buzz! map picks, into that player's 5 bits of
+// g_orbis_buzz_held. The pad thread's own copy of the map, as orbis_padmap_current.
+static void orbis_buzz_apply(int player, const OrbisPadData &d)
+{
+  static orbis_buzzmap::Config s_cfg;
+  static unsigned s_version = 0;
+  const unsigned version = g_orbis_buzzmap_version.load(std::memory_order_acquire);
+  if (version != s_version)
+  {
+    std::lock_guard<std::mutex> lock(g_orbis_buzzmap_mutex);
+    s_cfg = g_orbis_buzzmap;
+    s_version = version;
+  }
+  const uint32_t held = orbis_buzzmap::Apply(s_cfg, d.buttons, d.l2, d.r2);
+  const unsigned shift = static_cast<unsigned>(player) * orbis_buzzmap::COUNT;
+  const uint32_t mask = 0x1Fu << shift;
+  uint32_t cur = g_orbis_buzz_held.load(std::memory_order_relaxed);
+  while (!g_orbis_buzz_held.compare_exchange_weak(cur, (cur & ~mask) | (held << shift), std::memory_order_relaxed))
+  {
   }
 }
 
@@ -1262,7 +1297,9 @@ static void *orbis_pad_thread(void *)
         if (s_click_consumed)
           d.buttons &= ~0x00100000u;
       }
-      if (g_orbis_port1_guitar.load(std::memory_order_relaxed))
+      if (g_orbis_buzz.load(std::memory_order_relaxed))
+        orbis_buzz_apply(0, d); // (AI-assisted) buzzer 1 only: PS2 port 1's DualShock 2 stays untouched
+      else if (g_orbis_port1_guitar.load(std::memory_order_relaxed))
         orbis_pad_apply_guitar(port1, d, have_usb ? &usb_now : nullptr); // vk-285-140
       else
         orbis_pad_apply(port1, d);
@@ -1270,7 +1307,8 @@ static void *orbis_pad_thread(void *)
     {
       static OrbisRumbleOut s_rumble1, s_rumble_extra[3];
       orbis_rumble_send(0, handle, s_rumble1);
-      for (int i = 0; i < g_orbis_extra_count; i++)
+      // (AI-assisted) with the buzzers on, players 2..4 have no PS2 pad behind them: nothing to rumble.
+      for (int i = 0; i < g_orbis_extra_count && !g_orbis_buzz.load(std::memory_order_relaxed); i++)
         orbis_rumble_send(static_cast<int>(extra[i].port), extra[i].handle, s_rumble_extra[i]);
     }
     if (++reads == 250u || (rc != 0 && reads % 1000u == 0u))
@@ -1284,15 +1322,25 @@ static void *orbis_pad_thread(void *)
       memset(&d2, 0, sizeof(d2));
       const int rc2 = p_read(px.handle, &d2);
       const bool on = rc2 == 0 && orbis_pad_connected(d2);
+      // (AI-assisted) with the buzzers on, player i + 2 is buzzer i + 2 and no PS2 pad.
+      const bool buzz = g_orbis_buzz.load(std::memory_order_relaxed);
       if (on)
-        orbis_pad_apply(px, d2);
+      {
+        if (buzz)
+          orbis_buzz_apply(i + 1, d2);
+        else
+          orbis_pad_apply(px, d2);
+      }
       else
       {
         // Released buttons, centred sticks: nothing held on this port while its controller is off.
         OrbisPadData idle;
         memset(&idle, 0, sizeof(idle));
         idle.lx = idle.ly = idle.rx = idle.ry = 128;
-        orbis_pad_apply(px, idle);
+        if (buzz)
+          orbis_buzz_apply(i + 1, idle);
+        else
+          orbis_pad_apply(px, idle);
       }
       static int s_on[3] = {-1, -1, -1};
       if (s_on[i] != (on ? 1 : 0))
@@ -1309,6 +1357,33 @@ static void *orbis_pad_thread(void *)
   return nullptr;
 }
 } // namespace
+
+// (AI-assisted) at each vsync on the CPU thread (StubHost.cpp, after OrbisKbdMousePump): the buzzer buttons that changed
+// since the last call, to PCSX2's Buzz device on whichever PS2 USB port holds it. Needs proper testing on a console with
+// the Buzz! games.
+// 2.41: usb-buzz.h's BuzzControlID (CID_BUZZ_PLAYER1_RED = 0 .. CID_BUZZ_COUNT = 20, player by player in OrbisBuzzMap.h's color order). That
+// header needs the qemu USB headers, so the two numbers are here; tests/buzzmap/test-buzzmap.sh fails if the enum changes.
+static constexpr u32 kBuzzFirstBind = 0, kBuzzBinds = 20;
+void OrbisBuzzPump()
+{
+  if (!g_orbis_buzz.load(std::memory_order_relaxed))
+    return;
+  static const s32 buzz_type = USB::DeviceTypeNameToIndex("BuzzDevice");
+  static uint32_t s_sent = 0;
+  const uint32_t held = g_orbis_buzz_held.load(std::memory_order_relaxed);
+  const uint32_t changed = held ^ s_sent;
+  if (changed == 0)
+    return;
+  for (u32 port = 0; port < USB::NUM_PORTS; port++)
+  {
+    if (EmuConfig.USB.Ports[port].DeviceType != buzz_type)
+      continue;
+    for (u32 i = 0; i < kBuzzBinds; i++)
+      if (changed & (1u << i))
+        USB::SetDeviceBindValue(port, kBuzzFirstBind + i, (held & (1u << i)) ? 1.0f : 0.0f);
+  }
+  s_sent = held;
+}
 
 extern "C" volatile unsigned long long orbis_fault_count;
 volatile unsigned long long orbis_fault_count = 0;
@@ -1728,6 +1803,27 @@ static void orbis_ps5opts_from(const SettingsInterface& si)
       g_orbis_padmap_version.fetch_add(1, std::memory_order_release);
       printf("[boot] controls: %s (PS5SX2/Button*, SwapSticks, InvertLeft, InvertRight, LeftStickDpad, DeadzoneLeft, DeadzoneRight, SaveButton*, LoadButton*, StateHold)\n",
         orbis_padmap::Describe(map).c_str());
+      fflush(stdout);
+    }
+  }
+  // (AI-assisted) the Buzz! buzzers' buttons (the Controls tab's Buzz! buzzers group), live like the remapping.
+  {
+    const orbis_buzzmap::Config map = orbis_buzzmap::FromSettings([&](const char* key, std::string& value) {
+      return si.GetStringValue("PS5SX2", key, &value);
+    });
+    bool changed = false;
+    {
+      std::lock_guard<std::mutex> lock(g_orbis_buzzmap_mutex);
+      if (map != g_orbis_buzzmap)
+      {
+        g_orbis_buzzmap = map;
+        changed = true;
+      }
+    }
+    if (changed)
+    {
+      g_orbis_buzzmap_version.fetch_add(1, std::memory_order_release);
+      printf("[boot] buzzers: %s (PS5SX2/BuzzRed..BuzzYellow)\n", orbis_buzzmap::Describe(map).c_str());
       fflush(stdout);
     }
   }
@@ -2153,8 +2249,52 @@ static long long orbis_leave_base_us()
   return first ? first : orbis_steady_us();
 }
 
+// 2.41 (AI-assisted; loligerpoper, 2026-11-10: NFS Carbon's career save lost to L1+R1+Touch during an autosave): "back to the menu" waits
+// while the game is still writing a memory card (a page write or erase in the last kSaveQuietFrames emulated frames), the game running
+// meanwhile, up to kSaveWaitFrames; then it leaves anyway. Counted in emulated frames, so time spent in the in-game menu (the game paused)
+// is not taken for a quiet card. The CPU thread's vsync hook (StubHost.cpp) calls OrbisBackToMenuCpu again each frame while
+// OrbisLeaveWaitingForSave() is true. Flag noleavesavewait: leave at once, as before.
+extern std::atomic<u32> g_orbis_mcd_last_write_frame; // MemoryCardFile.cpp
+extern std::atomic<bool> g_orbis_mcd_any_write;
+extern unsigned int g_FrameCount; // Counters.cpp
+static constexpr unsigned kSaveQuietFrames = 90, kSaveWaitFrames = 720;
+static std::atomic<bool> s_leave_waiting_for_save{false};
+static unsigned s_leave_wait_from = 0;
+bool OrbisLeaveWaitingForSave() { return s_leave_waiting_for_save.load(std::memory_order_relaxed); }
+static bool orbis_card_being_written()
+{
+  if (!g_orbis_mcd_any_write.load(std::memory_order_relaxed))
+    return false;
+  return g_FrameCount - g_orbis_mcd_last_write_frame.load(std::memory_order_relaxed) < kSaveQuietFrames;
+}
+
 void OrbisBackToMenuCpu()
 {
+  if (!g_orbis_menu_request.load(std::memory_order_relaxed) && !orbis_flag("noleavesavewait"))
+  {
+    const bool writing = orbis_card_being_written();
+    if (writing && !s_leave_waiting_for_save.load(std::memory_order_relaxed))
+    {
+      s_leave_wait_from = g_FrameCount;
+      s_leave_waiting_for_save.store(true, std::memory_order_relaxed);
+      printf("[menu] back to the menu: the game is writing its memory card (last write %u frame(s) ago): leaving once it stops\n",
+        g_FrameCount - g_orbis_mcd_last_write_frame.load(std::memory_order_relaxed));
+      fflush(stdout);
+      orbis_eventf("back to the menu: waiting for the game's save");
+      OrbisOSDLabel("SAVING - BACK TO MENU WHEN DONE");
+      if (VMManager::GetState() == VMState::Paused)
+        VMManager::SetPaused(false); // from the in-game menu: the game must run to finish its save
+    }
+    if (s_leave_waiting_for_save.load(std::memory_order_relaxed))
+    {
+      const unsigned waited = g_FrameCount - s_leave_wait_from;
+      if (writing && waited < kSaveWaitFrames)
+        return; // the next frame asks again
+      s_leave_waiting_for_save.store(false, std::memory_order_relaxed);
+      printf("[menu] back to the menu: %s after %u frame(s)\n", writing ? "the card is still being written: leaving anyway" : "the save is done", waited);
+      fflush(stdout);
+    }
+  }
   if (g_orbis_menu_request.exchange(true))
     return;
   g_orbis_leave_press_us.store(orbis_steady_us(), std::memory_order_relaxed); // 176: first of all, before any line is written
@@ -2175,6 +2315,9 @@ void OrbisBackToMenuCpu()
 // "Kill for LoadExec", "Terminating pid"). It works asynchronously: wait for it, and _exit() only if it never comes.
 [[noreturn]] void OrbisExitApp(int status)
 {
+  // 192: the console's keyboard and mouse closed first (see orbis_leave_kbm_closed)
+  if (OrbisKbdMouseStop(1000) != 0)
+    printf("[boot] exit %d: the keyboard and mouse were open: closed before the exit\n", status);
   orbis_output_default();
   orbis_log_drain();
   fflush(stdout);
@@ -2380,6 +2523,27 @@ static bool orbis_take_open_shelf_mark(orbis_leave::ShelfMark* out = nullptr, bo
     unlink(path.c_str());
   }
   return fresh;
+}
+
+// 2.41 (AI-assisted; the owner: "returning from game to shelf took its sweet time once"): whether this start follows "back to the menu" (a
+// fresh note), read without removing it (orbis_take_open_shelf_mark takes it after the jailbreak). Seconds since the note, or -1.
+static long long orbis_peek_open_shelf_mark_age()
+{
+  if (FILE* f = fopen(OrbisLogPath("open-shelf.txt").c_str(), "rb"))
+  {
+    char text[128] = {};
+    const size_t got = fread(text, 1, sizeof(text) - 1, f);
+    text[got] = '\0';
+    fclose(f);
+    orbis_leave::ShelfMark mark;
+    if (orbis_leave::ParseShelfMark(text, mark) && mark.sec > 0)
+    {
+      const long long age = static_cast<long long>(time(nullptr) - mark.sec);
+      if (age >= 0 && age < 180)
+        return age;
+    }
+  }
+  return -1;
 }
 
 // 176: ms since "back to the menu" was pressed, in the process that was started by it (the shelf says so with its first frame); -1 for any other start, and
@@ -2635,6 +2799,15 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
   return waiting;
 }
 
+// 192: before the exec, the console's keyboard and mouse handles closed (two consoles' processes never ended with them open), with a note.
+static void orbis_leave_kbm_closed()
+{
+  const long long t_kbm = orbis_steady_us();
+  const int r = OrbisKbdMouseStop(1000);
+  if (r != 0)
+    orbis_leave_note_ms(r > 0 ? "keyboard and mouse closed" : "keyboard and mouse: no answer", t_kbm);
+}
+
 // vk-285-109: our own eboot again, into the shelf, after a start that failed (the VM never ran, so no memory
 // card or NVRAM to write back). Returns when LoadExec doesn't take.
 static void orbis_restart_to_menu()
@@ -2647,6 +2820,7 @@ static void orbis_restart_to_menu()
   const bool relay = orbis_leave_start_relay(fl); // 2.11: the relaunch payload, or the old exec
   orbis_leave_note_ms(relay ? "relay: up" : "relay: none", t_relay);
   orbis_mark_relaunch(); // vk-285-144
+  orbis_leave_kbm_closed(); // 192
   // 2.11: open-shelf.txt (fix180: written by orbis_leave_process, with the title its way starts)
   const bool waiting = orbis_leave_process(relay, fl);
   if (!waiting)
@@ -2682,6 +2856,7 @@ static void orbis_back_to_menu()
   Achievements::OrbisFlushBeforeExit(5000);
 #endif
   orbis_leave_note_ms("saves done", t_saves);
+  orbis_leave_kbm_closed(); // 192
   // disc speed restore hook (disc work)
   cdvdQuiesce(400); // 2.11 (disc lag round): a game from a disc drive: no new drive read from here on (and none half done when the process goes); nothing is sent to the drive and no lock taken
   orbis_mark_relaunch(); // vk-285-144
@@ -3048,6 +3223,7 @@ static OrbisFrontendPaths orbis_frontend_paths(bool allow_download)
   }
   fe.memcards_dir = OrbisDir("memcards"); // vk-285-113: the settings page's memory card list and creator
   fe.test_build = g_orbis_test_build;
+  fe.test_watermark = g_orbis_test_build > 0 && orbis_flag("testmark"); // 2.41: the TESTING watermarks only on request
   fe.build_label = orbis_build_label();
   fe.test_note = orbis_test_note(); // vk-285-105
   fe.logs_dir = OrbisDir("logs");
@@ -4199,7 +4375,15 @@ int main()
   orbis_boot_phase("flag folder looked at");
   orbis_scan_usb("before the jailbreak"); // test build 1: whether the sandbox shows USB drives yet
   orbis_boot_phase("cover prefetch starting");
-  if (!s_tile_is_game && !orbis_flag("nofrontend") && !orbis_flag("nomenu") && !orbis_flag("nocoverdl")) // 2.12: a game tile starts its game at once: no shelf, so no covers to fetch
+  // 2.41: back from a game, the covers were looked at when the app started, and the shelf fetches what is missing itself. On the Pro the
+  // look took 2.7 s once after 4 minutes of play (28 ms the next time): the whole wait before the shelf. Flag prefetchonreturn: as before.
+  const long long back_age = orbis_is_tile_start() ? -1 : orbis_peek_open_shelf_mark_age();
+  if (back_age >= 0 && !orbis_flag("prefetchonreturn"))
+  {
+    printf("[boot] back from a game (the note is %lld s old): no cover prefetch (the shelf fetches missing covers itself)\n", back_age);
+    fflush(stdout);
+  }
+  else if (!s_tile_is_game && !orbis_flag("nofrontend") && !orbis_flag("nomenu") && !orbis_flag("nocoverdl")) // 2.12: a game tile starts its game at once: no shelf, so no covers to fetch
     orbis_frontend_prefetch_covers(orbis_frontend_paths(true), 30.0, sys_notify);
   orbis_boot_phase("cover prefetch done");
 #endif
@@ -4280,6 +4464,22 @@ int main()
   // 180: and the PS5SX2 Installer as the session logger (OrbisInstallerStart.cpp: never an install from here; skipped with the
   // installer's no-log-upload switch, the flag file logger_noautoload, or when a logger already runs), so the user loads neither ELF.
   { extern void OrbisLoggerAutoStart(const char*); OrbisLoggerAutoStart(ORBIS_BUILD_TAG); }
+  // 195 (AI-assisted, test builds): the session watch (relaunch.c's watch mode): the kernel log (logs/session-klog.txt) and the app's and the disc
+  // helper's process records (logs/session-watch.log) for the app's whole life and 150 s after it: an 8.60 console froze for good when the app was
+  // closed from the shelf, and a hard power-off keeps nothing else. Sent from a thread (the loader's answer can take seconds). Flag nosessionwatch:
+  // not sent; flag sessionwatch: sent in a release build too.
+  if ((g_orbis_test_build && !orbis_flag("nosessionwatch")) || orbis_flag("sessionwatch"))
+  {
+    const int self = static_cast<int>(getpid());
+    std::thread([self] {
+      std::string why;
+      const bool up = OrbisSessionWatchStart(self, why);
+      printf("[watch] the session watch %s: %s\n", up ? "is up" : "did not start", why.c_str());
+      fflush(stdout);
+    }).detach();
+  }
+  else
+    printf("[watch] no session watch (%s)\n", g_orbis_test_build ? "flag nosessionwatch" : "a release build; flag sessionwatch sends it");
 #ifdef ORBIS_VULKAN
   orbis_ensure_data_layout(); // vk-285-115: the release's switch files on a console set up by hand
 #endif
@@ -4954,7 +5154,7 @@ int main()
   // sent in its first seconds, they showed without their pictures (orbis-shims/ProsperoNotify.cpp, the pacing).
   OrbisNotifyHold(12);
 #ifdef ORBIS_VULKAN
-  if (g_orbis_test_build > 0)
+  if (g_orbis_test_build > 0 && orbis_flag("testmark")) // 2.41 (owner: "no need to add a testing watermark"): only with flags/testmark
   {
     // Test build 1 (vk-285-55): the watermark over the game (GSRenderer.cpp OrbisWatermark):
     // TESTING and the build, faint, in the middle of the screen; vk-285-105: the Discord note under them.
@@ -5259,6 +5459,7 @@ int main()
   // vk-285-140 (AI-assisted): USB guitars and pads the PS5 doesn't take as controllers (orbis-shims/ProsperoUsbPad.cpp). Started
   // here so that a guitar plugged in before the game can make PS2 port 1 a Guitar below (up to a second's wait for it).
   bool guitar_game = false;
+  bool buzz_game = false; // (AI-assisted) a Buzz! game: the game database's titles all start "Buzz!"
   {
     // vk-285-142: in a Guitar Hero / Rock Band game a USB device known only by its reports' shape is taken as a guitar.
     fe::GameInfo gi;
@@ -5272,8 +5473,30 @@ int main()
       ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
     guitar_game = low.find("guitar hero") != std::string::npos || low.find("rock band") != std::string::npos ||
                   low.find("band hero") != std::string::npos;
+    buzz_game = low.find("buzz!") != std::string::npos;
     OrbisUsbPadSetGuitarHint(guitar_game);
     printf("[boot] USB pads: %s (\"%s\")\n", guitar_game ? "a Guitar Hero or Rock Band game" : "not a guitar game", gi.title.c_str());
+  }
+  // (AI-assisted) the Buzz! buzzers: PS5SX2/Buzz, the game's file or gs.ini: auto (the default: on for a Buzz! game), 0 off,
+  // 1 on. PCSX2's Buzz device (4 buzzers on one USB device) goes on the PS2's USB port 1, the keyboard's; a game's own
+  // USB1/Type still wins. Player 1's controller is buzzer 1 and the other logged-in users' controllers buzzers 2 to 4 (the
+  // users block below); they press only the buzzers then. Takes a restart of the game. Needs proper testing on a console.
+  {
+    MemorySettingsInterface peek = s_base_si;
+    orbis_apply_gs_ini(peek, true);
+    const std::string mode = peek.GetStringValue("PS5SX2", "Buzz", "auto");
+    const bool want = mode == "1" || mode == "true" || (mode != "0" && mode != "false" && buzz_game);
+    if (want)
+      s_base_si.SetStringValue("USB1", "Type", "BuzzDevice");
+    MemorySettingsInterface after = s_base_si;
+    orbis_apply_gs_ini(after, true);
+    const bool on = after.GetStringValue("USB1", "Type", "") == "BuzzDevice" || after.GetStringValue("USB2", "Type", "") == "BuzzDevice";
+    g_orbis_buzz.store(on, std::memory_order_relaxed);
+    printf("[boot] Buzz! buzzers: %s (PS5SX2/Buzz %s%s)\n",
+      on ? (want ? "on USB port 1, in place of the USB keyboard" : "on, from the game's own USB1/USB2 Type") :
+           (want ? "off: the game's own file sets USB1/Type" : "off"),
+      mode.c_str(), buzz_game ? ", a Buzz! game" : "");
+    fflush(stdout);
   }
   OrbisUsbPadStart();
   const bool usb_guitar_at_start = OrbisUsbPadWaitGuitar(1000);
@@ -5297,17 +5520,25 @@ int main()
       if (mt == 0 && peek.GetBoolValue("Pad", "MultitapPort2", false))
         mt = 2;
       g_orbis_multitap = mt;
+      // (AI-assisted) the buzzers take the other users' controllers: no multitap, no PS2 pads for them.
+      if (g_orbis_buzz.load(std::memory_order_relaxed))
+        g_orbis_multitap = 0;
     }
     int32_t others[3] = {-1, -1, -1};
     const int n_others = orbis_find_other_users(first, others);
     static const u32 slots[3][3] = {{1, 0, 0}, {2, 3, 4}, {1, 5, 6}};
-    g_orbis_extra_count = g_orbis_multitap == 0 ? std::min(n_others, 1) : n_others;
+    const bool buzz = g_orbis_buzz.load(std::memory_order_relaxed);
+    g_orbis_extra_count = (g_orbis_multitap == 0 && !buzz) ? std::min(n_others, 1) : n_others;
     for (int i = 0; i < 3; i++)
     {
       g_orbis_extra_user[i] = i < g_orbis_extra_count ? others[i] : -1;
       g_orbis_extra_index[i] = slots[g_orbis_multitap][i];
     }
-    if (g_orbis_multitap != 0)
+    if (buzz)
+    {
+      // buzzers 2..4: nothing to plug into the PS2's controller ports
+    }
+    else if (g_orbis_multitap != 0)
     {
       s_base_si.SetBoolValue("Pad", g_orbis_multitap == 1 ? "MultitapPort1" : "MultitapPort2", true);
       // the multitap's other slots answer as DualShock 2s with no controller behind them yet, so games count 4 ports
@@ -5318,8 +5549,8 @@ int main()
       s_base_si.SetStringValue("Pad2", "Type", "DualShock2");
     std::string who;
     for (int i = 0; i < g_orbis_extra_count; i++)
-      who += " player " + std::to_string(i + 2) + "=user " + std::to_string(g_orbis_extra_user[i]) + " on pad " +
-             std::to_string(g_orbis_extra_index[i] + 1);
+      who += " player " + std::to_string(i + 2) + "=user " + std::to_string(g_orbis_extra_user[i]) +
+             (buzz ? " on buzzer " + std::to_string(i + 2) : " on pad " + std::to_string(g_orbis_extra_index[i] + 1));
     printf("[boot] users: first %d, %d more; multitap %s (PS5SX2/Multitap);%s\n", first, n_others,
       g_orbis_multitap == 0 ? "off" : g_orbis_multitap == 1 ? "in port 1" : "in port 2",
       who.empty() ? " PS2 port 2 stays empty" : who.c_str());
@@ -5341,6 +5572,16 @@ int main()
     orbis_apply_gs_ini(after, true);
     const std::string type = after.GetStringValue("Pad1", "Type", "DualShock2");
     g_orbis_port1_guitar.store(type == "Guitar", std::memory_order_relaxed);
+    // 2.41 (AI-assisted; israelneves, 2026-10-27: "the Blue button trigger the Yellow button" in Guitar Hero 3): which face buttons are
+    // yellow and blue differs between guitars. vk-285-143 made Square / X yellow for the tester's two guitars (OrbisUsbPadDecode.h
+    // ToGuitar); a guitar with the usual layout (yellow on Triangle / Y) then has the two swapped. PS5SX2/GuitarFrets: "swapped" (the
+    // default, 143's) or "usual".
+    {
+      const std::string frets = after.GetStringValue("PS5SX2", "GuitarFrets", "swapped");
+      g_orbis_guitar_usual_frets.store(frets == "usual", std::memory_order_relaxed);
+      if (usb_guitar_at_start)
+        printf("[boot] USB guitar frets: %s (PS5SX2/GuitarFrets)\n", frets == "usual" ? "yellow on Triangle / Y, blue on Square / X" : "yellow on Square / X, blue on Triangle / Y");
+    }
     printf("[boot] PS2 port 1: %s%s\n", type.c_str(),
       usb_guitar_at_start ? (typed ? " (a USB guitar is connected, but gs.ini or the game's file sets Pad1's type)"
                                     : want_guitar ? " (a USB guitar is connected)"
@@ -5729,8 +5970,19 @@ int main()
       pthread_detach(pad_thread);
   }
   // vk-285-72: the PS5's USB keyboard and mouse, read for the PS2's (orbis-shims/ProsperoKbdMouse.cpp).
-  if (!orbis_flag("nousbkbm"))
-    OrbisKbdMouseStart();
+  // 192 (AI-assisted; two fat consoles, 8.60 and 9.00, hung at every back to the menu with them open; in 2.30/2.40's reports every console
+  // restart after a back to the menu below firmware 11 came from a session that had them open, none where the system refuses them): the
+  // console's keyboard and mouse libraries are loaded only when Keyboard and mouse is Controller or USB devices (or with the flag usbkbm);
+  // Auto and Off leave them alone. Read at the game's start. OrbisKbdMouseStop closes them before every way out.
+  {
+    const int kbm_mode = s_base_si.GetIntValue("PS5SX2", "KeyboardMouse", 0);
+    const bool kbm_wanted = !orbis_flag("nousbkbm") && (kbm_mode == 1 || kbm_mode == 2 || orbis_flag("usbkbm"));
+    printf("[kbm] the console's keyboard and mouse libraries: %s (PS5SX2/KeyboardMouse %d%s)\n",
+      kbm_wanted ? "loaded" : "not loaded", kbm_mode, orbis_flag("nousbkbm") ? ", flag nousbkbm" : orbis_flag("usbkbm") ? ", flag usbkbm" : "");
+    fflush(stdout);
+    if (kbm_wanted)
+      OrbisKbdMouseStart();
+  }
   orbis_prof_start();
   // Benchmark raw memory reads + arithmetic (isolates interpreter slowness). 187: only with flags/bootbench (see vzu_bench).
   if (boot_bench)

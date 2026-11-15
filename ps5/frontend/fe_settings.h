@@ -58,9 +58,13 @@ std::vector<CardFile> ListCards(const std::string& dir);
 struct PatchGroup
 {
 	std::string name, file, description;
+	bool other_version = false; // 2.41: its file is for another version of the game (the core doesn't load it)
 };
 
-std::vector<PatchGroup> PatchGroups(const std::string& dir, const std::string& serial);
+// 2.41: crc (0 = not known) and stem (the game's file name without its extension) for fe_pnach.h's rules.
+std::vector<PatchGroup> PatchGroups(const std::string& dir, const std::string& serial, uint32_t crc = 0, const std::string& stem = std::string());
+// 2.41: the .pnach files of `dir` no game of `games` ({serial, file name without its extension}) can be matched to.
+std::vector<std::string> UnmatchedPnach(const std::string& dir, const std::vector<std::pair<std::string, std::string>>& games);
 
 // ---- recommended settings (vk-285-51). What a settings text sets, as the port's reader applies it: a key set twice
 // counts with its last line; Patches/Enable lines add up.

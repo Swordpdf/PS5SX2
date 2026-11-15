@@ -1906,6 +1906,7 @@ void orbis_ingame_prepare(const OrbisFrontendPaths& paths)
 		fe::InGameMenu::Config cfg;
 		cfg.fonts = fonts;
 		cfg.icon_font = icon_font;
+		cfg.paged_sheet = OrbisFlag("newsheet"); // 2.41: the game sheet and the Game tab in the new style
 		// The files the shelf's sheet and the settings page edit, logged as they log.
 		cfg.paths.settings_dir = paths.settings_dir;
 		cfg.paths.gs_ini = paths.gs_ini;
@@ -1943,7 +1944,32 @@ int orbis_frontend_prefetch_covers(const OrbisFrontendPaths& paths, double budge
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
 	UseGameDb(paths);                       // vk-285-113; gamedb (2026-10-30): with the eboot's copy behind the file
 	SetShareRoots(paths.share_roots);       // chdscan: OnNetworkShare below
-	std::vector<GameInfo> games = ScanGames(ScanRoots(paths), paths.scan_subfolders); // test build 1: USB drives, when visible here
+	// 2.41 (AI-assisted; the owner: "the first startup takes a bit (it loads games from external hdd)"): the games on USB drives and NFS shares
+	// are left to the shelf below anyway, so their folders aren't even listed here (flags/prefetchusb: as before). On the Pro this listing was
+	// 2.8 s of a 3.4 s start (an external hard drive waking up, 28 ms when it was awake). Each root's listing time is logged.
+	const bool usb_roots_here = OrbisFlag("prefetchusb");
+	std::vector<GameInfo> games;
+	{
+		std::string timing;
+		for (const std::string& root : ScanRoots(paths))
+		{
+			if (!usb_roots_here && (OnUsb(root) || OnNetworkShare(root)))
+			{
+				timing += " " + root + "=skipped";
+				continue;
+			}
+			const double r0 = Now();
+			std::vector<GameInfo> found = ScanGames({root}, paths.scan_subfolders); // test build 1: USB drives, when visible here
+			char ms[32];
+			std::snprintf(ms, sizeof(ms), "=%.0fms/%zu", (Now() - r0) * 1000.0, found.size());
+			timing += " " + root + ms;
+			for (GameInfo& g : found) // as one ScanGames call: a file name an earlier root has is not listed again
+				if (std::none_of(games.begin(), games.end(), [&](const GameInfo& h) { return h.file == g.file; }))
+					games.push_back(std::move(g));
+		}
+		SortGames(games);
+		std::printf("[frontend] prefetch: game folders listed:%s\n", timing.c_str());
+	}
 	// chdscan (AI-assisted): this all runs before the shelf, on a black screen. A PS5 Pro tester's 390 games on a USB drive: 30.4 s of
 	// cover downloads before the shelf at each start until the covers were all there (77 and 96 a start; 2026-10-30), and a first start
 	// read every new image here. The shelf fetches the covers of games on USB drives and NFS shares itself, in the background
@@ -2283,7 +2309,25 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	SetSerialCacheFile(paths.serial_cache); // vk-285-108
 	UseGameDb(paths);                       // vk-285-113; gamedb (2026-10-30): with the eboot's copy behind the file
 	SetShareRoots(paths.share_roots);       // vk-285-156
-	std::vector<GameInfo> games = ScanGames(ScanRoots(paths), paths.scan_subfolders); // test build 1: USB drives; 2026-10-16: or only the folders set
+	// test build 1: USB drives; 2026-10-16: or only the folders set. 2.41: each root timed (an external hard drive waking up shows here).
+	std::vector<GameInfo> games;
+	{
+		std::string timing;
+		for (const std::string& root : ScanRoots(paths))
+		{
+			const double r0 = Now();
+			std::vector<GameInfo> found = ScanGames({root}, paths.scan_subfolders);
+			char ms[32];
+			std::snprintf(ms, sizeof(ms), "=%.0fms/%zu", (Now() - r0) * 1000.0, found.size());
+			timing += " " + root + ms;
+			for (GameInfo& g : found) // as one ScanGames call: a file name an earlier root has is not listed again
+				if (std::none_of(games.begin(), games.end(), [&](const GameInfo& h) { return h.file == g.file; }))
+					games.push_back(std::move(g));
+		}
+		SortGames(games);
+		std::printf("[frontend] game folders listed:%s\n", timing.c_str());
+		std::fflush(stdout);
+	}
 	// chdscan (AI-assisted): the images the cache files know (all of them on most starts) take no time; any others are read on a thread
 	// (ShelfScan) while the display comes up, and when that takes longer the shelf comes up without its games and counts them in.
 	ShelfScan scan(paths, t0);
@@ -2340,11 +2384,19 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	// before the first frame; the system's launch screen covers the app until that frame).
 	Fonts* fonts = new Fonts();
 	bool fonts_ok = false;
+	int sheet_symbols = -1; // 2.41 newsheet
 	Mixer* mixer = nullptr;
 	AudioOut* audio = nullptr;
 	std::thread beside([&] {
 		fonts_ok = fonts->Init(fe_font_text, static_cast<size_t>(fe_font_text_end - fe_font_text), fe_font_icons,
 			static_cast<size_t>(fe_font_icons_end - fe_font_icons), fe_font_brands, static_cast<size_t>(fe_font_brands_end - fe_font_brands));
+		// 2.41 newsheet: the game sheet's icons (Font Awesome Solid, the in-game menu's font), only with the new sheet
+		if (fonts_ok && OrbisFlag("newsheet"))
+		{
+			sheet_symbols = fonts->AddFont(fe_font_symbols);
+			if (sheet_symbols >= 0)
+				fonts->Preload(sheet_symbols, App::SheetIconCodepoints());
+		}
 		// The key sounds (vk-285-47). Without an audio port the shelf is simply quiet.
 		if (paths.sound)
 		{
@@ -2470,7 +2522,7 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 	acfg.text_entry.poll = SystemKeyboardPoll;
 #endif
 	acfg.build_tag = build_tag ? build_tag : "";
-	acfg.test_build = paths.test_build;   // test build 1: the TESTING watermark
+	acfg.test_build = paths.test_watermark ? paths.test_build : 0; // test build 1: the TESTING watermark (2.41: only with flags/testmark)
 	acfg.build_label = paths.build_label;
 	acfg.test_note = paths.test_note; // vk-285-105
 	acfg.preselect = preselect;
@@ -2598,6 +2650,8 @@ std::string orbis_frontend_run(const OrbisFrontendPaths& paths, const char* buil
 		acfg.options.cheats_dir = paths.cheats_dir;
 	}
 	acfg.system_menu = true; // 2026-10-08: the sheet for all games offers the PS2 system menu (main-boot.cpp boots it)
+	acfg.paged_sheet = OrbisFlag("newsheet"); // 2.41: the redesigned game sheet (a home and pages), until it replaces the old one
+	acfg.symbol_font = sheet_symbols;
 	// 2.12 / 179: the Home screen tile row (see orbis_web_start): ON by default; the flag file flags/gametile_off switches it off. The cover goes to the helper for the tile's art.
 	acfg.tiles_dir = !OrbisFlag("gametile_off") ? paths.top_dir + "/tiles" : std::string();
 	acfg.own_tile_game = orbis_own_tile_game();

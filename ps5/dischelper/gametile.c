@@ -44,7 +44,10 @@
 #define GT_REV      "1"
 #define GT_MIN_FREE (192ll << 20)
 #ifndef GT_ROOTS
-#define GT_ROOTS {"/data/", "/mnt/"} /* where a game can be: the console's data folder (the games folder) and the drives (USB, extended storage) */
+/* where a game can be: the console's data folder (the games folder), the drives (USB, extended storage), and (171q) the app's NFS shares: /nfs/<host>/... exists only
+ * inside PS5SX2, whose own NFS client serves it, so the helper takes such a path on the app's word (gt_queue_try does not look for the file) and the tile's start
+ * checks it once the share is mounted (a share that is not there opens the shelf with a note, as a USB drive that is out does) */
+#define GT_ROOTS {"/data/", "/mnt/", "/nfs/"}
 #endif
 #ifndef GT_HEAL_MIN_AGE
 #define GT_HEAL_MIN_AGE 10 /* a sandbox that changed less than this many seconds ago may be a start in progress */
@@ -785,7 +788,7 @@ static int gt_queue_try(int qi) {
         if (s >= 0 && g_gt[s].st == GT_REMOVING) return 0; /* the removal first */
         if (s >= 0) { say("game tile: %s has its tile already (%s)", r->path, kGameSlots[s]); gt_queue_pop_at(qi); return 1; }
         if (GT_LOAD(g_gt_build_busy) || gt_disc_busy()) return 0;
-        if (!exists(r->path)) { gt_fail_add(r->path, r->serial, r->title, "nogame"); gt_queue_pop_at(qi); return 1; }
+        if (strncmp(r->path, "/nfs/", 5) != 0 && !exists(r->path)) { gt_fail_add(r->path, r->serial, r->title, "nogame"); gt_queue_pop_at(qi); return 1; } /* 171q: an NFS game is not visible here */
         s = gt_pick_slot();
         if (s < 0) { gt_fail_add(r->path, r->serial, r->title, "limit"); gt_queue_pop_at(qi); return 1; }
         gt_purge_ghost(s);

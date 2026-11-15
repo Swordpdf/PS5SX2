@@ -433,6 +433,7 @@ int main(int argc, char** argv)
 	cfg.fonts = &fonts;
 	cfg.icon_font = icon_font;
 	cfg.paths = paths;
+	cfg.paged_sheet = std::getenv("FE_NEWSHEET") != nullptr; // 2.41: the new style
 	cfg.achievements = [&]() { return ach; };
 	cfg.clock = []() { return std::string("21:47"); };
 	constexpr int64_t kNow = 1793914020; // 2026-11-05 21:27 UTC: the preview's "now"
@@ -571,6 +572,17 @@ int main(int argc, char** argv)
 	press(Down);
 	press(Right);
 	shot("settings-changed");
+	if (cfg.paged_sheet)
+	{
+		// 2.41 newsheet: a page (Speed: four rows down from Aspect ratio, the header between skipped) and back
+		for (int i = 0; i < 4; i++)
+			press(Down);
+		shot("settings-home-speed");
+		press(Cross);
+		shot("settings-page");
+		press(Circle);
+		shot("settings-back");
+	}
 	press(R1);
 	shot("settings-all-games");
 	press(R2);

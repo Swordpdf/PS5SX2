@@ -764,8 +764,9 @@ std::unique_ptr<ArchiveEntryList> SaveState_DownloadState(Error* error)
 
 std::unique_ptr<SaveStateScreenshotData> SaveState_SaveScreenshot()
 {
-	return nullptr; // eerec-282: Orbis states carry no screenshot
-#if 0
+	// 2.41 (AI-assisted; the owner: the in-game menu's save states had a picture only right after saving): the upstream snapshot again,
+	// stored by SaveState_ZipToDisk as a raw "Screenshot.rgba" entry of the flat Orbis file (no libpng here). eerec-282 had it off.
+	// A failed snapshot only leaves the state without a picture.
 	static constexpr u32 SCREENSHOT_WIDTH = 640;
 	static constexpr u32 SCREENSHOT_HEIGHT = 480;
 
@@ -782,7 +783,6 @@ std::unique_ptr<SaveStateScreenshotData> SaveState_SaveScreenshot()
 	data->height = height;
 	data->pixels = std::move(pixels);
 	return data;
-#endif
 }
 
 #if 0 // eerec-282: zip + png archive layer
@@ -1045,12 +1045,12 @@ static bool SaveState_AddToZip(zip_t* zf, ArchiveEntryList* srclist, SaveStateSc
 // eerec-282: an Orbis state is one flat file holding the entries PCSX2 would zip:
 //   "OPS2STAT", u32 save version, u32 entry count, then per entry u32 name length, name, u64 size, data.
 static constexpr char ORBIS_STATE_MAGIC[8] = {'O', 'P', 'S', '2', 'S', 'T', 'A', 'T'};
+static constexpr const char* ORBIS_STATE_SCREENSHOT = "Screenshot.rgba"; // 2.41
 
 bool SaveState_ZipToDisk(
 	std::unique_ptr<ArchiveEntryList> srclist, std::unique_ptr<SaveStateScreenshotData> screenshot,
 	const char* filename, Error* error)
 {
-	(void)screenshot;
 	const std::string tmp = std::string(filename) + ".tmp";
 	std::FILE* fp = std::fopen(tmp.c_str(), "wb");
 	if (!fp)
@@ -1062,9 +1062,24 @@ bool SaveState_ZipToDisk(
 	u32 count = 0;
 	for (uint i = 0; i < static_cast<uint>(srclist->GetLength()); i++)
 		count += ((*srclist)[i].GetDataSize() != 0) ? 1u : 0u;
+	// 2.41: the screenshot first ("Screenshot.rgba": u32 width, u32 height, width * height RGBA pixels), so the in-game menu reads it
+	// without going through the rest of the file. The loader looks entries up by name, so other builds skip it.
+	const bool shot = screenshot && screenshot->width > 0 && screenshot->height > 0 &&
+					  screenshot->pixels.size() >= static_cast<size_t>(screenshot->width) * screenshot->height;
+	count += shot ? 1u : 0u;
 	const u32 version = g_SaveVersion;
 	bool ok = put(ORBIS_STATE_MAGIC, sizeof(ORBIS_STATE_MAGIC)) && put(&version, sizeof(version)) && put(&count, sizeof(count));
 	u64 total = 0;
+	if (ok && shot)
+	{
+		const std::string name = ORBIS_STATE_SCREENSHOT;
+		const u32 name_len = static_cast<u32>(name.size());
+		const size_t px_bytes = static_cast<size_t>(screenshot->width) * screenshot->height * sizeof(u32);
+		const u64 size = 8 + px_bytes;
+		ok = put(&name_len, sizeof(name_len)) && put(name.data(), name_len) && put(&size, sizeof(size)) &&
+			 put(&screenshot->width, sizeof(u32)) && put(&screenshot->height, sizeof(u32)) && put(screenshot->pixels.data(), px_bytes);
+		total += size;
+	}
 	for (uint i = 0; ok && i < static_cast<uint>(srclist->GetLength()); i++)
 	{
 		const ArchiveEntry& entry = (*srclist)[i];
@@ -1091,11 +1106,45 @@ bool SaveState_ZipToDisk(
 
 bool SaveState_ReadScreenshot(const std::string& filename, u32* out_width, u32* out_height, std::vector<u32>* out_pixels)
 {
-	(void)filename;
-	(void)out_width;
-	(void)out_height;
-	(void)out_pixels;
-	return false; // eerec-282: no screenshots
+	// 2.41: the "Screenshot.rgba" entry SaveState_ZipToDisk writes, found by walking the entry headers and seeking over the data (a state is
+	// ~45 MB on /data, which reads slowly); false for a state without one (saved by an older build) or a damaged file.
+	std::FILE* fp = std::fopen(filename.c_str(), "rb");
+	if (!fp)
+		return false;
+	ScopedGuard close_fp([fp]() { std::fclose(fp); });
+	char magic[sizeof(ORBIS_STATE_MAGIC)];
+	u32 version = 0, count = 0;
+	if (std::fread(magic, 1, sizeof(magic), fp) != sizeof(magic) || std::memcmp(magic, ORBIS_STATE_MAGIC, sizeof(magic)) != 0 ||
+		std::fread(&version, sizeof(version), 1, fp) != 1 || std::fread(&count, sizeof(count), 1, fp) != 1)
+		return false;
+	for (u32 i = 0; i < count && i < 4096; i++)
+	{
+		u32 name_len = 0;
+		u64 size = 0;
+		if (std::fread(&name_len, sizeof(name_len), 1, fp) != 1 || name_len > 1024)
+			return false;
+		std::string name(name_len, '\0');
+		if ((name_len && std::fread(name.data(), 1, name_len, fp) != name_len) || std::fread(&size, sizeof(size), 1, fp) != 1)
+			return false;
+		if (name != ORBIS_STATE_SCREENSHOT)
+		{
+			if (size > static_cast<u64>(INT64_MAX) || FileSystem::FSeek64(fp, static_cast<s64>(size), SEEK_CUR) != 0)
+				return false;
+			continue;
+		}
+		u32 w = 0, h = 0;
+		if (size < 8 || std::fread(&w, sizeof(w), 1, fp) != 1 || std::fread(&h, sizeof(h), 1, fp) != 1 || w == 0 || h == 0 || w > 4096 ||
+			h > 4096 || size - 8 < static_cast<u64>(w) * h * sizeof(u32))
+			return false;
+		std::vector<u32> px(static_cast<size_t>(w) * h);
+		if (std::fread(px.data(), sizeof(u32), px.size(), fp) != px.size())
+			return false;
+		*out_width = w;
+		*out_height = h;
+		*out_pixels = std::move(px);
+		return true;
+	}
+	return false;
 }
 
 bool SaveState_UnzipFromDisk(const std::string& filename, Error* error)

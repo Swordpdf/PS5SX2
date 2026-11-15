@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 static int fails = 0;
 static void Check(bool ok, const std::string& w)
@@ -31,7 +32,11 @@ static void Touch(const std::string& path)
 {
 	const size_t slash = path.rfind('/');
 	std::system(("mkdir -p '" + path.substr(0, slash) + "'").c_str());
-	std::ofstream(path) << "x";
+	{
+		std::ofstream(path) << "x";
+	}
+	if (truncate(path.c_str(), 64 << 10) != 0) // 2.41: 64 KB, sparse: the shelf skips disc images under 16 KB (GitHub #95)
+		std::perror(path.c_str());
 }
 
 // what the shelf lists from these roots: the file names

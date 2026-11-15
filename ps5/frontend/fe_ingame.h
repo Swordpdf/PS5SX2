@@ -152,6 +152,7 @@ public:
 		std::function<GameAchievementsState()> achievements; // the running game's (empty: no Achievements tab)
 		std::function<std::string()> clock;                   // "21:47"
 		std::function<std::string(int64_t utc)> when;         // a save's time: "Today 21:47"
+		bool paged_sheet = false; // 2.41 (flag newsheet): the game sheet as the shelf's new one (a home and pages, cards), the Game tab on cards
 	};
 
 	// The code points the menu's icons need (for Fonts::Preload with the icon font).
@@ -231,6 +232,8 @@ private:
 	void UpdateAchievements(double now, int v);
 	bool MoveGame(int dir);
 	bool MoveSheet(int dir);
+	bool WrapSheet(int dir); // 2.41
+	void SheetFocusPage(int page); // 2.41 newsheet: the focus on the home's row of that page (-1: the first row)
 	void SetStatus(const std::string& s, bool ok);
 	void Ask(const InGameRequest& r);
 	std::string SlotValue(int slot) const;
@@ -243,6 +246,7 @@ private:
 	void BuildPanel(InGameFrame& out, float W, float H, float k, float e);
 	void BuildGameRows(InGameFrame& out, float x, float y, float sw, float sh, float k);
 	void BuildSheetRows(InGameFrame& out, float x, float y, float sw, float sh, float k);
+	void BuildSheetCards(InGameFrame& out, float x, float y, float sw, float sh, float k); // 2.41 newsheet
 	void BuildAchievementRows(InGameFrame& out, float x, float y, float sw, float sh, float k);
 	void BuildSlotStrip(InGameFrame& out, float x, float y, float w, float k);
 	void BuildQr(InGameFrame& out, float x, float y, float side, float k);

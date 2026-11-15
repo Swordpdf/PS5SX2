@@ -1,9 +1,9 @@
 // PS5 port frontend: the shelf's and the notifications' text in the PS5's language (vk-285-110).
 //
 // The PS5's system language (sceSystemServiceParamGetInt parameter 1) picks a table: English, French,
-// Spanish (Spain and Latin America), German, Italian, Dutch and Portuguese (Portugal and Brazil). Other
-// languages get English: the shelf's font has the accented Latin letters (Latin-1) but no Cyrillic, Greek
-// or CJK. A file <lang_dir>/<code>.txt, when present, replaces entries ("hint.play = Jugar"), so a wrong
+// Spanish (Spain and Latin America), German, Italian, Dutch, Portuguese (Portugal and Brazil) and, since 2.41,
+// Polish, Russian and Ukrainian. Other languages get English: the shelf's font has Latin-1, Polish's letters and
+// Cyrillic, but no Greek or CJK. A file <lang_dir>/<code>.txt, when present, replaces entries ("hint.play = Jugar"), so a wrong
 // word can be fixed without a new build.
 //
 // Copyright (C) 2026 swordpdf
@@ -242,6 +242,8 @@ enum class Str : int
 	IngameJustNow,          // "Just now": a state saved while the menu is open
 	IngameSavedThisNext,    // "Saved for this game · used when the game starts next"
 	IngameSavedAllNext,     // "Saved for all games · used when a game starts next"
+	// 192 (AI-assisted; the owner: "bring the update button in the app itself somewhere more accessible"): L2 on the shelf (English only for now).
+	UpdateHintAvailable,    // "Update to %s" (%s: the release's name): the shelf's L2 hint when the start's look found a newer release
 	NoGamesNoAccess,        // GitHub #17: under "No games" when PS5SX2 could not leave its sandbox (no jailbreak answered)
 	Count
 };
@@ -253,7 +255,7 @@ void SetLanguage(int ps5_language, const std::string& lang_dir);
 // The text in the current language (English where the table or the file has nothing).
 const char* Tr(Str id);
 
-// "en", "fr", "es", "es-419", "de", "it", "nl", "pt" or "pt-BR".
+// "en", "fr", "es", "es-419", "de", "it", "nl", "pt", "pt-BR", "pl", "ru" or "uk".
 const char* LanguageCode();
 
 // The override file's key of an entry ("hint.play"), for messages and tests.

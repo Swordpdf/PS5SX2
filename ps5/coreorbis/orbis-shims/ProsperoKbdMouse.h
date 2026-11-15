@@ -6,6 +6,11 @@
 // Starts the thread that reads the console's keyboard and mouse libraries (once; later calls do nothing).
 void OrbisKbdMouseStart();
 
+// 192: the thread closes the keyboard and mouse it opened and ends (a start not yet done opens nothing). Called before every way out
+// the app takes itself (back to the menu, the exit): with the handles open, two consoles' processes never ended. Waits up to
+// `wait_ms`; 1 closed, 0 nothing was open (or the thread never ran), -1 it didn't answer in time.
+int OrbisKbdMouseStop(int wait_ms);
+
 // At each vsync on the CPU thread: hands what the thread queued to the PS2's USB keyboard and mouse, and looks at
 // whether a game reads them.
 void OrbisKbdMousePump();

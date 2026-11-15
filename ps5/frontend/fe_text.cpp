@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <string>
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
@@ -95,6 +97,13 @@ bool Fonts::Init(const uint8_t* text_font, size_t text_size, const uint8_t* icon
 		wanted.push_back({0, cp});
 	for (uint32_t cp = 160; cp < 256; cp++)
 		wanted.push_back({0, cp});
+	// 2.41 (PRs #62, #63, #80): Polish's letters beyond Latin-1 (Latin Extended-A), and Cyrillic (U+0400..U+045F, plus Ukrainian's Ґ ґ).
+	for (uint32_t cp : {0x104u, 0x105u, 0x106u, 0x107u, 0x118u, 0x119u, 0x141u, 0x142u, 0x143u, 0x144u, 0x15Au, 0x15Bu, 0x179u, 0x17Au, 0x17Bu, 0x17Cu})
+		wanted.push_back({0, cp});
+	for (uint32_t cp = 0x400; cp < 0x460; cp++)
+		wanted.push_back({0, cp});
+	wanted.push_back({0, 0x490});
+	wanted.push_back({0, 0x491});
 	// vk-285-114: 0x2039 and 0x203A, the options sheet's arrows either side of a value.
 	const uint32_t extra[] = {0x2022, 0x2026, 0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2122, 0x2190,
 		0x2192, 0x25B8, 0x2039, 0x203A, 0xFFFD};
@@ -130,8 +139,13 @@ bool Fonts::Init(const uint8_t* text_font, size_t text_size, const uint8_t* icon
 		for (std::thread& w : workers)
 			w.join();
 	}
+	int full = 0;
 	for (size_t i = 0; i < wanted.size(); i++)
-		PackGlyph(wanted[i].second, rendered[i]);
+		if (!PackGlyph(wanted[i].second, rendered[i]) && rendered[i].valid)
+			full++;
+	// 2.41: the atlas is a fixed 2048x1024 and the Cyrillic and Polish letters added about 120 glyphs: how full it is gets said.
+	std::printf("[fonts] %zu glyphs, atlas filled to row %d of %d%s\n", wanted.size(), m_pen_y + m_row_h, m_atlas_h,
+		full ? (", " + std::to_string(full) + " did NOT fit").c_str() : "");
 	return true;
 }
 

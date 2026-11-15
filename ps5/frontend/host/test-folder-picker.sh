@@ -17,8 +17,8 @@ export VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-$(ls /opt/pw-browsers/*/chrome-linux
 shots=${FE_SHOTS:-$work/shots}
 data="$work/data"
 mkdir -p "$data/usb0/PS2/Sub" "$data/usb0/Other" "$data/usb0/.hidden"
-: > "$data/usb0/PS2/Game A (USA).iso"
-: > "$data/usb0/PS2/Sub/Game B (Europe).chd"
+truncate -s 64K "$data/usb0/PS2/Game A (USA).iso" # 2.41: the shelf skips images under 16 KB (#95)
+truncate -s 64K "$data/usb0/PS2/Sub/Game B (Europe).chd"
 : > "$data/usb0/PS2/notes.txt"
 mkdir -p "$data/usb0/ZZ #bad" # review 2026-10-16: a name the settings file can't hold ('#' starts a comment there); last in the list, so no row above it moves
 failed=0
@@ -41,7 +41,7 @@ run() {
 ini() { grep -s "^$1=" "$data/gs.ini" | head -1 | cut -d= -f2-; }
 # The sheet for all games (Square, then R1), its first rows (vk-285-135b: Folders at the top): Recommended for all games, then
 # Game folders, BIOS folder, NFS shares, Textures folder (2026-10-16), Scan USB drives, Scan subfolders. Each step below goes down from the top.
-open_all="game 0;wait 1;press square;wait 0.4;press r1;wait 0.3;press up 80;wait 0.1"
+open_all="game 0;wait 1;press square;wait 0.4;press r1;wait 0.3;hold up 7;wait 0.1"
 steps() { tr ';' '\n' <<<"$1" | sed '/^$/d'; }
 script="$work/script.txt"
 

@@ -165,7 +165,8 @@ void TestText()
 		{"/mnt", false, "/mnt"},
 		{"/dev/cd0", false, "a disc drive has its own tile"},
 		{"/dev/cd0/x", false, "under /dev"},
-		{"/nfs/host/share/game.iso", false, "an NFS share (virtual to this process)"},
+		{"/nfs/host/share/game.iso", true, "an NFS share (2.41, helper 171q)"},
+		{"/nfs/", false, "/nfs/ alone"},
 		{"/app0/eboot.bin", false, "not /data or /mnt"},
 		{"/datax/y", false, "/datax is not /data/"},
 		{"/mntx/y", false, "/mntx is not /mnt/"},
@@ -270,7 +271,7 @@ void TestText()
 	Check(!RowEligible("/data/x/Game.elf", "Game.elf", ""), "RowEligible: an ELF");
 	Check(!RowEligible("/data/x/Game.ELF", "Game.ELF", ""), "RowEligible: an ELF in capitals");
 	Check(!RowEligible("/dev/cd0", "cd0", ""), "RowEligible: a disc drive");
-	Check(!RowEligible("/nfs/h/s/Game.iso", "Game.iso", ""), "RowEligible: an NFS share");
+	Check(RowEligible("/nfs/h/s/Game.iso", "Game.iso", ""), "RowEligible: an NFS share (2.41, helper 171q)");
 
 	// Tile ids.
 	for (int n = 99251; n <= 99260; n++)
@@ -832,7 +833,7 @@ void TestTracker()
 		View v = s.Look();
 		Check(v.phase == Phase::NoHelper && v.can == Can::None && !v.busy, "no helper: phase 9, nothing to do");
 		Eq(ValueText(v), "No helper", "no helper: the value");
-		Check(HelpText(v, "x").find("171k") != std::string::npos && HelpText(v, "x").find("by hand") != std::string::npos, "no helper: the help names the helper revision and the manual-load fallback");
+		Check(HelpText(v, "x").find("171q") != std::string::npos && HelpText(v, "x").find("restart the console") != std::string::npos, "no helper: the help names the shipped helper and the restart that loads it (2.41)");
 		s.State(s.Ok());
 		v = s.Look();
 		Check(v.phase == Phase::NoHelper, "no helper: state.txt is not believed");
@@ -931,9 +932,9 @@ void TestTracker()
 		Eq(text(Phase::Removing), "The tile is hidden now and is taken away about 30 seconds after you close PS5SX2.", "help: Removing");
 		Eq(text(Phase::NoAnswer), "The helper did not take the request within 15 seconds. Load the newest PS5SX2 Disc Helper (171g), then press Cross to try again.", "help: No answer");
 		Eq(text(Phase::Stuck), "The helper took the request but the tile did not show up in time. Press Cross to try again; disctile.log (flag kp_log) says why.", "help: Stuck (add)");
-		Eq(text(Phase::NoHelper), "The helper that makes game tiles is not running yet. The app loads it at start; if it did not, load the PS5SX2 Disc Helper (171k) by hand.", "help: No helper");
+		Eq(text(Phase::NoHelper), "The helper that makes game tiles is not running yet. The app loads it at start; if it did not, or an older helper you loaded yourself is still running, restart the console once (the app then loads the helper that comes with it, 171q).", "help: No helper");
 		Eq(text(Phase::Failed, false, false, "nogame"), "Failed: The helper cannot find the game file (is its drive connected?).", "help: Failed nogame");
-		Eq(text(Phase::Failed, false, false, "badpath"), "Failed: The helper cannot use this path (only files under /data or on a drive under /mnt).", "help: Failed badpath");
+		Eq(text(Phase::Failed, false, false, "badpath"), "Failed: The helper cannot use this path (only files under /data, on a drive under /mnt, or on an NFS share with Helper 171q or newer: restart the console once so the new helper runs).", "help: Failed badpath");
 		Eq(text(Phase::Failed, false, false, "limit"), "Failed: All 10 game tiles are in use: take one off first.", "help: Failed limit");
 		Eq(text(Phase::Failed, false, false, "nospace"), "Failed: Not enough free space on /data (about 200 MB are needed).", "help: Failed nospace");
 		Eq(text(Phase::Failed, false, false, "build"), "Failed: Building the tile failed (the helper's log has the details).", "help: Failed build");

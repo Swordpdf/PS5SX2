@@ -106,6 +106,9 @@ void ReadBadges(GameInfo& g, const std::string& settings_dir, const std::string&
 
 // vk-285-137: gs.ini's PS5SX2/ShowHiddenGames (the sheet for all games): hidden games stay on the shelf, dimmed.
 bool ShowHiddenGames(const std::string& gs_ini);
+// 2.41: PS5SX2/DiscInsert, what happens when a PS2 disc that is not copied goes in: "ask" (play or copy; the default), "play" (it starts
+// from the drive, nothing is copied) or "shelf" (nothing happens: the disc waits on the shelf, and picking it there asks).
+std::string DiscInsertMode(const std::string& gs_ini);
 
 // vk-285-139 (AI-assisted): a game's discs, for changing discs in the game. The images an .m3u in the image's folder lists
 // (in its order, relative to it or full paths) when one lists this image; else the disc images beside it whose names

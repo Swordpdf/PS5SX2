@@ -411,6 +411,28 @@ bool OrbisRelaunchStart(const char* closing_title, const char* launch_title, int
 		close(fd);
 	}).detach();
 
+	// 2.41 (AI-assisted; the owner: "look at the guard 200ms too"): a guard (guard_ms > 0) only acts after this process is gone, when no new
+	// one says it is up, so the leave need not wait for its '.started' (about 200 ms of every "back to the menu"): the loader runs it on its own
+	// while the exec goes on, and one that starts after the new process is up finds its '.alive' and launches nothing. The handshake is still
+	// waited for on a thread, for the log. A payload sent but never started leaves no guard, as a failed handshake did. Flag guardwait: as before.
+	if (timing.guard_ms > 0 && !OrbisFlag("guardwait"))
+	{
+		if (FILE* f = std::fopen(OrbisLogPath("menu-guard.txt").c_str(), "wb"))
+		{
+			std::fprintf(f, "%s\n%lld\n", state.c_str(), static_cast<long long>(std::time(nullptr)));
+			std::fclose(f);
+		}
+		std::printf("[relaunch] guard payload sent after %d ms (%d connect%s); its start is not waited for, state %s\n", Ms(begin, Clock::now()), tries,
+			tries == 1 ? "" : "s", state.c_str());
+		std::fflush(stdout);
+		std::thread([state, begin] {
+			while (!Exists(state + ".started") && !Exists(state + ".done") && Ms(begin, Clock::now()) < kMaxTotalMs)
+				usleep(50000);
+			std::printf("[relaunch] guard payload: %s after %d ms\n", Exists(state + ".started") ? "up" : "no '.started' (yet)", Ms(begin, Clock::now()));
+			std::fflush(stdout);
+		}).detach();
+		return true;
+	}
 	// 3. the handshake: the payload's '.started' (the rest of the budget, but at least kMinHandshakeMs after a late connect, and never past kMaxTotalMs)
 	int wait_until = kBudgetMs;
 	const int late = Ms(begin, sent_at) + kMinHandshakeMs;
@@ -450,6 +472,127 @@ bool OrbisRelaunchStart(const char* closing_title, const char* launch_title, int
 			std::fprintf(f, "%s\n%lld\n", state.c_str(), static_cast<long long>(std::time(nullptr)));
 			std::fclose(f);
 		}
+	return true;
+#endif
+}
+
+// 195 (AI-assisted): see ProsperoRelaunch.h. The leave's request state (g_state) is not touched: a watch is never cancelled and launches nothing.
+bool OrbisSessionWatchStart(int pid, std::string& why)
+{
+#ifndef ORBIS_RELAUNCH_ELF
+	(void)pid;
+	why = "this build has no relaunch payload";
+	return false;
+#else
+	if (pid <= 1)
+	{
+		why = "bad pid";
+		return false;
+	}
+	const size_t offset = RequestOffset();
+	if (offset == SIZE_MAX)
+	{
+		why = "the embedded payload has no request marker";
+		return false;
+	}
+	static unsigned s_watch_seq;
+	const std::string state = OrbisLogPath(
+		("relaunch-watch-" + std::to_string(static_cast<long long>(std::time(nullptr))) + "-" + std::to_string(++s_watch_seq)).c_str());
+	if (state.find('\n') != std::string::npos)
+	{
+		why = "the logs path has a line break in it";
+		return false;
+	}
+	const std::string request = std::string(kMarker) + "\npid=" + std::to_string(pid) + "\nwait=\nlaunch=PPSA99203\nstate=" + state +
+	                            "\nwatch=1\nlinger_s=150\n";
+	if (request.size() >= kRoom)
+	{
+		why = "the request is too large";
+		return false;
+	}
+	std::vector<uint8_t> elf(orbis_relaunch_elf, orbis_relaunch_elf_end);
+	std::memcpy(elf.data() + offset, request.data(), request.size());
+	elf[offset + request.size()] = 0;
+	const auto begin = Clock::now();
+	int fd = -1, last_err = 0, tries = 0;
+	for (;;)
+	{
+		const int left = kBudgetMs - Ms(begin, Clock::now());
+		if (left <= 0)
+			break;
+		tries++;
+		int err = 0;
+		fd = TryConnect(left < 500 ? left : 500, err);
+		if (fd >= 0)
+			break;
+		last_err = err;
+		if ((err != ECONNREFUSED && err != ETIMEDOUT) || kBudgetMs - Ms(begin, Clock::now()) <= 250)
+			break;
+		usleep(250000);
+	}
+	if (fd < 0)
+	{
+		why = "connect: errno " + std::to_string(last_err) + (tries > 1 ? " (" + std::to_string(tries) + " tries)" : std::string());
+		return false;
+	}
+	for (size_t sent = 0; sent < elf.size();)
+	{
+		const ssize_t n = send(fd, elf.data() + sent, elf.size() - sent, 0);
+		if (n > 0)
+		{
+			sent += static_cast<size_t>(n);
+			continue;
+		}
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+		{
+			const int left = kMaxTotalMs - Ms(begin, Clock::now());
+			if (left <= 0)
+			{
+				why = "send: the loader did not take the payload in time";
+				close(fd);
+				return false;
+			}
+			struct pollfd w = {fd, POLLOUT, 0};
+			poll(&w, 1, left < 200 ? left : 200);
+			continue;
+		}
+		why = "send: errno " + std::to_string(errno);
+		close(fd);
+		return false;
+	}
+	shutdown(fd, SHUT_WR);
+	std::thread([fd] { // as for the leave's payload: the connection stays open until the loader closes it (or ten minutes pass)
+		const auto deadline = Clock::now() + std::chrono::minutes(10);
+		for (;;)
+		{
+			const int left = Ms(Clock::now(), deadline);
+			struct pollfd q = {fd, POLLIN, 0};
+			if (left <= 0 || poll(&q, 1, left) != 1)
+				break;
+			char buf[256];
+			const ssize_t got = recv(fd, buf, sizeof(buf), 0);
+			if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+				continue;
+			if (got <= 0)
+				break;
+		}
+		close(fd);
+	}).detach();
+	while (!Exists(state + ".started"))
+	{
+		if (Exists(state + ".done"))
+		{
+			why = "the watch ended at once (" + DoneStatus(state + ".done") + ")";
+			return false;
+		}
+		if (Ms(begin, Clock::now()) >= kMaxTotalMs)
+		{
+			why = "the watch did not answer in " + std::to_string(Ms(begin, Clock::now())) + " ms";
+			return false;
+		}
+		usleep(50000);
+	}
+	why = "up after " + std::to_string(Ms(begin, Clock::now())) + " ms (" + std::to_string(tries) + (tries == 1 ? " connect)" : " connects)");
 	return true;
 #endif
 }

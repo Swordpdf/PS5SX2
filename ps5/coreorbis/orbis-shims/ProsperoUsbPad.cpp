@@ -952,7 +952,10 @@ namespace
 			if (TryUhid(n, d))
 				return true;
 		}
-		if (!OrbisFlag("nougen"))
+		// 193 (AI-assisted): only for a game after a USB guitar or pad. Otherwise the probe ended in "left alone" all the same, after opening
+		// every USB device's control node read-write each scan, the USB drive the game is read from included (an 8.60 console whose app
+		// never ended after a back to the menu plays from such a drive; 2.01's "closing crashes the PS5" came from a probe of the game drive).
+		if (!OrbisFlag("nougen") && DeepScanAllowed())
 		{
 			for (const std::string& n : ugen)
 			{

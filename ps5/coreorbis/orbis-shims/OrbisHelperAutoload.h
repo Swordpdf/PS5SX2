@@ -32,7 +32,7 @@ namespace orbis_helper
 // 187: only what the app falls back to: the revision is read from the shipped ELF itself (RevFromElf). It said 171k while
 // 171o shipped, so a running 171l..171n counted as newer and 171o was never sent. Makefile.vk stops the build when this is
 // not ps5/dischelper/disctile.c's PAYLOAD_REV.
-inline constexpr const char* kShippedRev = "171p"; // 171p: build 187 (no automatic unmount by the no-mount helper)
+inline constexpr const char* kShippedRev = "171q"; // 171q: 2.41 (game tiles for games on the app's NFS shares); 171p: build 187 (no automatic unmount by the no-mount helper)
 
 // 187: the PAYLOAD_REV of a helper ELF, from the line its disc payload logs at start ("disc payload <rev>", a string literal
 // in disctile.c's payload_progress call, kept by the strip). "" when the ELF has no such text.

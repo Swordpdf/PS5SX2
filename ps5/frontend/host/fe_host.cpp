@@ -850,6 +850,13 @@ int main(int argc, char** argv)
 		return 1;
 	Fonts* fonts = new Fonts();
 	Renderer renderer;
+	// 2.41 newsheet: the game sheet's icons (Font Awesome Solid, bin/resources/fonts), added after Init below
+	static std::vector<uint8_t> symbol_font;
+	if (std::getenv("FE_NEWSHEET"))
+	{
+		std::ifstream sf(pcsx2 + "/bin/resources/fonts/fa-solid-900.ttf", std::ios::binary);
+		symbol_font.assign(std::istreambuf_iterator<char>(sf), std::istreambuf_iterator<char>());
+	}
 	if (!fonts->Init(text_font.data(), text_font.size(), icon_font.data(), icon_font.size(), brand_font.data(), brand_font.size()) ||
 		!renderer.Init(&gpu.vk, gpu.pd, gpu.device, gpu.qf, gpu.queue, w, h, VK_FORMAT_B8G8R8A8_UNORM, gpu.images,
 			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL))
@@ -1096,6 +1103,14 @@ int main(int argc, char** argv)
 	acfg.build_tag = build_tag;
 	acfg.options = op;
 	acfg.system_menu = true; // 2026-10-08: the sheet for all games' "PS2 system menu" row
+	acfg.paged_sheet = std::getenv("FE_NEWSHEET") != nullptr; // 2.41: the redesigned game sheet
+	if (!symbol_font.empty())
+	{
+		const int sf = fonts->AddFont(symbol_font.data());
+		if (sf >= 0)
+			fonts->Preload(sf, App::SheetIconCodepoints());
+		acfg.symbol_font = sf;
+	}
 	// 2.12: --tiles: the sheet's Home screen tile row, and the stand-in helper that answers it. Without --tiles there is no row (the counted presses of the other scripts stay).
 	FakeHelper helper;
 	if (tiles)

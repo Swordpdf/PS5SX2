@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "common/Assertions.h"
+#include "fmt/format.h"
 #include "common/Path.h"
 #include "common/StringUtil.h"
 
@@ -25,6 +26,7 @@
 #include "DEV9.h"
 #include "Config.h"
 #include "smap.h"
+#include "Host.h"
 
 #ifdef _WIN32
 #pragma warning(disable : 4244)
@@ -84,6 +86,10 @@ std::string GetHDDPath()
 {
 	//GHC uses UTF8 on all platforms
 	std::string hddPath(EmuConfig.DEV9.HddFile);
+#ifdef __PROSPERO__
+	if (hddPath.empty())
+		hddPath = "DEV9hdd.raw"; // 2.41 (PR #60): the settings page's empty path box means the default image
+#endif
 
 	if (hddPath.empty())
 		EmuConfig.DEV9.HddEnable = false;
@@ -187,8 +193,22 @@ s32 DEV9open()
 
 	if (EmuConfig.DEV9.HddEnable)
 	{
+#ifdef __PROSPERO__
+		// 2.41 (PR #60, AI-assisted): PCSX2's Qt UI makes a missing image through a dialog; the PS5 has none, and writing 40 GiB of zeros at
+		// game start (no sparse files on the PS5's /data, ~2 MB/s once a title's fast write budget is used) would take hours. So no image is
+		// made here: the HDD stays off and the player is told where to put one (made on a PC, PCSX2's own HDD creator, or a formatted .raw).
+		if (access(hddPath.c_str(), F_OK) != 0)
+		{
+			Console.Error("DEV9: HDD image %s is not there: the HDD stays off (copy a .raw image there, or set its path)", hddPath.c_str());
+			Host::AddOSDMessage(fmt::format("PS2 HDD image not found: {}", hddPath), 10.0f);
+			EmuConfig.DEV9.HddEnable = false;
+		}
+		else
+#endif
 		if (dev9.ata->Open(hddPath) != 0)
 			EmuConfig.DEV9.HddEnable = false;
+		else
+			Console.WriteLn("DEV9: HDD image %s opened", hddPath.c_str());
 	}
 
 	if (EmuConfig.DEV9.EthEnable)

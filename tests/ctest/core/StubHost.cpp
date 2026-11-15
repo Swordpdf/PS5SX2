@@ -248,6 +248,7 @@ extern std::atomic<int> g_orbis_rb_auto_request; // vk-285-118 (GSRenderer.cpp O
 void OrbisReadbackAutoCpu(); // vk-285-118 (main-boot.cpp)
 void OrbisOSDLabel(const char* text);
 void OrbisBackToMenuCpu();
+bool OrbisLeaveWaitingForSave(); // 2.41 (main-boot.cpp)
 void OrbisChangeDiscCpu(int req); // vk-285-139 (main-boot.cpp): 5 the settings page's disc, 6 the change disc combo
 extern std::atomic<int> g_orbis_ingame_request; // 2.31 (main-boot.cpp): the in-game menu combo asks
 void OrbisInGameMenuPauseCpu(); // 2.31 (main-boot.cpp): pauses the game for the menu
@@ -261,10 +262,12 @@ void OrbisEEProfStart(); // vk-285-8 (the port's orbis_eeprof.cpp): once, on thi
 void OrbisWidescreenTick(); // vk-285-12 (pcsx2/OrbisWidescreen.cpp)
 #endif
 void OrbisKbdMousePump(); // vk-285-72 (the port's ProsperoKbdMouse.cpp)
+void OrbisBuzzPump(); // (AI-assisted) the port's main-boot.cpp
 void Host::PumpMessagesOnCPUThread()
 {
 	OrbisCpuSample(0); // eerec-285: EE thread
 	OrbisKbdMousePump(); // vk-285-72: the PS5's USB keyboard and mouse into the PS2's USB HID devices
+	OrbisBuzzPump(); // (AI-assisted): the controllers into the PS2's Buzz! buzzers
 #ifdef ORBIS_VULKAN
 	OrbisEEProfStart();
 	OrbisWidescreenTick();
@@ -281,6 +284,9 @@ void Host::PumpMessagesOnCPUThread()
 		OrbisInGameMenuPauseCpu();
 		return;
 	}
+	// 2.41: "back to the menu" waiting for the game's memory card save (main-boot.cpp): asked again each frame until it leaves.
+	if (OrbisLeaveWaitingForSave())
+		OrbisBackToMenuCpu();
 	const int req = g_orbis_state_request.exchange(0, std::memory_order_acq_rel);
 	if (req == 1)
 	{

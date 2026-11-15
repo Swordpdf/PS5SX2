@@ -80,6 +80,8 @@ namespace
 	using MouseInit = int (*)();
 	using MouseOpen = int (*)(int32_t user, int32_t type, int32_t index, const void* param);
 	using MouseRead = int (*)(int32_t handle, void* data, int32_t num);
+	using KeyboardClose = int (*)(int32_t handle); // 192
+	using MouseClose = int (*)(int32_t handle);    // 192
 
 	constexpr size_t KEYBOARD_STATE_BYTES = 96;
 	constexpr size_t MOUSE_RECORD_BYTES = 40;
@@ -107,6 +109,10 @@ namespace
 	std::vector<Event> s_events; // under s_lock
 	long s_dx = 0, s_dy = 0; // under s_lock: the mouse movement since the last pump
 	std::atomic<bool> s_running{false};
+	// 192: OrbisKbdMouseStop asks (s_stop); the thread's state: 0 not started, 1 opening, 2 reading, 3 ended (nothing open).
+	std::atomic<bool> s_stop{false};
+	std::atomic<int> s_state{0};
+	std::atomic<bool> s_closed{false}; // 192: a handle was open when the stop came
 	constexpr size_t MAX_QUEUED = 512;
 
 	// vk-285-113: the controller mode. Set by OrbisKbdMouseConfigure (settings), read by the thread and the pump.
@@ -324,6 +330,11 @@ namespace
 
 	void* Thread(void*)
 	{
+		if (s_stop.load(std::memory_order_acquire)) // 192: asked to stop before it opened anything
+		{
+			s_state.store(3, std::memory_order_release);
+			return nullptr;
+		}
 		int32_t user = -1;
 		sceUserServiceInitialize(nullptr);
 		if (sceUserServiceGetInitialUser(&user) != 0 || user < 0)
@@ -334,12 +345,14 @@ namespace
 		KeyboardInit keyboard_init = nullptr;
 		KeyboardOpen keyboard_open = nullptr;
 		KeyboardReadState keyboard_read = nullptr;
+		KeyboardClose keyboard_close = nullptr; // 192
 		int keyboard = -1;
 		const int keyboard_module = LoadModule("libSceKeyboard.sprx");
 		if (keyboard_module >= 0 && Symbol(keyboard_module, "sceKeyboardInit", keyboard_init) &&
 			Symbol(keyboard_module, "sceKeyboardOpen", keyboard_open) &&
 			Symbol(keyboard_module, "sceKeyboardReadState", keyboard_read))
 		{
+			Symbol(keyboard_module, "sceKeyboardClose", keyboard_close); // 192: optional (a firmware without it: the handle stays)
 			const int init = keyboard_init();
 			uint8_t param[16] = {};
 			keyboard = keyboard_open(user, 0, 0, param);
@@ -350,11 +363,13 @@ namespace
 		MouseInit mouse_init = nullptr;
 		MouseOpen mouse_open = nullptr;
 		MouseRead mouse_read = nullptr;
+		MouseClose mouse_close = nullptr; // 192
 		int mouse = -1;
 		const int mouse_module = LoadModule("libSceMouse.sprx");
 		if (mouse_module >= 0 && Symbol(mouse_module, "sceMouseInit", mouse_init) &&
 			Symbol(mouse_module, "sceMouseOpen", mouse_open) && Symbol(mouse_module, "sceMouseRead", mouse_read))
 		{
+			Symbol(mouse_module, "sceMouseClose", mouse_close); // 192: optional
 			const int init = mouse_init();
 			// behaviorFlag 1: every mouse through this one handle.
 			uint8_t param[8] = {1};
@@ -368,9 +383,30 @@ namespace
 				static_cast<unsigned>(mouse));
 		}
 		fflush(stdout);
+		// 192: what OrbisKbdMouseStop closes (on this thread, between two reads).
+		const auto close_both = [&](const char* why) {
+			if (keyboard >= 0 || mouse >= 0)
+				s_closed.store(true, std::memory_order_release);
+			const int kr = keyboard >= 0 && keyboard_close ? keyboard_close(keyboard) : 0;
+			const int mr = mouse >= 0 && mouse_close ? mouse_close(mouse) : 0;
+			printf("[kbm] %s: keyboard %s %#x, mouse %s %#x\n", why, keyboard < 0 ? "(none)" : keyboard_close ? "closed" : "(no close call)",
+				static_cast<unsigned>(kr), mouse < 0 ? "(none)" : mouse_close ? "closed" : "(no close call)", static_cast<unsigned>(mr));
+			fflush(stdout);
+			keyboard = mouse = -1;
+		};
 		if (keyboard < 0 && mouse < 0)
+		{
+			s_state.store(3, std::memory_order_release);
 			return nullptr;
+		}
+		if (s_stop.load(std::memory_order_acquire)) // 192: the way out began while they opened
+		{
+			close_both("closed before leaving");
+			s_state.store(3, std::memory_order_release);
+			return nullptr;
+		}
 		s_running.store(true, std::memory_order_release);
+		s_state.store(2, std::memory_order_release);
 
 		alignas(8) uint8_t state[256] = {};
 		alignas(8) uint8_t records[MOUSE_BUFFER_BYTES] = {};
@@ -385,6 +421,14 @@ namespace
 		unsigned mode_lines = 0;
 		for (;;)
 		{
+			if (s_stop.load(std::memory_order_acquire)) // 192
+			{
+				s_pad_enabled.store(false, std::memory_order_release);
+				close_both("closed before leaving");
+				s_running.store(false, std::memory_order_release);
+				s_state.store(3, std::memory_order_release);
+				return nullptr;
+			}
 			long poll_dx = 0, poll_dy = 0;
 			if (keyboard >= 0)
 			{
@@ -527,9 +571,29 @@ void OrbisKbdMouseStart()
 	if (started)
 		return;
 	started = true;
+	s_state.store(1, std::memory_order_release); // 192: opening (Stop waits for it)
 	pthread_t thread;
 	if (pthread_create(&thread, nullptr, Thread, nullptr) == 0)
 		pthread_detach(thread);
+	else
+		s_state.store(3, std::memory_order_release);
+}
+
+int OrbisKbdMouseStop(int wait_ms)
+{
+	s_stop.store(true, std::memory_order_release);
+	const int st = s_state.load(std::memory_order_acquire);
+	if (st == 0 || st == 3)
+		return s_closed.load(std::memory_order_acquire) ? 1 : 0;
+	for (int waited = 0; waited < wait_ms; waited += 2)
+	{
+		if (s_state.load(std::memory_order_acquire) == 3)
+			return s_closed.load(std::memory_order_acquire) ? 1 : 0;
+		usleep(2000);
+	}
+	printf("[kbm] the keyboard thread didn't close its handles within %d ms\n", wait_ms);
+	fflush(stdout);
+	return -1;
 }
 
 void OrbisKbdMouseConfigure(int mode, int aim, int speed, int buttons)

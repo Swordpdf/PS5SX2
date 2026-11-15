@@ -29,6 +29,11 @@ struct OrbisRelaunchTiming
 // (LoadExec("exit")). False (`why` says what): nothing is left running that would start anything, the caller keeps the old way out.
 bool OrbisRelaunchStart(const char* closing_title, const char* launch_title, int pid, std::string& why, const OrbisRelaunchTiming& timing = OrbisRelaunchTiming());
 
+// 195 (AI-assisted, test builds): the session watch, relaunch.c's watch mode (the same payload with "watch=1"): sent once at the app's start, it
+// records the kernel log (logs/session-klog.txt) and the app's and the disc helper's process records (logs/session-watch.log) for the app's whole life and
+// 150 s after it, so a console that freezes when the app is closed still has what happened on disk. True when it is up (it said "<state>.started").
+bool OrbisSessionWatchStart(int pid, std::string& why);
+
 // Takes the request back (a note the payload checks every 100 ms until it launches): used when the close was refused and the app stays up. Harmless
 // without a request, and more than once.
 void OrbisRelaunchCancel();

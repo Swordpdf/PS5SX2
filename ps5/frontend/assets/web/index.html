@@ -304,6 +304,13 @@ const BUTTON_TARGETS = [["Cross","Cross"],["Circle","Circle"],["Square","Square"
   ["L2","L2"],["R2","R2"],["L3","L3"],["R3","R3"],["Start","Start"],["Select","Select"],["Up","D-pad up"],["Down","D-pad down"],
   ["Left","D-pad left"],["Right","D-pad right"],["Analog","Analog button"],["Pressure","Light press"],["None","Nothing"]];
 const button = (name, label, def) => ({ key: "PS5SX2/Button" + name, label, type: "pick", def, options: BUTTON_TARGETS });
+// (AI-assisted) the controller button that presses a Buzz! buzzer's button (ps5/coreorbis/orbis-shims/OrbisBuzzMap.h's names),
+// as the sheet's BuzzButtonChoices(). Applied while the game runs.
+const BUZZ_BUTTONS = [["Cross","Cross"],["Circle","Circle"],["Square","Square"],["Triangle","Triangle"],["L1","L1"],["R1","R1"],
+  ["L2","L2"],["R2","R2"],["L3","L3"],["R3","R3"],["Options","Options"],["Touchpad","Touchpad click"],["Up","D-pad up"],
+  ["Down","D-pad down"],["Left","D-pad left"],["Right","D-pad right"],["None","Nothing"]];
+const buzz = (name, label, def) => ({ key: "PS5SX2/Buzz" + name, label, type: "pick", def, options: BUZZ_BUTTONS,
+  hint: "The controller button that presses a buzzer's " + label + " button, on every player's controller. Several can share a button; Nothing turns it off." });
 // vk-285-118: how hard each button presses (OrbisPadMap.h Config::pressure), as the sheet's StrengthChoices().
 // vk-285-118: the sticks' dead zones (OrbisPadMap.h Config::deadzone_left/right), as the sheet's DeadzoneChoices().
 const DEADZONES = [["0","Off"],["5","5%"],["10","10%"],["15","15%"],["20","20%"],["25","25%"],["30","30%"]];
@@ -363,6 +370,10 @@ const GROUPS = [
   { title: "Shelf", global: true, items: [
     { key: "PS5SX2/ShowHiddenGames", label: "Show hidden games", type: "toggle", def: "false", short: "Hidden games %",
       hint: "Puts the games hidden from the shelf back on it, dimmed, so you can open one and turn Hide from the shelf off. Set here, it applies the next time the shelf opens." },
+    // 2.41: what the shelf does when a PS2 disc that is not copied goes in (fe_app.cpp PollDiscAsk).
+    { key: "PS5SX2/DiscInsert", label: "Disc put in", type: "seg", def: "ask", cols: 3,
+      options: [["ask","Ask"],["play","Play from the disc"],["shelf","Nothing"]],
+      hint: "What happens when you put in a PS2 disc that is not copied. Ask: play it from the disc or copy it first. Play from the disc: it starts at once, nothing is copied. Nothing: the disc waits on the shelf; pick it there to be asked." },
   ]},
   // vk-285-139: games start from the cheat disc (a GameShark: picked under it, all games), the game's own discs after it.
   { title: "Discs", items: [
@@ -397,6 +408,10 @@ const GROUPS = [
       hint: "PS2 smooths what the game asks to be smoothed, as a PS2 does: the right one for nearly every game. Bilinear (forced) smooths everything, full-screen effects too, which can blur, shift or ghost them (PCSX2 calls it unsafe)." },
     { key: "MaxAnisotropy", label: "Anisotropic filtering", type: "seg", def: "0", short: "AF %",
       options: [["0","Off"],["2","2x"],["4","4x"],["8","8x"],["16","16x"]] },
+    // 2.41: PCSX2's EmuCore/GS/dithering_ps2 (rainbow-like artifacts with the hardware renderer).
+    { key: "dithering_ps2", label: "Dithering", type: "seg", def: "2", short: "Dither %",
+      options: [["0","Off"],["1","Scaled"],["2","Unscaled"],["3","Force 32-bit"]],
+      hint: "How the game's dithering is drawn. Unscaled, as a PS2 does, suits most games; Scaled can show bands or rainbow-like noise at a high resolution. Off removes dithering; Force 32-bit removes the colour bands of games that dither everything." },
     { key: "accurate_blending_unit", label: "Blending accuracy", type: "seg", def: "1", short: "Blending %",
       options: [["0","Min"],["1","Basic"],["2","Med"],["3","High"]],
       hint: "Higher fixes more effects and costs speed. Full and Max are left out for now: Max hung the GPU in Ratchet & Clank." },
@@ -416,6 +431,16 @@ const GROUPS = [
       options: [["0","Off"],["1","Mild"],["2","Moderate"],["3","Max"]] },
     { key: "EmuCore/Speedhacks/vuThread", label: "MTVU (VU1 on its own thread)", type: "toggle", def: "false", restart: true, later: "MTVU",
       short: "MTVU %" },
+    // 2.41 (#44): the round modes (Pcsx2Config.cpp CpuOptions::LoadSave).
+    { key: "EmuCore/CPU/FPU.Roundmode", label: "EE rounding", type: "seg", def: "3", cols: 4, restart: true, short: "EE round %",
+      options: [["0","Nearest"],["1","Negative"],["2","Positive"],["3","Chop"]],
+      hint: "How the EE's FPU rounds its sums. Chop is PCSX2's default; change it only when a game's guide says so (wrong colours, cars or characters drawn white, physics that drift). The game list's own fix for a game, when it has one, comes first." },
+    { key: "EmuCore/CPU/VU0.Roundmode", label: "VU0 rounding", type: "seg", def: "3", cols: 4, restart: true, short: "VU0 round %",
+      options: [["0","Nearest"],["1","Negative"],["2","Positive"],["3","Chop"]],
+      hint: "How the VU0 rounds its sums. Chop is PCSX2's default; change it only when a game's guide says so (wrong colours, cars or characters drawn white, physics that drift). The game list's own fix for a game, when it has one, comes first." },
+    { key: "EmuCore/CPU/VU1.Roundmode", label: "VU1 rounding", type: "seg", def: "3", cols: 4, restart: true, short: "VU1 round %",
+      options: [["0","Nearest"],["1","Negative"],["2","Positive"],["3","Chop"]],
+      hint: "How the VU1 rounds its sums. Chop is PCSX2's default; change it only when a game's guide says so (wrong colours, cars or characters drawn white, physics that drift). The game list's own fix for a game, when it has one, comes first." },
     // vk-285-113: PCSX2's hardware download mode (GS local memory reads, pcsx2/GS/Renderers/HW/GSTextureCache.cpp, MTGS.cpp).
     // Guitar Hero II and III and OutRun 2006 read the picture back every frame, and each read makes the GPU stop and the PS5's
     // driver copy the picture on the CPU (the logs' [readbacks] line and the settings log's "readbacks" line say how many).
@@ -434,6 +459,11 @@ const GROUPS = [
     { key: "DEV9/Eth/EthEnable", label: "Network adapter", type: "toggle", def: "true", restart: true, later: "the network adapter",
       short: "Network %",
       hint: "The PS2's network adapter, on the PS5's own connection, for online and LAN play (on revival servers such as PS Rewired; their DNS goes in the game's network settings). It costs nothing until a game uses it. Turn it off for a game that misbehaves with it. Takes effect when the game starts." },
+    // 2.41 (PR #60): the PS2's internal HDD (DEV9/Hdd), a raw image file; PS5SX2 doesn't make one (pcsx2/DEV9/DEV9.cpp).
+    { key: "DEV9/Hdd/HddEnable", label: "PS2 hard drive", type: "toggle", def: "false", restart: true, later: "the HDD", short: "HDD %",
+      hint: "The PS2's hard drive, as a raw image file, for the games that use one (Final Fantasy XI, the HDD versions of some games). PS5SX2 doesn't make the image: copy one there first (made with PCSX2's HDD creator on a PC, 40 GB or more). Without a path set on the settings page it is /data/PCSX2/DEV9hdd.raw. With no image there the HDD stays off and the game says so. Takes effect when the game starts." },
+    { key: "DEV9/Hdd/HddFile", label: "HDD image file", type: "text", def: "", restart: true, later: "the HDD image", placeholder: "/data/PCSX2/DEV9hdd.raw",
+      hint: "The full path of the HDD image, for example on a USB drive (/mnt/usb0/...). Empty: DEV9hdd.raw in /data/PCSX2. Set it in a game's own settings to give that game its own image." },
     // 2026-10-08 (AI-assisted; testers: "Enable Host Filesystem"): PCSX2's host: device (EmuCore/HostFs), read when the game starts.
     { key: "EmuCore/HostFs", label: "Host filesystem", type: "toggle", def: "false", restart: true, later: "the host filesystem", short: "Host files %",
       hint: "Lets homebrew read and write files in its own folder (host:), as PCSX2's Enable Host Filesystem: the ELF's folder, or the disc image's. Only for homebrew that asks for it." },
@@ -557,9 +587,24 @@ const GROUPS = [
     { key: "PS5SX2/Multitap", label: "Multitap", type: "seg", def: "0", cols: 3, restart: true,
       options: [["0","Off"],["1","Port 1"],["2","Port 2"]],
       hint: "For 4-player games. Players 2 to 4 are the other PS5 users logged in when the game starts, each on their own controller. Port 1 suits most games; a few want the multitap in port 2. Off: player 2 on port 2, as before." },
+    // 2.41: which of a USB guitar's buttons are yellow and blue (main-boot.cpp, PS5SX2/GuitarFrets).
+    { key: "PS5SX2/GuitarFrets", label: "USB guitar frets", type: "seg", def: "swapped", cols: 2, restart: true,
+      options: [["swapped","Layout A"],["usual","Layout B"]],
+      hint: "Which of a USB guitar's buttons play yellow and blue. If blue plays yellow (and yellow plays blue), pick the other layout. Takes effect when the game starts." },
     { key: "PS5SX2/Microphone", label: "Microphone", type: "seg", def: "auto", cols: 4, restart: true,
       options: [["auto","Auto"],["0","Off"],["1","Mic"],["2","Headset"]],
       hint: "The controller's microphone as a PS2 USB microphone, for games that need one (Lifeline - Voice Action Adventure). Auto turns it on for those games; Headset suits a game that asks for a USB headset. Takes effect when the game starts." },
+  ]},
+  // (AI-assisted) the Buzz! buzzers (main-boot.cpp, orbis-shims/OrbisBuzzMap.h), as the sheet's BuzzGroup().
+  { title: "Buzz! buzzers", tab: "controls", items: [
+    { key: "PS5SX2/Buzz", label: "Buzz! buzzers", type: "seg", def: "auto", cols: 3, restart: true,
+      options: [["auto","Auto"],["0","Off"],["1","On"]],
+      hint: "Four Buzz! buzzers on the PS2's USB port, for the Buzz! quiz games. Your controller is buzzer 1; the other PS5 users logged in when the game starts are buzzers 2 to 4, each on their own controller. While it's on, the controllers press only the buzzers. Auto turns it on for Buzz! games. It takes the USB keyboard's port. Takes effect when the game starts." },
+    buzz("Red", "Red", "R2"),
+    buzz("Blue", "Blue", "Triangle"),
+    buzz("Orange", "Orange", "Circle"),
+    buzz("Green", "Green", "Cross"),
+    buzz("Yellow", "Yellow", "Square"),
   ]},
   // vk-285-113: a USB keyboard and mouse plugged into the PS5 (orbis-shims/ProsperoKbdMouse.cpp, main-boot.cpp).
   { title: "Keyboard and mouse", tab: "controls", items: [
@@ -993,10 +1038,17 @@ function render() {
     if (!data.patches.length) html += '<div class="empty">No patch file for ' + esc(data.serial || "this game") + " in patches/.</div>";
     for (const p of data.patches) {
       html += '<div class="row"><div class="toggle"><div><div class="label">' + esc(p.name) + "</div>" +
+        (p.other_version ? '<div class="hint">For another version of this game: not loaded.</div>' : "") +
         (p.description ? '<div class="hint">' + esc(p.description) + "</div>" : "") +
         '<div class="hint" style="font-size:11px">' + esc(p.file) + '</div></div><button class="sw' + (p.enabled ? " on" : "") +
         '" data-patch="' + esc(p.name) + '" data-on="' + (p.enabled ? "0" : "1") + '" aria-label="' + esc(p.name) + '"></button></div></div>';
     }
+    // 2.41: .pnach files that no game of the shelf can be matched to (never loaded): named after a serial, a CRC or a game's file name,
+    // or put in a folder named after one, they are picked up.
+    if (data.pnach_unmatched && data.pnach_unmatched.length)
+      html += '<div class="row"><div><div class="label">Files no game matches</div><div class="hint">' + esc(data.pnach_unmatched.join(", ")) +
+        "</div><div class=\"hint\">They are never loaded. Put the game's serial or CRC in the name, name the file after the game's file, " +
+        "or put it in a folder named after the serial (patches/SLUS-20552/ or cheats/SLUS-20552/).</div></div></div>";
     html += "</div></div>";
   }
   // 2026-10-08 (AI-assisted): the game's cheats (cheats/<serial>_<crc>.pnach; the shelf's sheet fetches them with "Get patches
@@ -1005,6 +1057,7 @@ function render() {
     html += '<div class="sec"><h2>Cheats</h2><div class="card">';
     for (const c of data.cheats) {
       html += '<div class="row"><div class="toggle"><div><div class="label">' + esc(c.name) + "</div>" +
+        (c.other_version ? '<div class="hint">For another version of this game: not loaded.</div>' : "") +
         (c.description ? '<div class="hint">' + esc(c.description) + "</div>" : "") +
         '<div class="hint" style="font-size:11px">' + esc(c.file) + '</div></div><button class="sw' + (c.enabled ? " on" : "") +
         '" data-cheat="' + esc(c.name) + '" data-on="' + (c.enabled ? "0" : "1") + '" aria-label="' + esc(c.name) + '"></button></div></div>';

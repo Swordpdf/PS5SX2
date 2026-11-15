@@ -117,12 +117,13 @@ inline bool HasDotDot(const std::string& path)
 // folder to it (gametile_web_test.cpp), because /data and /mnt cannot be made there.
 inline std::vector<std::string>& GameRoots()
 {
-	static std::vector<std::string> roots = {"/data/", "/mnt/"};
+	static std::vector<std::string> roots = {"/data/", "/mnt/", "/nfs/"}; // 2.41 (helper 171q): the app's NFS shares too (rushtechsuplex, 2026-11-06)
 	return roots;
 }
 
 // A game the helper accepts (the helper's gt_path_ok, after the normalizing): absolute, under /data/ or /mnt/ with at least one more byte, at most 511 bytes,
-// no control byte (so no TAB or line break), no ".." as a whole component (a name like "..hidden" is fine). /dev/ and /nfs/ are not eligible.
+// no control byte (so no TAB or line break), no ".." as a whole component (a name like "..hidden" is fine). /dev/ is not eligible. 2.41: /nfs/ is (helper 171q:
+// the share is virtual to this process, so the helper takes the path on the app's word and the tile's start checks it once the share is mounted).
 inline bool PathOk(const std::string& path, std::string* why = nullptr)
 {
 	auto no = [&](const char* what) {
@@ -1029,7 +1030,7 @@ inline std::string ReasonText(const std::string& reason)
 	if (reason == "nogame")
 		return "The helper cannot find the game file (is its drive connected?).";
 	if (reason == "badpath")
-		return "The helper cannot use this path (only files under /data or on a drive under /mnt).";
+		return "The helper cannot use this path (only files under /data, on a drive under /mnt, or on an NFS share with Helper 171q or newer: restart the console once so the new helper runs).";
 	if (reason == "limit")
 		return "All 10 game tiles are in use: take one off first.";
 	if (reason == "nospace")
@@ -1081,7 +1082,7 @@ inline std::string HelpText(const View& v, const std::string& title, bool own_ti
 				return "The tile is still on the home screen. If the game runs from it, close it first, then try again.";
 			return "The helper took the request but the tile did not show up in time. Press Cross to try again; disctile.log (flag kp_log) says why.";
 		case Phase::NoHelper:
-			return "The helper that makes game tiles is not running yet. The app loads it at start; if it did not, load the PS5SX2 Disc Helper (171k) by hand.";
+			return "The helper that makes game tiles is not running yet. The app loads it at start; if it did not, or an older helper you loaded yourself is still running, restart the console once (the app then loads the helper that comes with it, 171q).";
 	}
 	return {};
 }

@@ -2219,6 +2219,10 @@ void ScanDir(const std::string& dir, std::vector<GameInfo>& games, std::vector<s
 			continue;
 		}
 		const std::string file = e->d_name;
+		// 2.41 (AI-assisted; GitHub #95, a game listed twice): macOS leaves "._<name>.iso" AppleDouble files (4 KB of metadata, the game's own
+		// extension) beside every file it copies onto an exFAT/FAT drive. Never a game: not listed.
+		if (file.size() > 2 && file[0] == '.' && file[1] == '_')
+			continue;
 		if (std::any_of(games.begin(), games.end(), [&](const GameInfo& g) { return g.file == file; }))
 			continue;
 		GameInfo g;
@@ -2226,6 +2230,8 @@ void ScanDir(const std::string& dir, std::vector<GameInfo>& games, std::vector<s
 		struct stat st = {};
 		if (stat(g.path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
 			continue;
+		// 2.41 (#95): no size limit here. One was tried (under 16 KB: not listed) and taken out: a failed copy or a damaged image must stay on
+		// the shelf as damaged, with the reason (vk-285-134; chdscan_test's damaged CHD), not vanish. The "._" check above is #95's fix.
 		// 2.11: an .elf is not listed (IsDiscImageName leaves it out above). 2026-10-08 to 2.10 listed the ones that were ELF files.
 		// 2026-10-08: a .bin or .img under 16 MB is no PS2 disc (a BIOS dump, a memory card), and one without an ISO 9660
 		// volume in any sector layout is no data disc (the audio tracks of a .cue/.bin set, "Game (Track 2).bin"): not listed.
@@ -2353,6 +2359,12 @@ void ReadBadges(GameInfo& g, const std::string& settings_dir, const std::string&
 bool ShowHiddenGames(const std::string& gs_ini)
 {
 	return IniValue(gs_ini, "PS5SX2/ShowHiddenGames") == "true";
+}
+
+std::string DiscInsertMode(const std::string& gs_ini)
+{
+	const std::string v = IniValue(gs_ini, "PS5SX2/DiscInsert");
+	return (v == "play" || v == "shelf") ? v : std::string("ask");
 }
 
 // vk-285-139 (AI-assisted; swordpdf: "multi-disc and disc-change support"). Needs proper testing on the console.

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "fe_settings.h"
+#include "fe_pnach.h" // 2.41: which .pnach files are a game's
 #include "fe_games.h" // 2026-10-08: GameDbHwFixes
 
 #include <algorithm>
@@ -144,8 +145,12 @@ bool SafeKey(const std::string& key)
 	if (key.empty() || key.size() > 80 || IsListKey(key))
 		return false;
 	for (char c : key)
-		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '/'))
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '/' || c == '.'))
 			return false;
+	// 2.41 (#44): a dot inside a name (EmuCore/CPU/VU1.Roundmode), never at either end of a part or two in a row
+	if (key.front() == '.' || key.back() == '.' || key.find("..") != std::string::npos || key.find("/.") != std::string::npos ||
+		key.find("./") != std::string::npos)
+		return false;
 	// pr9n (AI-assisted), PR #9 review item 4: nothing in [Achievements] from the page or the sheet. The page answers anyone
 	// on the LAN, and Achievements/Host pointed at another https server would have had the next sign-in send the user's
 	// token there (Token and Username would replace the account). The account comes from the sign-in only.
@@ -227,31 +232,24 @@ std::vector<CardFile> ListCards(const std::string& dir)
 }
 
 
-// The groups ("[60 FPS]") of the game's patch files, <serial>_<crc>.pnach.
-
-std::vector<PatchGroup> PatchGroups(const std::string& dir, const std::string& serial)
+// The groups ("[60 FPS]") of the game's patch (or cheat) files. 2.41: which files are the game's is fe_pnach.h's rule, the core's
+// (pcsx2/Patch.cpp): the serial or the CRC anywhere in the name, the game's file name, a folder named after either, a gametitle line.
+// A file for another version (it names CRCs and none is the game's, known from cache/game-crcs.txt after the game's first start) is
+// listed with other_version set: the core doesn't load it.
+std::vector<PatchGroup> PatchGroups(const std::string& dir, const std::string& serial, uint32_t crc, const std::string& stem)
 {
 	std::vector<PatchGroup> out;
-	if (serial.empty())
+	if (serial.empty() && stem.empty())
 		return out;
-	DIR* d = opendir(dir.c_str());
-	if (!d)
-		return out;
-	const std::string prefix = Lower(serial) + "_";
-	std::vector<std::string> files;
-	while (dirent* e = readdir(d))
+	const fe::pnach::Game game{serial, crc, stem};
+	for (const fe::pnach::Found& f : fe::pnach::List(dir, game, false))
 	{
-		const std::string name = e->d_name, low = Lower(name);
-		if (low.compare(0, prefix.size(), prefix) == 0 && low.size() > 6 && low.compare(low.size() - 6, 6, ".pnach") == 0)
-			files.push_back(name);
-	}
-	closedir(d);
-	std::sort(files.begin(), files.end());
-	for (const std::string& file : files)
-	{
-		std::string text;
-		if (!ReadFile(dir + "/" + file, text))
+		if (!f.match.Ours())
 			continue;
+		std::string text;
+		if (!ReadFile(f.path, text))
+			continue;
+		const std::string file = f.folder.empty() ? f.name : f.folder + "/" + f.name;
 		PatchGroup* current = nullptr;
 		for (const IniLine& l : ParseIni(text))
 		{
@@ -265,13 +263,38 @@ std::vector<PatchGroup> PatchGroups(const std::string& dir, const std::string& s
 				auto it = std::find_if(out.begin(), out.end(), [&](const PatchGroup& g) { return g.name == name; });
 				if (it == out.end())
 				{
-					out.push_back({name, file, {}});
+					PatchGroup g;
+					g.name = name;
+					g.file = file;
+					g.other_version = f.match.other_version;
+					out.push_back(std::move(g));
 					current = &out.back();
 				}
 			}
 			else if (current && l.kv && Lower(l.key) == "description" && current->description.empty())
 				current->description = l.value;
 		}
+	}
+	return out;
+}
+
+// 2.41: the .pnach files of `dir` that no game of `games` (serial, file name) can be matched to: named after nothing (no serial, CRC
+// or gametitle line) and after none of the games' file names. For the settings page and the logs report.
+std::vector<std::string> UnmatchedPnach(const std::string& dir, const std::vector<std::pair<std::string, std::string>>& games)
+{
+	std::vector<std::string> unmatched;
+	fe::pnach::List(dir, fe::pnach::Game{}, false, &unmatched);
+	std::vector<std::string> out;
+	for (const std::string& n : unmatched)
+	{
+		std::string_view base = n;
+		base.remove_suffix(6);
+		const std::string key = fe::pnach::Squash(base);
+		bool named = false;
+		for (const auto& g : games)
+			named = named || (!g.second.empty() && fe::pnach::Squash(g.second) == key);
+		if (!named)
+			out.push_back(n);
 	}
 	return out;
 }

@@ -36,7 +36,8 @@ struct OrbisFrontendPaths
 	std::string games_folder_note;     // only_set_folders: the folder the empty shelf names (the first set folder)
 	std::string usb_list;              // cache/usb-games.txt: the USB games seen, for the next start's cover prefetch
 	std::vector<std::string> share_roots; // vk-285-156: the NFS shares' folders (OrbisNfs mount points), for covers
-	int test_build = 0;                // > 0: a testing build; the shelf shows TESTING and this label
+	int test_build = 0;                // > 0: a testing build
+	bool test_watermark = false;       // 2.41 (owner: "no need to add a testing watermark"): TESTING across the shelf only with flags/testmark
 	std::string build_label;           // "Test build 1 · vk-285-55", or the plain tag
 	std::string test_note;             // vk-285-105: testing builds, under the label (the testers' Discord)
 	std::string logs_dir;              // logs/: the settings page's logs download reads the sessions there

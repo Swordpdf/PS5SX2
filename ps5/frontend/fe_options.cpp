@@ -7,6 +7,7 @@
 #include "fe_i18n.h" // 180: the PS5SX2 group's labels
 #include "fe_roots.h" // 2026-10-16: the Folders switches' keys (kScanUsbKey, kScanSubfoldersKey)
 #include "fe_text.h" // vk-285-116: the buttons' symbols (icon::)
+#include "fe_pnach.h" // 2.41: the game's CRC (cache/game-crcs.txt) for its patch files
 
 #include <algorithm>
 #include <cstdio>
@@ -171,6 +172,50 @@ std::vector<OptionDef> ButtonRows()
 		d.hint = std::string("What the controller's ") + r.name +
 		         " presses in games. Several can press the same one; Nothing turns it off. Light press: while it's held, buttons "
 		         "press at half strength (Metal Gear Solid 2 and 3). PS5SX2's combos use the real buttons.";
+		out.push_back(std::move(d));
+	}
+	return out;
+}
+
+// (AI-assisted) the Buzz! buzzers group (orbis-shims/OrbisBuzzMap.h), as the page's BUZZ_BUTTONS and its Buzz! buzzers group.
+std::vector<OptionChoice> BuzzButtonChoices()
+{
+	return {{"Cross", Sym(icon::Cross, "Cross")}, {"Circle", Sym(icon::Circle, "Circle")}, {"Square", Sym(icon::Square, "Square")},
+		{"Triangle", Sym(icon::Triangle, "Triangle")}, {"L1", "L1"}, {"R1", "R1"}, {"L2", "L2"}, {"R2", "R2"}, {"L3", "L3"}, {"R3", "R3"},
+		{"Options", "Options"}, {"Touchpad", "Touchpad click"}, {"Up", Sym(icon::DpadUp, "D-pad up")}, {"Down", Sym(icon::DpadDown, "D-pad down")},
+		{"Left", Sym(icon::DpadLeft, "D-pad left")}, {"Right", Sym(icon::DpadRight, "D-pad right")}, {"None", "Nothing"}};
+}
+
+std::vector<OptionDef> BuzzGroup()
+{
+	std::vector<OptionDef> out = {
+		Seg("PS5SX2/Buzz", "Buzz! buzzers", "auto", "", {{"auto", "Auto"}, {"0", "Off"}, {"1", "On"}},
+			"Four Buzz! buzzers on the PS2's USB port, for the Buzz! quiz games. Your controller is buzzer 1; the other PS5 users "
+			"logged in when the game starts are buzzers 2 to 4, each on their own controller. While it's on, the controllers press "
+			"only the buzzers. Auto turns it on for Buzz! games. It takes the USB keyboard's port. Takes effect when the game starts.",
+			true),
+	};
+	static const struct
+	{
+		const char* key;
+		const char* name;
+		const char* def;
+	} rows[] = {
+		{"PS5SX2/BuzzRed", "Red", "R2"},
+		{"PS5SX2/BuzzBlue", "Blue", "Triangle"},
+		{"PS5SX2/BuzzOrange", "Orange", "Circle"},
+		{"PS5SX2/BuzzGreen", "Green", "Cross"},
+		{"PS5SX2/BuzzYellow", "Yellow", "Square"},
+	};
+	for (const auto& r : rows)
+	{
+		OptionDef d;
+		d.key = r.key;
+		d.label = r.name;
+		d.def = r.def;
+		d.choices = BuzzButtonChoices();
+		d.hint = std::string("The controller button that presses a buzzer's ") + r.name +
+		         " button, on every player's controller. Several can share a button; Nothing turns it off.";
 		out.push_back(std::move(d));
 	}
 	return out;
@@ -383,6 +428,9 @@ const std::vector<OptionGroup>& OptionGroups()
 			{
 				Toggle("PS5SX2/ShowHiddenGames", "Show hidden games", "false", "Hidden games %",
 					"Puts the games hidden from the shelf back on it, dimmed, so you can open one's sheet and turn Hide from the shelf off."),
+				// 2.41 (AI-assisted): the shelf reads it when a disc goes in (fe_app.cpp PollDiscAsk).
+				Seg("PS5SX2/DiscInsert", "Disc put in", "ask", "", {{"ask", "Ask"}, {"play", "Play from the disc"}, {"shelf", "Nothing"}},
+					"What happens when you put in a PS2 disc that is not copied. Ask: play it from the disc or copy it first. Play from the disc: it starts at once, nothing is copied. Nothing: the disc waits on the shelf; pick it there to be asked."),
 			},
 			kTabSettings, false, true},
 		// vk-285-139 (AI-assisted; swordpdf: a GameShark disc for all games, "it would have to be disc 1 at all times"): games
@@ -425,6 +473,10 @@ const std::vector<OptionGroup>& OptionGroups()
 					"PS2 smooths what the game asks to be smoothed, as a PS2 does: the right one for nearly every game. Bilinear (forced) "
 					"smooths everything, full-screen effects too, which can blur, shift or ghost them (PCSX2 calls it unsafe)."),
 				Seg("MaxAnisotropy", "Anisotropic filtering", "0", "AF %", {{"0", "Off"}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}),
+				// 2.41 (AI-assisted; xarella, wildblur: rainbow-like artifacts with the hardware renderer): PCSX2's EmuCore/GS/dithering_ps2.
+				Seg("dithering_ps2", "Dithering", "2", "Dither %", {{"0", "Off"}, {"1", "Scaled"}, {"2", "Unscaled"}, {"3", "Force 32-bit"}},
+					"How the game's dithering is drawn. Unscaled, as a PS2 does, suits most games; Scaled can show bands or rainbow-like noise at a high resolution. "
+					"Off removes dithering; Force 32-bit removes the colour bands of games that dither everything."),
 				Seg("accurate_blending_unit", "Blending accuracy", "1", "Blending %", {{"0", "Min"}, {"1", "Basic"}, {"2", "Med"}, {"3", "High"}},
 					"Higher fixes more effects and costs speed. Full and Max are left out for now: Max hung the GPU in Ratchet & Clank."),
 				Toggle("hw_mipmap", "Mipmapping", "true", "Mipmaps %"),
@@ -445,6 +497,10 @@ const std::vector<OptionGroup>& OptionGroups()
 					"Above 100% can smooth out slowdown the PS2 had; some games dislike it."),
 				Seg("EmuCore/Speedhacks/EECycleSkip", "EE cycle skip", "0", "Cycle skip %", {{"0", "Off"}, {"1", "Mild"}, {"2", "Moderate"}, {"3", "Max"}}),
 				Toggle("EmuCore/Speedhacks/vuThread", "MTVU (VU1 on its own thread)", "false", "MTVU %", "", true),
+				// 2.41 (AI-assisted; GitHub #44): the round modes PCSX2's advanced settings have (Pcsx2Config.cpp CpuOptions::LoadSave).
+				Seg("EmuCore/CPU/FPU.Roundmode", "EE rounding", "3", "EE round %", {{"0", "Nearest"}, {"1", "Negative"}, {"2", "Positive"}, {"3", "Chop"}}, "How the EE's FPU rounds its sums. Chop is PCSX2's default; change it only when a game's guide says so (wrong colours, cars or characters drawn white, physics that drift). The game list's own fix for a game, when it has one, comes first.", true),
+				Seg("EmuCore/CPU/VU0.Roundmode", "VU0 rounding", "3", "VU0 round %", {{"0", "Nearest"}, {"1", "Negative"}, {"2", "Positive"}, {"3", "Chop"}}, "How the VU0 rounds its sums. Chop is PCSX2's default; change it only when a game's guide says so (wrong colours, cars or characters drawn white, physics that drift). The game list's own fix for a game, when it has one, comes first.", true),
+				Seg("EmuCore/CPU/VU1.Roundmode", "VU1 rounding", "3", "VU1 round %", {{"0", "Nearest"}, {"1", "Negative"}, {"2", "Positive"}, {"3", "Chop"}}, "How the VU1 rounds its sums. Chop is PCSX2's default; change it only when a game's guide says so (wrong colours, cars or characters drawn white, physics that drift). The game list's own fix for a game, when it has one, comes first.", true),
 				Seg("HWDownloadMode", "GPU readbacks", "0", "Readbacks %", {{"0", "Accurate"}, {"1", "Whole area"}, {"3", "Don't wait"}, {"4", "Skip"}},
 					"Some games read the picture back from the GPU, which is slow on the PS5. Accurate is PCSX2's default. Whole area reads "
 					"everything drawn since the last read in one go, so there are fewer stops. Don't wait doesn't stop the game for the GPU: "
@@ -465,6 +521,10 @@ const std::vector<OptionGroup>& OptionGroups()
 					"The PS2's network adapter, on the PS5's own connection, for online and LAN play (on revival servers such as PS "
 					"Rewired; their DNS goes in the game's network settings). It costs nothing until a game uses it. Turn it off for a "
 					"game that misbehaves with it. Takes effect when the game starts.",
+					true),
+				// 2.41 (PR #60, BirbMan-Nobara-NVIDIA): the PS2's internal HDD (DEV9/Hdd), a raw image file (pcsx2/DEV9/DEV9.cpp); its path is on the page.
+				Toggle("DEV9/Hdd/HddEnable", "PS2 hard drive", "false", "HDD %",
+					"The PS2's hard drive, as a raw image file, for the games that use one (Final Fantasy XI, the HDD versions of some games). PS5SX2 doesn't make the image: copy one there first (made with PCSX2's HDD creator on a PC, 40 GB or more). Without a path set on the settings page it is /data/PCSX2/DEV9hdd.raw. With no image there the HDD stays off and the game says so. Takes effect when the game starts.",
 					true),
 				// 2026-10-08 (AI-assisted; testers: "Enable Host Filesystem"): PCSX2's host: device (EmuCore/HostFs).
 				Toggle("EmuCore/HostFs", "Host filesystem", "false", "Host files %",
@@ -535,18 +595,24 @@ const std::vector<OptionGroup>& OptionGroups()
 					{{"0.25", "25%"}, {"0.5", "50%"}, {"0.75", "75%"}, {"1", "100%"}, {"1.25", "125%"}, {"1.5", "150%"}, {"2", "200%"}},
 					"How strongly the controller vibrates, as a share of what the game asks for. Above 100% lifts weak rumble; it never goes past the motors' full strength."),
 				Seg("PS5SX2/Multitap", "Multitap", "0", "", {{"0", "Off"}, {"1", "Port 1"}, {"2", "Port 2"}}, "For 4-player games. Players 2 to 4 are the other PS5 users logged in when the game starts, each on their own controller. Port 1 suits most games; a few want the multitap in port 2. Off: player 2 on port 2, as before.", true),
+				// 2.41 (AI-assisted; israelneves: blue played yellow in Guitar Hero 3): main-boot.cpp reads it when the game starts.
+				Seg("PS5SX2/GuitarFrets", "USB guitar frets", "swapped", "", {{"swapped", "Layout A"}, {"usual", "Layout B"}},
+					"Which of a USB guitar's buttons play yellow and blue. If blue plays yellow (and yellow plays blue), pick the other layout. Takes effect when the game starts.", true),
 				// vk-285-141 (AI-assisted): main-boot.cpp's microphone block (orbis-shims/ProsperoAudio.cpp captures it).
 				Seg("PS5SX2/Microphone", "Microphone", "auto", "", {{"auto", "Auto"}, {"0", "Off"}, {"1", "Mic"}, {"2", "Headset"}},
 					"The controller's microphone as a PS2 USB microphone, for games that need one (Lifeline - Voice Action Adventure). Auto turns it on for those games; Headset suits a game that asks for a USB headset. Takes effect when the game starts.", true),
 			},
 			kTabControls},
+		{"Buzz! buzzers", BuzzGroup(), kTabControls}, // (AI-assisted)
 		{"Keyboard and mouse",
 			{
 				Seg("PS5SX2/KeyboardMouse", "Keyboard and mouse", "0", "Keyboard and mouse %",
 					{{"0", "Auto"}, {"1", "Controller"}, {"2", "USB devices"}, {"3", "Off"}},
 					"Controller: the keys and the mouse press the PS2 controller's buttons, as in PCSX2 on a PC (arrows are the D-pad, W A S D "
 					"the left stick, Enter Start; F1 saves and F3 loads a state; hold Esc to go back to the menu). USB devices: the PS2 sees a "
-					"USB keyboard and mouse, for games made for them. Auto: the controller, until a game reads the PS2's USB keyboard or mouse."),
+					"USB keyboard and mouse, for games made for them. Auto: the controller, until a game reads the PS2's USB keyboard or mouse. "
+					"Test build 192: the console's keyboard and mouse are read only with Controller or USB devices (Auto and Off leave them alone); "
+					"takes effect when the game starts."),
 				Seg("PS5SX2/MouseAim", "Mouse movement", "1", "Mouse movement %", {{"1", "Right stick"}, {"2", "Left stick"}, {"0", "Nothing"}},
 					"Which stick the mouse moves in the controller mode. The right stick turns the camera in most games."),
 				Seg("PS5SX2/MouseSpeed", "Mouse speed", "2", "Mouse speed %", {{"1", "Slow"}, {"2", "Normal"}, {"3", "Fast"}, {"4", "Very fast"}},
@@ -564,6 +630,7 @@ void OptionsSheet::Open(const OptionsPaths& paths, const GameInfo* game)
 	m_paths = paths;
 	m_global = game == nullptr;
 	m_armed_row = -1;
+	m_page = -1; // 2.41 newsheet: a sheet opens on its home
 	m_status.clear();
 	m_saved = 0;
 	if (game)
@@ -604,8 +671,14 @@ void OptionsSheet::Reload()
 		m_globals = ReadState(g);
 	}
 	m_has_preset = PresetSection(m_paths.presets, m_id, m_preset);
-	m_patches = m_global ? std::vector<PatchGroup>() : PatchGroups(m_paths.patches_dir, m_serial);
-	m_cheats = (m_global || m_paths.cheats_dir.empty()) ? std::vector<PatchGroup>() : PatchGroups(m_paths.cheats_dir, m_serial); // 2026-10-08
+	// 2.41: the game's patch files by fe_pnach.h's rule (the core's): its file name is this settings file's, its CRC the one it last started with
+	std::string stem = m_path.substr(m_path.rfind('/') + 1);
+	if (stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".ini") == 0)
+		stem.resize(stem.size() - 4);
+	const std::string top = m_paths.gs_ini.substr(0, m_paths.gs_ini.rfind('/'));
+	const uint32_t crc = m_global ? 0u : fe::pnach::KnownCrc(top + "/cache/game-crcs.txt", m_serial);
+	m_patches = m_global ? std::vector<PatchGroup>() : PatchGroups(m_paths.patches_dir, m_serial, crc, stem);
+	m_cheats = (m_global || m_paths.cheats_dir.empty()) ? std::vector<PatchGroup>() : PatchGroups(m_paths.cheats_dir, m_serial, crc, stem); // 2026-10-08
 	m_cards = ListCards(m_paths.memcards_dir);
 	BuildRows();
 }
@@ -618,6 +691,90 @@ void OptionsSheet::SetTab(int tab)
 	m_tab = tab;
 	m_armed_row = -1;
 	BuildRows();
+}
+
+// 2.41 (AI-assisted) newsheet: the pages of a game's Settings tab.
+const char* OptionsSheet::PageTagline(int page)
+{
+	static const char* const lines[kPageCount] = {"Filters, sharpness and what's on screen", "How fast and how smoothly the game runs",
+		"For drawing problems in this game", "Patches, cheats and fetching more", "The cards in the slots",
+		"Shelf, home screen, cheat disc and reset"};
+	return page >= 0 && page < kPageCount ? lines[page] : "";
+}
+
+const char* OptionsSheet::PageName(int page)
+{
+	static const char* const names[kPageCount] = {"Picture", "Speed", "Fixes", "Patches and cheats", "Memory cards", "Game options"};
+	return page >= 0 && page < kPageCount ? names[page] : "";
+}
+
+int OptionsSheet::PageOfGroup(const std::string& g)
+{
+	if (g == "Performance")
+		return kPageSpeed;
+	if (g == "Hardware fixes" || g == "Game")
+		return kPageFixes;
+	if (g == "Shelf" || g == "Discs" || g == "Home screen" || g == "ELF")
+		return kPageGame;
+	return kPagePicture; // Display, Graphics, On screen, Crop (and a group added later, until it gets a page)
+}
+
+bool OptionsSheet::IsHomeKey(const std::string& key)
+{
+	return key == "upscale_multiplier" || key == "AspectRatio" || key == "EmuCore/EnableWideScreenPatches" || key == "PS5SX2/FrameGeneration";
+}
+
+void OptionsSheet::OpenPage(int page)
+{
+	m_page = page >= 0 && page < kPageCount ? page : -1;
+	m_armed_row = -1;
+	BuildRows();
+}
+
+std::string OptionsSheet::PageSummary(int page) const
+{
+	if (page == kPagePatches)
+	{
+		int on = static_cast<int>(m_own.enabled.size());
+		for (const settings::PatchGroup& c : m_cheats)
+			on += CheatOn(c.name) ? 1 : 0;
+		return on > 0 ? std::to_string(on) + " on" : std::string();
+	}
+	if (page == kPageCards)
+	{
+		bool own = false;
+		const std::string v = CardValue(1, &own);
+		return own ? (v == "@none" ? std::string("Slot 1 empty") : v) : std::string();
+	}
+	std::vector<std::string> set;
+	for (const OptionGroup& g : OptionGroups())
+	{
+		if (g.tab != kTabSettings || g.global_only || PageOfGroup(g.title) != page)
+			continue;
+		for (const OptionDef& d : g.items)
+		{
+			if (IsHomeKey(d.key))
+				continue;
+			const Effective e = d.manual_fix ? FixValue(d) : Get(d.key, d.def);
+			if (e.from == From::Default)
+				continue;
+			const int i = ChoiceIndex(d, e.value);
+			if (i >= 0 && i == ChoiceIndex(d, d.def))
+				continue; // set, but to the default
+			const std::string shown = i >= 0 ? d.choices[static_cast<size_t>(i)].label : e.value;
+			std::string item = d.label + " " + shown;
+			const size_t pct = d.short_fmt.find('%');
+			if (!d.short_fmt.empty() && pct != std::string::npos)
+				item = d.short_fmt.substr(0, pct) + shown + d.short_fmt.substr(pct + 1);
+			set.push_back(item);
+		}
+	}
+	std::string out;
+	for (size_t i = 0; i < set.size() && i < 2; i++)
+		out += (i ? " \xC2\xB7 " : "") + set[i];
+	if (set.size() > 2)
+		out += " +" + std::to_string(set.size() - 2);
+	return out;
 }
 
 // vk-285-116: the rows of the tab shown. The settings: Recommended, the option groups, the memory cards and the patches;
@@ -635,7 +792,36 @@ void OptionsSheet::BuildRows()
 	if (m_tab == kTabAchievements)
 		return; // Read-only browser is rendered by App (AI-assisted).
 	const bool settings = m_tab == kTabSettings;
-	if (settings && (m_has_preset || !m_global))
+	// 2.41 newsheet: the home of a game's Settings tab, or one page of it (the groups of before, filtered).
+	const bool paged = Paged();
+	if (paged && m_page < 0)
+	{
+		for (const char* key : {"upscale_multiplier", "AspectRatio", "EmuCore/EnableWideScreenPatches", "PS5SX2/FrameGeneration"})
+			for (const OptionGroup& g : OptionGroups())
+				if (g.tab == kTabSettings && !g.global_only)
+					for (const OptionDef& d : g.items)
+						if (d.key == key)
+							add(Kind::Option, d.label).def = &d;
+		add(Kind::Header, "");
+		for (int page = 0; page < kPageCount; page++)
+		{
+			if (page == kPagePatches && m_patches.empty() && m_cheats.empty() && !(m_online_patch_row && !m_serial.empty()))
+				continue;
+			if (page == kPageCards && m_paths.memcards_dir.empty())
+				continue;
+			add(Kind::Category, PageName(page)).slot = page;
+		}
+		return; // 2.41 newsheet: "Clear this game's settings" is at the foot of Game options
+	}
+	const auto on_page = [&](int page) { return !paged || m_page == page; };
+	int page_groups = 0;
+	if (paged)
+	{
+		add(Kind::Header, std::string("\xE2\x80\xB9  ") + PageName(m_page));
+		for (const OptionGroup& g : OptionGroups())
+			page_groups += (g.tab == m_tab && !g.global_only && PageOfGroup(g.title) == m_page) ? 1 : 0;
+	}
+	if (settings && !paged && (m_has_preset || !m_global))
 		add(Kind::Recommended, m_global ? "Recommended for all games" : "Recommended settings");
 	// vk-285-135 (AI-assisted; swordpdf: "i also want to pick a folder though the browser in the shelf"): where the games and the
 	// BIOS are, on the sheet for all games (the app runs the picker and the share list). vk-285-135b: at the top (swordpdf
@@ -672,23 +858,28 @@ void OptionsSheet::BuildRows()
 			continue; // 2026-10-16: its rows came with the folder rows above
 		if (g.title == "Shelf" && !m_global && !m_hide_row)
 			continue; // gamedb (2026-10-30): a disc entry's sheet
-		add(Kind::Header, g.title);
+		if (paged && PageOfGroup(g.title) != m_page)
+			continue; // 2.41 newsheet: another page's group
+		if (!paged || (page_groups > 1 && m_page != kPageGame))
+			add(Kind::Header, g.title); // 2.41 newsheet: a page of one group has the page's title only; Game options' few rows share one card
 		// vk-285-139: the cheat disc itself, on the sheet for all games, before its switch.
 		if (g.title == "Discs" && m_global)
 			add(Kind::CheatDisc, "Cheat disc");
 		for (const OptionDef& d : g.items)
-			add(Kind::Option, d.label).def = &d;
+			if (!paged || !IsHomeKey(d.key)) // 2.41 newsheet: the four everyday rows are on the home
+				add(Kind::Option, d.label).def = &d;
 		// 2.12: the game's tile on the PS5 home screen, under the Shelf group of a game's sheet (the group for all games is skipped above).
 		if (g.title == "Shelf" && !m_global && m_home_tile_row)
 		{
-			add(Kind::Header, "Home screen");
+			if (!paged)
+				add(Kind::Header, "Home screen");
 			add(Kind::HomeTile, "Home screen tile");
 		}
 		// 2026-10-05 (AI-assisted): the game's HD texture pack, under Texture replacements.
 		if (g.title == "Graphics" && m_texture_pack_row && !m_global && !m_serial.empty())
 			add(Kind::TexturePack, "HD texture pack");
 	}
-	if (settings && !m_paths.memcards_dir.empty())
+	if (settings && !m_paths.memcards_dir.empty() && on_page(kPageCards))
 	{
 		add(Kind::Header, "Memory cards");
 		add(Kind::Card, "Slot 1").slot = 1;
@@ -718,20 +909,35 @@ void OptionsSheet::BuildRows()
 		add(Kind::ReloadTile, Tr(Str::ReloadTileRow));
 	}
 	// 2026-10-08: the "Get patches and cheats" row heads the game's patches (shown with none yet), then its cheats.
-	const bool online = settings && m_online_patch_row && !m_global && !m_serial.empty();
-	if (settings && (!m_patches.empty() || online))
+	const bool online = settings && m_online_patch_row && !m_global && !m_serial.empty() && on_page(kPagePatches);
+	if (settings && (!m_patches.empty() || online) && on_page(kPagePatches))
 	{
 		add(Kind::Header, "Patches");
 		if (online)
 			add(Kind::OnlinePatches, "Get patches and cheats");
 		for (const PatchGroup& p : m_patches)
-			add(Kind::Patch, p.name).patch_desc = p.description.empty() ? p.file : p.description + " (" + p.file + ")";
+			add(Kind::Patch, p.name).patch_desc = std::string(p.other_version ? "For another version of this game: not loaded. " : "") +
+			                                      (p.description.empty() ? p.file : p.description + " (" + p.file + ")");
 	}
-	if (settings && !m_cheats.empty())
+	if (settings && !m_cheats.empty() && on_page(kPagePatches))
 	{
 		add(Kind::Header, "Cheats");
 		for (const PatchGroup& c : m_cheats)
-			add(Kind::Cheat, c.name).patch_desc = c.description.empty() ? c.file : c.description + " (" + c.file + ")";
+			add(Kind::Cheat, c.name).patch_desc = std::string(c.other_version ? "For another version of this game: not loaded. " : "") +
+			                                      (c.description.empty() ? c.file : c.description + " (" + c.file + ")");
+	}
+	if (paged)
+	{
+		// (the Home screen tile row's own "Home screen" header is dropped on Game options too: BuildRows' Shelf group)
+		// 2.41 newsheet (the owner: "the recommended settings button is going to confuse people ... they can use the reset to defaults button
+		// if they wanna go back to stock"): one row, the game as a fresh install has it: PS5SX2's tuned settings for the games that have them
+		// (presets.ini, by serial: whatever the image is called), else following the settings for all games. Controls and cards stay.
+		if (m_page == kPageGame)
+		{
+			add(Kind::Header, "");
+			add(Kind::Recommended, "Reset to defaults");
+		}
+		return;
 	}
 	add(Kind::Header, "");
 	if (settings)
@@ -857,6 +1063,8 @@ std::string OptionsSheet::Value(const Row& r) const
 		case Kind::LogUpload:
 		case Kind::ReloadTile: // b185: the app's (fe_app.cpp)
 			return {};
+		case Kind::Category: // 2.41 newsheet: what is set on the page
+			return PageSummary(r.slot);
 	}
 	return {};
 }
@@ -903,6 +1111,19 @@ std::string OptionsSheet::Help(const Row& r) const
 	const std::string follows = m_global ? "PCSX2's default" : "the setting for all games";
 	switch (r.kind)
 	{
+		case Kind::Category: // 2.41 newsheet
+		{
+			static const char* const what[kPageCount] = {
+				"The picture: display filter, CRT, dithering, mipmaps, texture packs, what's on screen and the crop.",
+				"How fast the game runs: the EE's speed, MTVU, GPU readbacks, game speed and the CPU's rounding.",
+				"Fixes for drawing problems: PCSX2's manual hardware fixes and the game's own fixes.",
+				"The game's patches and cheats, and fetching more.",
+				"Which memory cards are in the slots, and making a new one.",
+				"The game's place on the shelf and the home screen, and the cheat disc."};
+			const std::string summary = PageSummary(r.slot);
+			return std::string(r.slot >= 0 && r.slot < kPageCount ? what[r.slot] : "") + " Cross opens it" +
+				   (summary.empty() ? std::string(".") : ". Set here: " + summary + ".") + " Circle comes back here.";
+		}
 		case Kind::Option:
 		{
 			std::string h = r.def->hint;
@@ -1046,6 +1267,11 @@ std::string OptionsSheet::Help(const Row& r) const
 					}
 			for (const std::string& p : rec.enabled)
 				summary += (summary.empty() ? "" : " \xC2\xB7 ") + p + " patch";
+			if (Paged()) // 2.41 newsheet: "Reset to defaults" on Game options
+				return std::string("Cross twice puts this game back the way PS5SX2 ships it: ") +
+					   (m_has_preset && !summary.empty() ? "what was tuned and tested for it on a PS5 Pro (" + summary + ")"
+														 : std::string("following the settings for all games")) +
+					   ". Its controls and memory cards stay.";
 			if (!m_has_preset && !m_global)
 				return "Nothing tuned for this game yet: using it makes the game follow the settings for all games.";
 			return "What was tuned and tested on a PS5 Pro: " + (summary.empty() ? std::string("follows the settings for all games") : summary) + ".";
@@ -1353,7 +1579,11 @@ bool OptionsSheet::Activate(const Row& r, double now)
 		case Kind::ResetAll:
 		{
 			if (r.kind == Kind::Recommended && Value(r) == "In use")
+			{
+				if (Paged())
+					m_status = "Already on its defaults";
 				return false;
+			}
 			if (!(m_armed_row == index && now < m_armed_until))
 			{
 				m_armed_row = index;
@@ -1371,7 +1601,7 @@ bool OptionsSheet::Activate(const Row& r, double now)
 					return false;
 				}
 				m_saved++;
-				m_status = "Recommended settings in use";
+				m_status = Paged() ? "Back to its defaults" : "Recommended settings in use";
 				std::printf("[options] %s: recommended settings\n", m_file_label.c_str());
 				if (m_paths.log)
 					m_paths.log("shelf: " + m_file_label + ": recommended settings" + (what.empty() ? std::string(", no change") : ": " + what) +

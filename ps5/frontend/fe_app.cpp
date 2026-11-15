@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "fe_app.h"
+#include "fe_sheeticons.h" // 2.41 newsheet
 #include "fe_i18n.h"
 #include "fe_roots.h" // 2026-10-16: kScanSubfoldersKey (the picker's game count)
 #include "fe_settings.h" // bioscheck: EditSettingsFile (the BIOS question writes PS5SX2/OpenBios)
@@ -1377,6 +1378,7 @@ void App::Update(double dt, const Input& in)
 				{
 				if (m_cfg.drive_disc_reask)
 				m_cfg.drive_disc_reask();
+				m_drive_picked = true; // 2.41: asked whatever PS5SX2/DiscInsert says
 				m_refused_text = "Asking about the disc...";
 				m_refused_time = m_time;
 				Sound(Sfx::Move, 0.0f);
@@ -1405,6 +1407,14 @@ void App::Update(double dt, const Input& in)
 			else if (!m_qr_big && in.r2 && !m_prev.r2 && m_sheet_anim < 0.05f && !m_launching)
 			{
 				OpenSearch();
+				Sound(Sfx::Move, 0.3f);
+			}
+			// 192 (AI-assisted; the owner: "bring the update button in the app itself somewhere more accessible"): L2 opens System update, the
+			// sheet for all games on its row, and looks for a newer release at once (when the start's look already found one, Cross twice on
+			// the row installs it, as before).
+			else if (!m_qr_big && in.l2 && !m_prev.l2 && m_sheet_anim < 0.05f && !m_launching && UpdateButtonShown())
+			{
+				OpenUpdate();
 				Sound(Sfx::Move, 0.3f);
 			}
 			else if (!m_qr_big && in.circle && !m_prev.circle && !m_search.applied.empty())
@@ -2028,6 +2038,8 @@ void App::Build(FrameDesc& f, const std::string& clock)
 		if (!m_qr_big)
 		{
 			hint("#R2", nullptr, "Search"); // 2.11
+			if (UpdateButtonShown()) // 192: System update, or "Update to <release>" when the start's look found one
+				hint("#L2", nullptr, UpdateHintLabel().c_str());
 			if (!m_search.applied.empty())
 				hint(icon::Circle, nullptr, "Show all");
 		}
@@ -2205,7 +2217,38 @@ namespace
 	constexpr float kSheetListTop = 308.0f; // from the sheet's top (vk-285-117: the top is one line shorter)
 	constexpr float kSheetHelpH = 352.0f; // the help box at the bottom
 	constexpr float kRowH = 100.0f, kHeaderH = 84.0f; // 2026-10-05: 94 and 76 before
+	constexpr float kPageRowH = 132.0f; // 2.41 newsheet: a page's row of the home (its name and what is set on it, two lines)
+	// 2.41 newsheet: the icons, from fe_sheeticons.h (the in-game menu draws the same ones)
+	constexpr const uint32_t (&kPageIcons)[OptionsSheet::kPageCount] = sheeticons::kPage;
+	constexpr uint32_t kIconBack = sheeticons::kBack, kIconReset = sheeticons::kReset;
+	uint32_t HomeIcon(const OptionDef* d)
+	{
+		return sheeticons::HomeIcon(d);
+	}
+	std::string Utf8(uint32_t cp)
+	{
+		std::string s;
+		if (cp < 0x80)
+			s += static_cast<char>(cp);
+		else if (cp < 0x800)
+		{
+			s += static_cast<char>(0xC0 | (cp >> 6));
+			s += static_cast<char>(0x80 | (cp & 0x3F));
+		}
+		else
+		{
+			s += static_cast<char>(0xE0 | (cp >> 12));
+			s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+			s += static_cast<char>(0x80 | (cp & 0x3F));
+		}
+		return s;
+	}
 } // namespace
+
+std::vector<uint32_t> App::SheetIconCodepoints()
+{
+	return sheeticons::Codepoints();
+}
 
 void App::OpenSheet(bool global)
 {
@@ -2237,6 +2280,7 @@ void App::OpenSheet(bool global)
 			if (!IsElfName(h.game.file.c_str()))
 				paths.disc_images.emplace_back(h.game.file, h.game.title);
 	}
+	m_sheet.SetPaged(m_cfg.paged_sheet); // 2.41 newsheet
 	m_sheet.Open(paths, g);
 	m_sheet_saved_at_open = 0;
 	if (!m_sheet_open)
@@ -2256,11 +2300,11 @@ void App::OpenSheet(bool global)
 	}
 	else
 		m_tile_path.clear();
-	// The first row that can be picked.
-	m_sheet_row = 0;
-	const auto& rows = m_sheet.rows();
-	while (m_sheet_row < static_cast<int>(rows.size()) && !m_sheet.Selectable(rows[static_cast<size_t>(m_sheet_row)]))
-		m_sheet_row++;
+	// The first row that can be picked (2.41 newsheet: on the home, the row of the page last opened for this game).
+	{
+		const auto it = m_sheet_last_page.find(m_sheet.file_label());
+		SheetFocusPage(it != m_sheet_last_page.end() ? it->second : -1);
+	}
 	m_sheet_scroll_target = 0;
 	m_sheet_status.clear();
 	m_sheet_held_v = m_sheet_held_h = 0;
@@ -2268,6 +2312,23 @@ void App::OpenSheet(bool global)
 		LoadGameAchievements();
 	std::printf("[options] sheet for %s (%s)\n", m_sheet.title().c_str(), m_sheet.file_label().c_str());
 	std::fflush(stdout);
+}
+
+// 2.41 newsheet: the focus on the home's row of `page` (-1, or a page without a row: the first row that can be picked).
+void App::SheetFocusPage(int page)
+{
+	const auto& rows = m_sheet.rows();
+	m_sheet_row = 0;
+	while (m_sheet_row < static_cast<int>(rows.size()) && !m_sheet.Selectable(rows[static_cast<size_t>(m_sheet_row)]))
+		m_sheet_row++;
+	if (page < 0)
+		return;
+	for (size_t i = 0; i < rows.size(); i++)
+		if (rows[i].kind == OptionsSheet::Kind::Category && rows[i].slot == page)
+		{
+			m_sheet_row = static_cast<int>(i);
+			return;
+		}
 }
 
 // vk-285-116: another tab of the same sheet, from its first row.
@@ -2366,6 +2427,25 @@ bool App::SheetMove(int dir)
 	return true;
 }
 
+// 2.41: from the first selectable row to the last (dir -1), or from the last to the first (dir 1).
+bool App::SheetWrap(int dir)
+{
+	const auto& rows = m_sheet.rows();
+	const int n = static_cast<int>(rows.size());
+	for (int i = 0; i < n; i++)
+	{
+		const int r = dir < 0 ? n - 1 - i : i;
+		if (m_sheet.Selectable(rows[static_cast<size_t>(r)]))
+		{
+			if (r == m_sheet_row)
+				return false;
+			m_sheet_row = r;
+			return true;
+		}
+	}
+	return false;
+}
+
 void App::UpdateSheet(double dt, const Input& in)
 {
 	auto pressed = [&](bool now, bool before) { return now && !before; };
@@ -2409,6 +2489,15 @@ void App::UpdateSheet(double dt, const Input& in)
 	if (m_picker.open)
 	{
 		UpdatePicker(dt, in);
+		return;
+	}
+	if (pressed(in.circle, m_prev.circle) && m_sheet.Page() >= 0) // 2.41 newsheet: from a page back to the home, on its row
+	{
+		const int page = m_sheet.Page();
+		m_sheet.OpenPage(-1);
+		SheetFocusPage(page);
+		m_sheet_scroll = m_sheet_scroll_target = 0;
+		Sound(Sfx::Move, -0.3f);
 		return;
 	}
 	if (pressed(in.circle, m_prev.circle) || pressed(in.square, m_prev.square) || pressed(in.options, m_prev.options))
@@ -2470,7 +2559,12 @@ void App::UpdateSheet(double dt, const Input& in)
 	const bool v_fresh = (in.up && !m_prev.up) || (in.down && !m_prev.down);
 	if (v != 0 && v_fresh)
 	{
-		Sound(SheetMove(v) ? Sfx::Move : Sfx::Edge, 0.3f);
+		// 2.41 (AI-assisted; tokki143: "press up from the first settings which takes us to the last option"): a fresh press at either end
+		// goes round to the other end; a held button still stops there, so holding Down never spins through the list.
+		bool moved = SheetMove(v);
+		if (!moved && SheetWrap(v))
+			moved = true;
+		Sound(moved ? Sfx::Move : Sfx::Edge, 0.3f);
 		m_sheet_held_v = v;
 		m_sheet_held_for = 0;
 		m_sheet_next_repeat = 0.34;
@@ -2594,6 +2688,20 @@ void App::UpdateSheet(double dt, const Input& in)
 			HomeTileToggle(1);
 		else if (pressed(in.triangle, m_prev.triangle))
 			HomeTileToggle(2);
+		return;
+	}
+
+	// 2.41 newsheet: a page's row of the home: Cross (or Right) opens the page, from its first row.
+	if (row.kind == OptionsSheet::Kind::Category)
+	{
+		if (pressed(in.cross, m_prev.cross) || pressed(in.right, m_prev.right))
+		{
+			m_sheet_last_page[m_sheet.file_label()] = row.slot;
+			m_sheet.OpenPage(row.slot);
+			SheetFocusPage(-1);
+			m_sheet_scroll = m_sheet_scroll_target = 0;
+			Sound(Sfx::Move, 0.3f);
+		}
 		return;
 	}
 
@@ -2724,6 +2832,47 @@ void App::UpdateRowPress(const OptionsSheet::Row& row, double now)
 	std::printf("[options] system update: look %s\n", started ? "asked" : "already running");
 	std::fflush(stdout);
 	Sound(started ? Sfx::Move : Sfx::Edge, 0.3f); // the row's value says "Checking..." and then the answer
+}
+
+// 192: L2 on the shelf. Not in a game tile's copy of the app: its sheet has no System update row (it would update the main app).
+bool App::UpdateButtonShown() const
+{
+	return static_cast<bool>(m_cfg.updates) && m_cfg.own_tile_game.empty();
+}
+
+// 192: the L2 hint: "Update to <release>" once a look found a newer one, else the row's own name.
+std::string App::UpdateHintLabel() const
+{
+	const UpdateStatus s = m_cfg.updates.status();
+	if (s.state == UpdateStatus::State::Available)
+		return Say(Str::UpdateHintAvailable, s.latest.title.empty() ? s.latest.tag : s.latest.title);
+	return Tr(Str::UpdateRow);
+}
+
+// 192: System update from the shelf: the sheet for all games, its Settings tab, the focus on the System update row, and a look at GitHub
+// unless one runs or has found something to install (Cross on the row then does what it says: twice installs).
+void App::OpenUpdate()
+{
+	OpenSheet(true);
+	if (m_sheet.tab() != kTabSettings)
+		SheetTab(kTabSettings);
+	const auto& rows = m_sheet.rows();
+	for (size_t r = 0; r < rows.size(); r++)
+		if (rows[r].kind == OptionsSheet::Kind::SystemUpdate)
+		{
+			m_sheet_row = static_cast<int>(r);
+			break;
+		}
+	using S = UpdateStatus::State;
+	const S st = m_cfg.updates.status().state;
+	bool asked = false;
+	if (st == S::Idle || st == S::Current || st == S::Newer || st == S::Failed)
+	{
+		m_update_armed_until = -1;
+		asked = m_cfg.updates.check(false);
+	}
+	std::printf("[options] system update opened from the shelf (L2): %s%s\n", UpdateStateName(st), asked ? ", a look asked" : "");
+	std::fflush(stdout);
 }
 
 // b185: the Reload PS2 Disc tile switched: the helper's flag file made (Off) or deleted (On); the helper does the rest within seconds.
@@ -3484,11 +3633,27 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 	const float list_top = y + kSheetListTop * k, list_bottom = y + sh - kSheetHelpH * k;
 	const float view_h = (list_bottom - list_top) / k;
 	std::vector<float> offs(rows.size());
+	// 2.41 newsheet: rows in cards (rounded panels, thin lines between rows), a page's title with a line under it
+	const bool cards = m_sheet.Paged() && m_cfg.symbol_font >= 0;
+	const auto row_height = [&](size_t i) -> float {
+		const OptionsSheet::Row& rr = rows[i];
+		if (rr.kind == OptionsSheet::Kind::Header)
+		{
+			if (!cards)
+				return rr.label.empty() ? 30.0f : kHeaderH;
+			if (i == 0 && m_sheet.Page() >= 0)
+				return 150.0f;
+			return rr.label.empty() ? 40.0f : 78.0f;
+		}
+		if (!cards)
+			return kRowH;
+		return rr.kind == OptionsSheet::Kind::Category ? kPageRowH : 112.0f;
+	};
 	float acc = 0, focus_top = 0, focus_bottom = 0;
 	for (size_t i = 0; i < rows.size(); i++)
 	{
 		offs[i] = acc;
-		const float hgt = rows[i].kind == OptionsSheet::Kind::Header ? (rows[i].label.empty() ? 30.0f : kHeaderH) : kRowH;
+		const float hgt = row_height(i);
 		if (static_cast<int>(i) == m_sheet_row)
 		{
 			// The header just above the focused row comes into view with it.
@@ -3504,16 +3669,56 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		m_sheet_scroll_target = focus_bottom - view_h + 20.0f;
 	m_sheet_scroll_target = std::max(0.0f, std::min(m_sheet_scroll_target, std::max(0.0f, total - view_h)));
 
+	// 2.41 newsheet: each run of rows between headers on a card (the part in the list's window)
+	if (cards)
+		for (size_t i = 0; i < rows.size();)
+		{
+			if (rows[i].kind == OptionsSheet::Kind::Header)
+			{
+				i++;
+				continue;
+			}
+			size_t j = i;
+			while (j + 1 < rows.size() && rows[j + 1].kind != OptionsSheet::Kind::Header)
+				j++;
+			const float top = list_top + (offs[i] - m_sheet_scroll) * k, bottom = list_top + (offs[j] + row_height(j) - m_sheet_scroll) * k;
+			const float t = std::max(top, list_top - 2 * k), b = std::min(bottom, list_bottom + 2 * k);
+			if (b > t + 8 * k)
+				Fonts::AddRoundedRect(ui, x + 32 * k, t, sw - 64 * k, b - t, 30 * k, Rgba(1, 1, 1, 0.05f));
+			i = j + 1;
+		}
+
 	for (size_t i = 0; i < rows.size(); i++)
 	{
 		const OptionsSheet::Row& r = rows[i];
 		const float ry = list_top + (offs[i] - m_sheet_scroll) * k;
 		const bool header = r.kind == OptionsSheet::Kind::Header;
-		const float rh = (header ? (r.label.empty() ? 30.0f : kHeaderH) : kRowH) * k;
+		const float rh = row_height(i) * k;
 		if (ry < list_top - 2 * k || ry + rh > list_bottom + 2 * k)
 			continue; // outside the list's window
 		if (header)
 		{
+			if (i == 0 && m_sheet.Page() >= 0 && cards) // 2.41 newsheet: the page's title, a back chevron, its line
+			{
+				const int page = m_sheet.Page();
+				m_fonts->AddText(ui, Utf8(kIconBack).c_str(), x + 56 * k, ry + 66 * k, 30 * k, mid, 0.4f, Fonts::Center);
+				m_fonts->AddText(ui, OptionsSheet::PageName(page), x + 86 * k, ry + 72 * k, 50 * k, hi, 0.5f);
+				m_fonts->AddText(ui, OptionsSheet::PageTagline(page), x + 86 * k, ry + 120 * k, 30 * k, mid, 0.2f);
+				continue;
+			}
+			if (i == 0 && m_sheet.Page() >= 0) // 2.41 newsheet: the page's title ("‹  Speed"), larger and as written
+			{
+				m_fonts->AddText(ui, r.label.c_str(), cx, ry + 58 * k, 38 * k, hi, 0.5f);
+				continue;
+			}
+			if (cards && !r.label.empty()) // 2.41 newsheet: a group's name over its card
+			{
+				std::string upper = r.label;
+				for (char& c : upper)
+					c = static_cast<char>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+				m_fonts->AddText(ui, upper.c_str(), x + 76 * k, ry + 58 * k, 24 * k, lo, 0.5f);
+				continue;
+			}
 			if (!r.label.empty())
 			{
 				std::string upper = r.label;
@@ -3524,13 +3729,53 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 			continue;
 		}
 		const bool focused = static_cast<int>(i) == m_sheet_row;
-		const float bx = x + 32 * k, bw = sw - 64 * k, bh = rh - 10 * k;
-		if (focused)
+		const float bx = x + 32 * k, bw = sw - 64 * k, bh = cards ? rh : rh - 10 * k;
+		// 2.41 newsheet: where a row's text starts (after an icon on the home), its icon, and the line above it inside a card
+		const uint32_t row_icon = !cards ? 0u
+		                          : r.kind == OptionsSheet::Kind::Category ? (r.slot >= 0 && r.slot < OptionsSheet::kPageCount ? kPageIcons[r.slot] : 0u)
+		                          : (m_sheet.Page() < 0 && r.kind == OptionsSheet::Kind::Option) ? HomeIcon(r.def)
+		                          : r.kind == OptionsSheet::Kind::Recommended ? kIconReset : 0u; // "Reset to defaults" (Game options)
+		const float icon_box = 68 * k, icon_x = bx + 34 * k;
+		const float lx0 = !cards ? bx + 48 * k : row_icon ? icon_x + icon_box + 30 * k : bx + 44 * k;
+		if (cards)
+		{
+			const bool prev_row = i > 0 && rows[i - 1].kind != OptionsSheet::Kind::Header;
+			if (prev_row && !focused && static_cast<int>(i) - 1 != m_sheet_row)
+				Fonts::AddRoundedRect(ui, lx0, ry - 1 * k, bx + bw - 34 * k - lx0, 2 * k, 0, Rgba(1, 1, 1, 0.07f));
+			if (focused)
+			{
+				Fonts::AddRoundedRect(ui, bx + 6 * k, ry + 6 * k, bw - 12 * k, bh - 12 * k, 25 * k, Rgba(1, 1, 1, 0.10f));
+				Fonts::AddRoundedRect(ui, bx + 14 * k, ry + bh * 0.32f, 6 * k, bh * 0.36f, 3 * k, accent);
+			}
+			if (row_icon)
+			{
+				const float iy = ry + (bh - icon_box) * 0.5f;
+				Fonts::AddRoundedRect(ui, icon_x, iy, icon_box, icon_box, 20 * k, focused ? Rgba(1, 1, 1, 0.16f) : Rgba(1, 1, 1, 0.08f));
+				m_fonts->AddText(ui, Utf8(row_icon).c_str(), icon_x + icon_box * 0.5f, iy + icon_box * 0.5f + 12 * k, 32 * k, focused ? hi : mid, 0.4f,
+					Fonts::Center);
+			}
+		}
+		else if (focused)
 		{
 			Fonts::AddRoundedRect(ui, bx, ry, bw, bh, 26 * k, Rgba(1, 1, 1, 0.11f));
 			Fonts::AddRoundedRect(ui, bx + 14 * k, ry + 24 * k, 6 * k, bh - 48 * k, 3 * k, accent);
 		}
 		const float mid_y = ry + bh * 0.5f + 13 * k; // the text's baseline, centred in the row
+		// 2.41 newsheet: a page's row of the home: an icon in a tile, its name, what is set on it under the name, a chevron.
+		if (r.kind == OptionsSheet::Kind::Category && cards)
+		{
+			const std::string summary = m_sheet.Value(r);
+			const float lx = lx0, room = bw - (lx - bx) - 90 * k;
+			if (summary.empty())
+				m_fonts->AddText(ui, Fit(*m_fonts, r.label, 40 * k, room).c_str(), lx, mid_y, 40 * k, hi, 0.25f);
+			else
+			{
+				m_fonts->AddText(ui, Fit(*m_fonts, r.label, 40 * k, room).c_str(), lx, ry + bh * 0.5f - 6 * k, 40 * k, hi, 0.25f);
+				m_fonts->AddText(ui, Fit(*m_fonts, summary, 30 * k, room).c_str(), lx, ry + bh * 0.5f + 38 * k, 30 * k, mid, 0.2f);
+			}
+			m_fonts->AddText(ui, "\xE2\x80\xBA", bx + bw - 44 * k, mid_y + 1 * k, 48 * k, focused ? hi : lo, 0.4f, Fonts::Center);
+			continue;
+		}
 		const float lpx = 40 * k, vpx = 38 * k; // 2026-10-05: 38 and 36 before
 		const bool action = r.kind == OptionsSheet::Kind::Recommended || r.kind == OptionsSheet::Kind::ResetAll ||
 		                    r.kind == OptionsSheet::Kind::SystemMenu; // 2026-10-08
@@ -3540,6 +3785,8 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		if (armed)
 			value = "Press again";
 		else if (action && r.kind == OptionsSheet::Kind::ResetAll)
+			value.clear();
+		else if (cards && r.kind == OptionsSheet::Kind::Recommended) // 2.41 newsheet: "Reset to defaults" shows nothing until pressed
 			value.clear();
 		if (r.kind == OptionsSheet::Kind::NewCard && focused)
 			value += "  \xC2\xB7  Create";
@@ -3574,7 +3821,10 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		                        r.kind == OptionsSheet::Kind::TexturesFolder || r.kind == OptionsSheet::Kind::NfsShares;
 		if (folder_row && focused)
 			value += "  \xE2\x80\xBA";
-		const bool arrows = focused && !action && pick_arrows && !folder_row && !tile_row && !update_row;
+		const bool page_row = r.kind == OptionsSheet::Kind::Category; // 2.41 newsheet: its summary and a chevron
+		if (page_row)
+			value = value.empty() ? std::string("\xE2\x80\xBA") : value + "   \xE2\x80\xBA";
+		const bool arrows = focused && !action && pick_arrows && !folder_row && !tile_row && !update_row && !page_row;
 
 		const float value_room = bw * (pack_row ? 0.68f : 0.46f); // 2026-10-05: the pack row's label is short, its value long
 		// vk-285-116: a label or a value that starts with a button's symbol ("<glyph>  Cross", the Controls tab): the symbol
@@ -3583,12 +3833,13 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		const bool lsym = SplitSymbol(r.label, lglyph, lname), vsym = SplitSymbol(value, vglyph, vname);
 		const float slot = lsym ? 66 * k : 0.0f;
 		const std::string label = Fit(*m_fonts, lsym ? lname : r.label, lpx,
-			bw - 80 * k - slot - (value.empty() ? 0.0f : std::min(value_room, m_fonts->Measure(value.c_str(), vpx)) + 90 * k));
-		const uint32_t lc = action ? (focused ? hi : mid) : hi;
+			bw - (lx0 - bx) - 32 * k - slot - (value.empty() ? 0.0f : std::min(value_room, m_fonts->Measure(value.c_str(), vpx)) + 90 * k));
+		const uint32_t lc = (cards && r.kind == OptionsSheet::Kind::Recommended) ? own // 2.41 newsheet: the reset reads as an action
+		                    : action ? (focused ? hi : mid) : hi;
 		if (lsym && lglyph != icon::Blank)
-			m_fonts->AddText(ui, lglyph.c_str(), bx + 48 * k + slot * 0.42f, mid_y + kSymbolDrop * lpx, lpx * kSymbolScale, lc, 0.25f,
+			m_fonts->AddText(ui, lglyph.c_str(), lx0 + slot * 0.42f, mid_y + kSymbolDrop * lpx, lpx * kSymbolScale, lc, 0.25f,
 				Fonts::Center);
-		m_fonts->AddText(ui, label.c_str(), bx + 48 * k + slot, mid_y, lpx, lc, 0.25f);
+		m_fonts->AddText(ui, label.c_str(), lx0 + slot, mid_y, lpx, lc, 0.25f);
 
 		if (!value.empty())
 		{
@@ -3597,6 +3848,8 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 			uint32_t vc = from == OptionsSheet::From::Own ? own : mid;
 			if (armed || (action && focused))
 				vc = own;
+			if (page_row)
+				vc = mid;
 			if (pack_row)
 			{
 				using TS = TexturePackStatus::State;
@@ -3609,18 +3862,28 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 				vc = p == TP::On ? own : (p == TP::Failed || p == TP::NoAnswer || p == TP::Stuck || p == TP::NoHelper) ? Rgba(1.0f, 0.62f, 0.60f) : mid;
 			}
 			const float vx = bx + bw - 44 * k - (arrows ? 30 * k : 0.0f);
-			float vw = m_fonts->AddText(ui, shown.c_str(), vx, mid_y, vpx, vc, 0.5f, Fonts::Right);
+			// 2.41 newsheet: a value this game or all games set gets a caption under it saying which
+			const bool caption = cards && r.kind == OptionsSheet::Kind::Option && from != OptionsSheet::From::Default && !armed;
+			const float vy = caption ? mid_y - 12 * k : mid_y;
+			float vw = m_fonts->AddText(ui, shown.c_str(), vx, vy, vpx, vc, 0.5f, Fonts::Right);
+			if (caption)
+				m_fonts->AddText(ui, from == OptionsSheet::From::Own ? "set for this game" : "from all games", vx, mid_y + 26 * k, 24 * k,
+					from == OptionsSheet::From::Own ? Rgba(0.93f, 0.62f, 0.72f) : Rgba(0.62f, 0.74f, 0.95f), 0.3f, Fonts::Right);
 			if (vsym && vglyph != icon::Blank)
 				vw += 14 * k + m_fonts->AddText(ui, vglyph.c_str(), vx - vw - 14 * k, mid_y + kSymbolDrop * vpx, vpx * kSymbolScale, vc, 0.5f,
 								   Fonts::Right);
 			if (arrows)
 			{
 				// The arrows either side of a value that left and right change.
-				m_fonts->AddText(ui, "\xE2\x80\xB9", vx - vw - 26 * k, mid_y + 1 * k, 44 * k, hi, 0.4f, Fonts::Center);
-				m_fonts->AddText(ui, "\xE2\x80\xBA", vx + 26 * k, mid_y + 1 * k, 44 * k, hi, 0.4f, Fonts::Center);
+				m_fonts->AddText(ui, "\xE2\x80\xB9", vx - vw - 26 * k, vy + 1 * k, 44 * k, hi, 0.4f, Fonts::Center);
+				m_fonts->AddText(ui, "\xE2\x80\xBA", vx + 26 * k, vy + 1 * k, 44 * k, hi, 0.4f, Fonts::Center);
 			}
-			// A dot beside a value this file sets itself (not what it follows).
-			if (from == OptionsSheet::From::Own && !action && !focused)
+			// A dot beside a value this file sets itself (not what it follows). 2.41 newsheet: a label instead, "this game" or "all games".
+			if (cards)
+			{
+				// the caption above says where the value comes from
+			}
+			else if (from == OptionsSheet::From::Own && !action && !focused)
 				Fonts::AddRoundedRect(ui, vx - vw - 30 * k, mid_y - 18 * k, 12 * k, 12 * k, 6 * k, own);
 		}
 		// 2026-10-05: a pack on its way: a thin bar along the row's foot.
@@ -4316,6 +4579,17 @@ void App::PollDiscAsk()
 	const bool pending = m_cfg.disc_ask_poll(title, serial);
 	if (pending && !m_ask_on && !m_launching && !m_bios_ask)
 	{
+		// 2.41 (AI-assisted): PS5SX2/DiscInsert. "play": a disc just put in starts from the drive with no question; "shelf": nothing
+		// happens (answered "not now"), the disc waits as the shelf's drive entry, and picking that entry asks as before.
+		const std::string mode = (m_drive_picked || m_cfg.options.gs_ini.empty()) ? std::string("ask") : DiscInsertMode(m_cfg.options.gs_ini);
+		m_drive_picked = false;
+		if (mode != "ask" && m_cfg.disc_ask_answer)
+		{
+			std::printf("[frontend] disc ask: %s (%s) answered by Disc put in = %s\n", title.c_str(), serial.c_str(), mode.c_str());
+			std::fflush(stdout);
+			m_cfg.disc_ask_answer(mode == "play" ? 2 : 3);
+			return;
+		}
 		m_ask_on = true;
 		m_ask_title = title;
 		m_ask_serial = serial;

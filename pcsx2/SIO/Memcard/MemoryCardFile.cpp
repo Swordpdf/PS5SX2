@@ -18,6 +18,7 @@
 #include <chrono>
 
 #include "Config.h"
+#include "Counters.h" // 2.41: g_FrameCount, for the frame of the last card write
 #include "Host.h"
 #include "VMManager.h"
 #include "IconsPromptFont.h"
@@ -50,6 +51,17 @@ static const char* s_folder_mem_card_id_file = "_pcsx2_superblock";
 std::atomic<u32> g_orbis_mcd_reads{0}, g_orbis_mcd_writes{0}, g_orbis_mcd_erases{0}, g_orbis_mcd_flush_kib{0};
 std::atomic<unsigned long long> g_orbis_mcd_ticks{0};
 std::atomic<int> g_orbis_mcd_cached{0}; // a bit per slot whose image is in RAM
+// 2.41 (AI-assisted; loligerpoper, 2026-11-10: NFS Carbon's career save lost to L1+R1+Touch during an autosave): the emulated frame
+// (g_FrameCount) of the game's last page write or block erase on any card, and whether there was one. "Back to the menu" waits while the
+// game is still saving (main-boot.cpp OrbisBackToMenuCpu): the cards' RAM images are written to disk as they are, so a save cut in half
+// was written half done.
+std::atomic<u32> g_orbis_mcd_last_write_frame{0};
+std::atomic<bool> g_orbis_mcd_any_write{false};
+static void OrbisNoteCardWrite()
+{
+	g_orbis_mcd_last_write_frame.store(static_cast<u32>(g_FrameCount), std::memory_order_relaxed);
+	g_orbis_mcd_any_write.store(true, std::memory_order_relaxed);
+}
 
 namespace
 {
@@ -745,6 +757,7 @@ s32 FileMemoryCard::Save(uint slot, const u8* src, u32 adr, int size)
 	// vk-285-31: on the RAM image (loaded now if this card waited for its first write).
 	OrbisMcdTimer timer;
 	g_orbis_mcd_writes.fetch_add(1, std::memory_order_relaxed);
+	OrbisNoteCardWrite(); // 2.41
 	if (m_cache[slot].empty() && m_cache_ok[slot])
 		LoadCache(slot);
 	if (!m_cache[slot].empty())
@@ -844,6 +857,7 @@ s32 FileMemoryCard::EraseBlock(uint slot, u32 adr)
 	// vk-285-31: on the RAM image.
 	OrbisMcdTimer timer;
 	g_orbis_mcd_erases.fetch_add(1, std::memory_order_relaxed);
+	OrbisNoteCardWrite(); // 2.41
 	if (m_cache[slot].empty() && m_cache_ok[slot])
 		LoadCache(slot);
 	if (!m_cache[slot].empty())

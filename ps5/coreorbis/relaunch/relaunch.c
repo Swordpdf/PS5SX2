@@ -94,6 +94,16 @@ static char g_log_path[520];
 static long long g_t0_ms;
 static long long g_gone_at; // when the app's process was first seen gone (0: never seen)
 
+// 195: one process as the session watch sees it (its first thread's fields: the console refuses the thread lists)
+typedef struct
+{
+	int pid, ppid, stat, nthreads;
+	long flag;
+	long long runtime_us;
+	char comm[24], td[24], wm[16], lk[16];
+} RlProc;
+static void note(const char* fmt, ...) __attribute__((format(printf, 1, 2))); // 195: the watch's platform calls below say what failed
+
 // ---------------------------------------------------------------------------------------------------------------------------- platform layer
 // (the console's version here; the PC test's is relaunch_stub.c)
 #ifndef RELAUNCH_HOST_TEST
@@ -209,12 +219,425 @@ static int rl_shutting_down(void)
 	}
 	return quiet;
 }
+static long long now_ms(void); // 192: below, with the helpers
+// 192: what `pid` is doing, into `out` (name, state, wait message, lock), "" when its record can't be read. Steps by ki_structsize.
+// 193: kern.proc.pid_td (the thread list) is refused on the console ("kern.proc.pid_td is not approved"): the process's own record, whose
+// thread fields are its first thread's.
+static void rl_threads(int pid, char* out, size_t room)
+{
+	out[0] = '\0';
+	int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+	size_t len = 0;
+	if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0 || len == 0)
+		return;
+	len += len / 2 + 8192;
+	char* buf = (char*)malloc(len);
+	if (!buf)
+		return;
+	if (sysctl(mib, 4, buf, &len, NULL, 0) != 0)
+	{
+		free(buf);
+		return;
+	}
+	size_t off = 0, used = 0;
+	int n = 0;
+	while (off + sizeof(int) <= len && used + 96 < room)
+	{
+		const struct kinfo_proc* kp = (const struct kinfo_proc*)(buf + off);
+		const size_t sz = kp->ki_structsize > 0 ? (size_t)kp->ki_structsize : 0;
+		if (sz < offsetof(struct kinfo_proc, ki_comm) + sizeof(kp->ki_comm) || off + sz > len)
+			break;
+		char td[24], wm[16], lk[24];
+		snprintf(td, sizeof(td), "%.*s", (int)sizeof(kp->ki_tdname), kp->ki_tdname);
+		snprintf(wm, sizeof(wm), "%.*s", (int)sizeof(kp->ki_wmesg), kp->ki_wmesg);
+		snprintf(lk, sizeof(lk), "%.*s", (int)sizeof(kp->ki_lockname), kp->ki_lockname);
+		const int w = snprintf(out + used, room - used, "%s%s st%d%s%s%s%s", n ? " | " : "", td[0] ? td : "?", (int)kp->ki_stat,
+			wm[0] ? " w=" : "", wm, lk[0] ? " lk=" : "", lk);
+		if (w < 0)
+			break;
+		used += (size_t)w < room - used ? (size_t)w : room - used - 1;
+		if (n == 0)
+		{
+			const int fw = snprintf(out + used, room - used, " (p_flag %#lx)", (unsigned long)kp->ki_flag);
+			if (fw > 0)
+				used += (size_t)fw < room - used ? (size_t)fw : room - used - 1;
+		}
+		n++;
+		off += sz;
+	}
+	free(buf);
+}
+
+// 192: the kernel log while the guard waits, into logs/leave-klog.txt (the one before kept as leave-klog.1.txt). FMEM lines (the shell's memory
+// table, a burst every few seconds) are left out; at most 2 MiB. /dev/klog has one reader: with a klog server running it stays closed here.
+static int g_klog_fd = -1, g_klog_out = -1;
+static size_t g_klog_written;
+static long long g_klog_synced_ms;
+static char g_klog_part[2048];
+static size_t g_klog_part_len;
+static void rl_klog_open(const char* log_path)
+{
+	char dir[520], out[560], old[560];
+	snprintf(dir, sizeof(dir), "%s", log_path);
+	char* slash = strrchr(dir, '/');
+	if (!slash)
+		return;
+	*slash = '\0';
+	g_klog_fd = open("/dev/klog", O_RDONLY | O_NONBLOCK);
+	if (g_klog_fd < 0)
+	{
+		const int e = errno;
+		snprintf(out, sizeof(out), "%s/leave-klog.txt", dir);
+		FILE* f = fopen(out, "w");
+		if (f)
+		{
+			fprintf(f, "/dev/klog did not open (errno %d%s): no kernel log for this leave\n", e, e == EBUSY ? ", busy: a klog server reads it" : "");
+			fclose(f);
+		}
+		return;
+	}
+	snprintf(out, sizeof(out), "%s/leave-klog.txt", dir);
+	snprintf(old, sizeof(old), "%s/leave-klog.1.txt", dir);
+	rename(out, old);
+	g_klog_out = open(out, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	if (g_klog_out < 0)
+	{
+		close(g_klog_fd);
+		g_klog_fd = -1;
+	}
+}
+// 192: the SDK's libc has no memmem
+static int rl_has(const char* s, size_t n, const char* needle)
+{
+	const size_t k = strlen(needle);
+	for (size_t i = 0; k && i + k <= n; i++)
+		if (memcmp(s + i, needle, k) == 0)
+			return 1;
+	return 0;
+}
+static void rl_klog_line(const char* line, size_t n)
+{
+	if (n == 0 || g_klog_written > (2u << 20))
+		return;
+	if (rl_has(line, n, "FMEM") || rl_has(line, n, "[relaunch]"))
+		return;
+	char stamp[32];
+	const int sn = snprintf(stamp, sizeof(stamp), "+%lld ", now_ms() - g_t0_ms);
+	if (write(g_klog_out, stamp, (size_t)sn) < 0 || write(g_klog_out, line, n) < 0 || write(g_klog_out, "\n", 1) < 0)
+		return;
+	g_klog_written += n + (size_t)sn + 1;
+}
+static void rl_klog_pump(int last)
+{
+	if (g_klog_fd < 0)
+		return;
+	char buf[16384];
+	for (int round = 0; round < 64; round++)
+	{
+		const ssize_t got = read(g_klog_fd, buf, sizeof(buf));
+		if (got <= 0)
+			break;
+		for (ssize_t i = 0; i < got; i++)
+		{
+			if (buf[i] == '\n' || g_klog_part_len + 1 >= sizeof(g_klog_part))
+			{
+				rl_klog_line(g_klog_part, g_klog_part_len);
+				g_klog_part_len = 0;
+			}
+			if (buf[i] != '\n')
+				g_klog_part[g_klog_part_len++] = buf[i];
+		}
+	}
+	if (last || now_ms() - g_klog_synced_ms >= 1000) // the console may need a hard power-off right after: on disk each second
+	{
+		if (last && g_klog_part_len)
+			rl_klog_line(g_klog_part, g_klog_part_len);
+		fsync(g_klog_out);
+		g_klog_synced_ms = now_ms();
+	}
+}
+// 195: the session watch's platform calls (see watch_main). A record is read from a kinfo_proc of the console's size (stepped by ki_structsize);
+// only the SDK's leading fields are used (ki_numthreads sits after the strings: if the console's layout differs there, that number is wrong).
+static void rl_fill(const struct kinfo_proc* kp, RlProc* p)
+{
+	memset(p, 0, sizeof(*p));
+	p->pid = kp->ki_pid;
+	p->ppid = kp->ki_ppid;
+	p->stat = kp->ki_stat;
+	p->flag = (long)kp->ki_flag;
+	p->runtime_us = (long long)kp->ki_runtime;
+	p->nthreads = kp->ki_numthreads;
+	snprintf(p->comm, sizeof(p->comm), "%.*s", (int)sizeof(kp->ki_comm), kp->ki_comm);
+	snprintf(p->td, sizeof(p->td), "%.*s", (int)sizeof(kp->ki_tdname), kp->ki_tdname);
+	snprintf(p->wm, sizeof(p->wm), "%.*s", (int)sizeof(kp->ki_wmesg), kp->ki_wmesg);
+	snprintf(p->lk, sizeof(p->lk), "%.*s", (int)sizeof(kp->ki_lockname), kp->ki_lockname);
+}
+// 1 with `p` filled, 0 when there is no such process, -1 when it can't be read
+static int rl_proc_rec(int pid, RlProc* p)
+{
+	int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+	size_t len = 0;
+	if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0)
+		return (errno == ESRCH || errno == ENOENT) ? 0 : -1;
+	if (len == 0)
+		return 0;
+	len += len / 2 + 8192;
+	char* buf = (char*)malloc(len);
+	if (!buf)
+		return -1;
+	int rc = -1;
+	if (sysctl(mib, 4, buf, &len, NULL, 0) == 0)
+	{
+		const struct kinfo_proc* kp = (const struct kinfo_proc*)buf;
+		if (len == 0)
+			rc = 0;
+		else if (len >= offsetof(struct kinfo_proc, ki_comm) + sizeof(kp->ki_comm) && kp->ki_pid == pid)
+		{
+			rl_fill(kp, p);
+			rc = 1;
+		}
+	}
+	else if (errno == ESRCH || errno == ENOENT)
+		rc = 0;
+	free(buf);
+	return rc;
+}
+// every process (KERN_PROC_PROC, console-proven by rl_other_app): how many went into `out` (at most `max`), -1 when the table can't be read
+static int rl_proc_all(RlProc* out, int max)
+{
+	int mib[3] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC};
+	size_t len = 0;
+	if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || len == 0)
+		return -1;
+	len += len / 4 + 8192;
+	char* buf = (char*)malloc(len);
+	if (!buf)
+		return -1;
+	if (sysctl(mib, 3, buf, &len, NULL, 0) != 0)
+	{
+		free(buf);
+		return -1;
+	}
+	int n = 0;
+	size_t off = 0;
+	while (off + sizeof(int) <= len && n < max)
+	{
+		const struct kinfo_proc* kp = (const struct kinfo_proc*)(buf + off);
+		const size_t sz = kp->ki_structsize > 0 ? (size_t)kp->ki_structsize : 0;
+		if (sz < offsetof(struct kinfo_proc, ki_comm) + sizeof(kp->ki_comm) || off + sz > len)
+			break;
+		rl_fill(kp, &out[n++]);
+		off += sz;
+	}
+	free(buf);
+	return n;
+}
+// the kernel stacks of `pid`'s threads, once (most likely refused on the console, like the thread list: then one line says so)
+static void watch_kstack(int pid)
+{
+	int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_KSTACK, pid};
+	size_t len = 0;
+	if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0 || len == 0)
+	{
+		note("watch: the kernel stacks of %d can't be read (errno %d, size %zu)", pid, errno, len);
+		return;
+	}
+	len += len / 2 + 4096;
+	char* buf = (char*)malloc(len);
+	if (!buf)
+		return;
+	if (sysctl(mib, 4, buf, &len, NULL, 0) != 0)
+	{
+		note("watch: the kernel stacks of %d can't be read (errno %d)", pid, errno);
+		free(buf);
+		return;
+	}
+	const size_t one = sizeof(struct kinfo_kstack);
+	note("watch: the kernel stacks of %d: %zu bytes, %zu records of the SDK's size", pid, len, len / one);
+	for (size_t off = 0; off + one <= len && off / one < 96; off += one)
+	{
+		const struct kinfo_kstack* k = (const struct kinfo_kstack*)(buf + off);
+		char tr[300];
+		snprintf(tr, sizeof(tr), "%.*s", 290, k->kkst_trace);
+		for (char* c = tr; *c; c++)
+			if (*c == '\n')
+				*c = ' ';
+		note("watch:   tid %d state %d: %s", k->kkst_tid, k->kkst_state, tr);
+	}
+	free(buf);
+}
+// the kernel log into logs/session-klog.txt: opened when /dev/klog is free (tried every second: a klog server, or the guard of a leave, may hold it),
+// a new file past 4 MiB; every line with the wall clock; FMEM bursts and our own [relaunch] lines left out (those are in session-watch.log)
+static int g_wk_fd = -1, g_wk_out = -1, g_wk_dirty, g_wk_said;
+static size_t g_wk_written;
+static long long g_wk_synced_ms, g_wk_try_ms;
+static char g_wk_dir[480];
+static char g_wk_part[2048];
+static size_t g_wk_part_len;
+static void wk_name(char* out, size_t room, int gen)
+{
+	if (gen == 0)
+		snprintf(out, room, "%s/session-klog.txt", g_wk_dir);
+	else
+		snprintf(out, room, "%s/session-klog.%d.txt", g_wk_dir, gen);
+}
+static void wk_new_file(void)
+{
+	char a[520], b[520];
+	for (int gen = 3; gen > 0; gen--)
+	{
+		wk_name(a, sizeof(a), gen - 1);
+		wk_name(b, sizeof(b), gen);
+		rename(a, b);
+	}
+	wk_name(a, sizeof(a), 0);
+	g_wk_out = open(a, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	g_wk_written = 0;
+}
+static void wk_set_dir(const char* dir)
+{
+	snprintf(g_wk_dir, sizeof(g_wk_dir), "%s", dir);
+}
+static void wk_try_open(void)
+{
+	if (g_wk_fd >= 0)
+		return;
+	const long long t = now_ms();
+	if (t < g_wk_try_ms)
+		return;
+	g_wk_try_ms = t + 1000;
+	const int fd = open("/dev/klog", O_RDONLY | O_NONBLOCK);
+	if (fd < 0)
+	{
+		const int e = errno;
+		if (!g_wk_said)
+			note("watch: /dev/klog does not open (errno %d%s): tried again every second", e, e == EBUSY ? ", busy: another reader has it" : "");
+		g_wk_said = 1;
+		return;
+	}
+	wk_new_file();
+	if (g_wk_out < 0)
+	{
+		note("watch: session-klog.txt can't be written (errno %d): no kernel log (tried again in 30 s)", errno);
+		close(fd);
+		g_wk_try_ms = t + 30000;
+		return;
+	}
+	g_wk_fd = fd;
+	note("watch: the kernel log goes to session-klog.txt (the ones before: session-klog.1.txt .. .3.txt)%s", g_wk_said ? " (it was busy until now)" : "");
+	g_wk_said = 0;
+}
+static void wk_line(const char* line, size_t n)
+{
+	if (g_wk_out < 0 || n == 0)
+		return;
+	if (rl_has(line, n, "FMEM") || rl_has(line, n, "[relaunch]"))
+		return;
+	if (g_wk_written > (4u << 20))
+	{
+		fsync(g_wk_out);
+		close(g_wk_out);
+		wk_new_file();
+		if (g_wk_out < 0)
+			return;
+	}
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	char stamp[40];
+	const int sn = snprintf(stamp, sizeof(stamp), "%lld.%03ld ", (long long)ts.tv_sec, (long)(ts.tv_nsec / 1000000));
+	if (write(g_wk_out, stamp, (size_t)sn) < 0 || write(g_wk_out, line, n) < 0 || write(g_wk_out, "\n", 1) < 0)
+		return;
+	g_wk_written += n + (size_t)sn + 1;
+	g_wk_dirty = 1;
+}
+static void wk_pump(int last)
+{
+	if (g_wk_fd < 0)
+		return;
+	char buf[16384];
+	for (int round = 0; round < 64; round++)
+	{
+		const ssize_t got = read(g_wk_fd, buf, sizeof(buf));
+		if (got <= 0)
+			break;
+		for (ssize_t i = 0; i < got; i++)
+		{
+			if (buf[i] == '\n' || g_wk_part_len + 1 >= sizeof(g_wk_part))
+			{
+				wk_line(g_wk_part, g_wk_part_len);
+				g_wk_part_len = 0;
+			}
+			if (buf[i] != '\n')
+				g_wk_part[g_wk_part_len++] = buf[i];
+		}
+	}
+	if (last && g_wk_part_len)
+	{
+		wk_line(g_wk_part, g_wk_part_len);
+		g_wk_part_len = 0;
+	}
+	if (g_wk_out >= 0 && g_wk_dirty && (last || now_ms() - g_wk_synced_ms >= 1000)) // a hard power-off may follow: on disk each second
+	{
+		fsync(g_wk_out);
+		g_wk_synced_ms = now_ms();
+		g_wk_dirty = 0;
+	}
+}
 #else
+static void rl_threads(int pid, char* out, size_t room)
+{
+	(void)pid;
+	if (room)
+		out[0] = '\0';
+}
+static void rl_klog_open(const char* log_path)
+{
+	(void)log_path;
+}
+static void rl_klog_pump(int last)
+{
+	(void)last;
+}
 void* rl_lib(const char* name);
 void* rl_sym(void* lib, const char* name);
 int rl_pid_state(int pid);
 int rl_shutting_down(void);
 int rl_other_app(int old_pid);
+// 195: the session watch on the PC: a process is the stub's rl_pid_state alone (a running one is "host", st2); no table, no stacks, no kernel log
+static int rl_proc_rec(int pid, RlProc* p)
+{
+	const int s = rl_pid_state(pid);
+	if (s < 0)
+		return -1;
+	memset(p, 0, sizeof(*p));
+	if (s == 1)
+		return 0;
+	p->pid = pid;
+	p->stat = 2;
+	snprintf(p->comm, sizeof(p->comm), "host");
+	return 1;
+}
+static int rl_proc_all(RlProc* out, int max)
+{
+	(void)out;
+	(void)max;
+	return 0;
+}
+static void watch_kstack(int pid)
+{
+	(void)pid;
+}
+static void wk_set_dir(const char* dir)
+{
+	(void)dir;
+}
+static void wk_try_open(void)
+{
+}
+static void wk_pump(int last)
+{
+	(void)last;
+}
 #endif
 
 static void rl_load(Lnc* l)
@@ -312,6 +735,7 @@ static void done(const char* status, const char* detail)
 // The end: _exit() stops every thread before anything is unloaded (as notify_relay.c and ime_relay.c end).
 __attribute__((noreturn)) static void finish(const char* status, const char* detail)
 {
+	rl_klog_pump(1); // 192
 	done(status, detail);
 	_exit(0);
 }
@@ -353,6 +777,8 @@ typedef struct
 	int retry_ms;     // pause between two launch attempts
 	int guard_ms;     // fix180: guard mode (the app leaves by its own exec): 0 = off
 	int hard_ms;      // fix180: guard mode, with another app process there
+	int watch;        // 195: the session watch (watch=1): records, launches nothing
+	int linger_s;     // 195: the watch's time after the app's process went (default 150, 1..600)
 } Request;
 
 // " (N ms after the process exit)" for a note, "" when the process was never seen gone.
@@ -421,6 +847,328 @@ static int launch_round(const Request* r, int round, int* attempts_total, unsign
 	return 0;
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------- 195: the session watch
+// 195 (AI-assisted): SESSION WATCH (request "watch=1"; the app sends it once at its start in test builds, ProsperoRelaunch.cpp OrbisSessionWatchStart).
+// An 8.60 console froze for good when PS5SX2 was closed from the shelf, after 194 had fixed the way back from a game (whose old process could not end
+// while one of its threads waited on the kernel's disk lock, "GEOM top"). Such a freeze ends in a hard power-off, which keeps nothing of the kernel log,
+// and no process of ours ran during the shell's close. This payload lives in a process of its own for the app's whole life and linger_s seconds after
+// it. It copies the kernel log to logs/session-klog.txt (synced each second; the three before are .1 .. .3) and writes to logs/session-watch.log the
+// processes there at its start, the app's and the disc helper's records when their state, flags or first thread's wait change, the helper's CPU time
+// every 30 s (does it run during a game at all?), every process whose first thread waits on the disk lock or a drive command (every 10 s; every 2 s
+// and the whole table now and then once the app ends), and the kernel stacks once when the app starts to end (the console refuses the thread lists;
+// the stacks most likely too, and one line then says so). A newer watch (the app's next start, also after back to the menu) takes over: this one ends
+// when logs/session-watch.pid names another.
+static char g_wdir[480];
+
+static const char* proc_text(const RlProc* p, char* out, size_t room)
+{
+	snprintf(out, room, "pid %d (%s) st%d flags %#lx%s%s%s%s%s%s, threads %d, cpu %lld ms", p->pid, p->comm[0] ? p->comm : "?", p->stat, p->flag,
+		p->wm[0] ? ", waits " : "", p->wm, p->lk[0] ? ", lock " : "", p->lk, p->td[0] ? ", first thread " : "", p->td, p->nthreads,
+		p->runtime_us / 1000);
+	return out;
+}
+
+// A first thread's wait (8 characters at most) worth a line: the GEOM topology lock ("GEOM top"), CAM's command and hold waits, GEOM's reads and
+// writes, buffer waits, a device being drained.
+static int wait_of_interest(const char* w)
+{
+	static const char* const names[] = {"cbwait", "caplck", "cgticb", "gread", "gwrite", "gflush", "biord", "biowr", "getblk", "g_waitfo", "devdrn",
+		"cdopen", "cdclose"};
+	if (!w[0])
+		return 0;
+	if (strncmp(w, "GEOM", 4) == 0)
+		return 1;
+	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+		if (strcmp(w, names[i]) == 0)
+			return 1;
+	return 0;
+}
+
+#define WATCH_MAXP 640
+static RlProc g_wp[WATCH_MAXP];
+typedef struct
+{
+	int pid, stat, found;
+	char wm[16];
+} WatchSeen;
+static WatchSeen g_seen[WATCH_MAXP];
+static int g_nseen;
+
+// Processes whose first thread waits on something of interest, when that changes; `why` != NULL: the whole table too (pid name state wait).
+static void watch_scan(const char* why)
+{
+	const int n = rl_proc_all(g_wp, WATCH_MAXP);
+	if (n < 0)
+	{
+		note("watch: the process table can't be read");
+		return;
+	}
+	if (why)
+	{
+		note("watch: %s: %d processes (pid name state wait):", why, n);
+		char line[360];
+		size_t used = 0;
+		line[0] = '\0';
+		for (int i = 0; i < n; i++)
+		{
+			char one[80];
+			const int w = snprintf(one, sizeof(one), "%d %s st%d%s%s", g_wp[i].pid, g_wp[i].comm, g_wp[i].stat, g_wp[i].wm[0] ? " " : "", g_wp[i].wm);
+			if (w <= 0)
+				continue;
+			if (used && used + 3 + (size_t)w >= 330)
+			{
+				note("watch:   %s", line);
+				used = 0;
+				line[0] = '\0';
+			}
+			used += (size_t)snprintf(line + used, sizeof(line) - used, "%s%s", used ? " | " : "", one);
+		}
+		if (used)
+			note("watch:   %s", line);
+	}
+	for (int k = 0; k < g_nseen; k++)
+		g_seen[k].found = 0;
+	for (int i = 0; i < n; i++)
+	{
+		const RlProc* p = &g_wp[i];
+		int k = 0;
+		while (k < g_nseen && g_seen[k].pid != p->pid)
+			k++;
+		const int known = k < g_nseen;
+		if (known)
+			g_seen[k].found = 1;
+		const int now_of_interest = wait_of_interest(p->wm);
+		if (now_of_interest && (!known || strcmp(g_seen[k].wm, p->wm) != 0 || g_seen[k].stat != p->stat))
+		{
+			char t[200];
+			note("watch: %s", proc_text(p, t, sizeof(t)));
+			if (!known && g_nseen < WATCH_MAXP)
+				k = g_nseen++;
+			if (k < g_nseen)
+			{
+				g_seen[k].pid = p->pid;
+				g_seen[k].stat = p->stat;
+				g_seen[k].found = 1;
+				snprintf(g_seen[k].wm, sizeof(g_seen[k].wm), "%s", p->wm);
+			}
+		}
+		else if (!now_of_interest && known)
+		{
+			note("watch: pid %d (%s) no longer waits %s (now st%d%s%s)", p->pid, p->comm, g_seen[k].wm, p->stat, p->wm[0] ? ", waits " : "", p->wm);
+			g_seen[k] = g_seen[--g_nseen];
+		}
+	}
+	for (int k = 0; k < g_nseen;)
+	{
+		if (!g_seen[k].found)
+		{
+			note("watch: pid %d is gone (it waited %s)", g_seen[k].pid, g_seen[k].wm);
+			g_seen[k] = g_seen[--g_nseen];
+		}
+		else
+			k++;
+	}
+}
+
+// The disc helper's pid and heartbeat from logs/ps5sx2-helper.txt (0: no file or no pid)
+static int helper_status(long long* t_out)
+{
+	char p[520];
+	snprintf(p, sizeof(p), "%s/ps5sx2-helper.txt", g_wdir);
+	*t_out = 0;
+	FILE* f = fopen(p, "r");
+	if (!f)
+		return 0;
+	char line[128];
+	int pid = 0;
+	while (fgets(line, sizeof(line), f))
+	{
+		if (strncmp(line, "pid=", 4) == 0)
+			pid = atoi(line + 4);
+		else if (strncmp(line, "time=", 5) == 0)
+			*t_out = atoll(line + 5);
+	}
+	fclose(f);
+	return pid;
+}
+
+static int pidfile_owner(const char* path)
+{
+	FILE* f = fopen(path, "r");
+	if (!f)
+		return 0;
+	int pid = 0;
+	if (fscanf(f, "%d", &pid) != 1)
+		pid = 0;
+	fclose(f);
+	return pid;
+}
+
+__attribute__((noreturn)) static void watch_end(const char* status, const char* detail)
+{
+	wk_pump(1);
+	done(status, detail);
+	_exit(0);
+}
+
+__attribute__((noreturn)) static void watch_main(const Request* r)
+{
+	snprintf(g_wdir, sizeof(g_wdir), "%s", g_state);
+	char* slash = strrchr(g_wdir, '/');
+	if (slash)
+		*slash = '\0';
+	wk_set_dir(g_wdir);
+	snprintf(g_log_path, sizeof(g_log_path), "%s/session-watch.log", g_wdir);
+	{
+		// past 512 KiB the log starts again (the one before kept as session-watch.1.log)
+		struct stat st;
+		if (stat(g_log_path, &st) == 0 && st.st_size > 512 * 1024)
+		{
+			char old[540];
+			snprintf(old, sizeof(old), "%s/session-watch.1.log", g_wdir);
+			rename(g_log_path, old);
+		}
+	}
+	note("watch: up (pid %d) for the app's process %d; it ends %d s after that process is gone, or when a newer watch takes over", (int)getpid(), r->pid,
+		r->linger_s);
+	char pidfile[540];
+	snprintf(pidfile, sizeof(pidfile), "%s/session-watch.pid", g_wdir);
+	{
+		char text[96];
+		snprintf(text, sizeof(text), "%d\n%d\n%ld\n", (int)getpid(), r->pid, (long)time(NULL));
+		write_file(pidfile, text);
+		char p[540];
+		snprintf(p, sizeof(p), "%s.started", g_state);
+		write_file(p, "1\n"); // the handshake (the app waits for it)
+	}
+	wk_try_open();
+	wk_pump(0);
+	watch_scan("at the start");
+	RlProc app_last, helper_last;
+	memset(&app_last, 0, sizeof(app_last));
+	memset(&helper_last, 0, sizeof(helper_last));
+	int app_seen = 0, helper_pid = 0, ending = 0, helper_seen = 0;
+	long long gone_at = 0, next_rec = 0, next_scan = 0, next_table = 0, next_owner = 0, next_cpu = 0, helper_cpu_ms = -1, helper_cpu_at = 0;
+	const long long t_start = now_ms();
+	for (;;)
+	{
+		const long long t = now_ms();
+		wk_try_open();
+		wk_pump(0);
+		if (t >= next_owner)
+		{
+			next_owner = t + 1000;
+			const int owner = pidfile_owner(pidfile);
+			if (owner > 0 && owner != (int)getpid())
+			{
+				note("watch: a newer watch (pid %d) takes over: this one ends", owner);
+				watch_end("superseded", "a newer watch took over");
+			}
+			if (rl_shutting_down())
+			{
+				note("watch: the console is shutting down or going to rest mode: the watch ends");
+				watch_end("shutdown", "the console is shutting down or going to rest mode");
+			}
+		}
+		if (t >= next_rec)
+		{
+			next_rec = t + ((ending || gone_at) ? 500 : 2000);
+			char text[240];
+			if (!gone_at)
+			{
+				RlProc a;
+				const int k = rl_proc_rec(r->pid, &a);
+				if (k == 0 || (k == 1 && a.stat == 5 /* SZOMB */))
+				{
+					gone_at = t;
+					note("watch: the app's process %d is gone%s, %lld ms after the watch started", r->pid, k == 1 ? " (a zombie)" : "", t - t_start);
+					watch_scan("the app's process is gone");
+					next_table = t + 10000;
+				}
+				else if (k == 1)
+				{
+					if (!app_seen || a.stat != app_last.stat || a.flag != app_last.flag || strcmp(a.wm, app_last.wm) != 0 ||
+						strcmp(a.lk, app_last.lk) != 0)
+						note("watch: the app %s", proc_text(&a, text, sizeof(text)));
+					// P_SINGLE_EXIT (0x400) or P_WEXIT (0x2000): the kernel is ending the process
+					if ((a.flag & (0x400 | 0x2000)) && !ending)
+					{
+						ending = 1;
+						note("watch: the app's process is ending (the kernel's exit has begun)");
+						watch_scan("the app is ending");
+						watch_kstack(r->pid);
+						next_table = t + 10000;
+					}
+					app_last = a;
+					app_seen = 1;
+				}
+				else if (!app_seen)
+				{
+					app_seen = 1;
+					note("watch: the app's process %d can't be read", r->pid);
+				}
+			}
+			long long beat = 0;
+			const int hp = helper_status(&beat);
+			if (hp > 1)
+			{
+				if (hp != helper_pid)
+				{
+					helper_pid = hp;
+					helper_cpu_ms = -1;
+					helper_seen = 0;
+					memset(&helper_last, 0, sizeof(helper_last));
+				}
+				RlProc h;
+				const int k = rl_proc_rec(hp, &h);
+				if (k == 1 && (!helper_seen || h.stat != helper_last.stat || strcmp(h.wm, helper_last.wm) != 0 || h.flag != helper_last.flag))
+					note("watch: the disc helper %s; its status file is %lld s old", proc_text(&h, text, sizeof(text)), (long long)time(NULL) - beat);
+				if (k != 1 && helper_seen && helper_last.pid)
+					note("watch: the disc helper's process %d %s", hp, k == 0 ? "is gone" : "can't be read");
+				if (k == 1)
+				{
+					if (t >= next_cpu || helper_cpu_ms < 0)
+					{
+						const long long ms = h.runtime_us / 1000;
+						if (helper_cpu_ms >= 0)
+							note("watch: the disc helper used %lld ms of CPU in the last %lld s; its status file is %lld s old", ms - helper_cpu_ms,
+								(t - helper_cpu_at) / 1000, (long long)time(NULL) - beat);
+						helper_cpu_ms = ms;
+						helper_cpu_at = t;
+						next_cpu = t + 30000;
+					}
+					helper_last = h;
+				}
+				else
+					memset(&helper_last, 0, sizeof(helper_last));
+				helper_seen = 1;
+			}
+		}
+		if (t >= next_scan)
+		{
+			next_scan = t + ((ending || gone_at) ? 2000 : 10000);
+			if ((ending || gone_at) && t >= next_table)
+			{
+				next_table = t + 30000;
+				watch_scan(gone_at ? "after the app went" : "while the app ends");
+			}
+			else
+				watch_scan(NULL);
+		}
+		if (gone_at && t - gone_at >= (long long)r->linger_s * 1000)
+		{
+			note("watch: %d s after the app's process went: the watch ends", r->linger_s);
+			watch_end("done", "the app's process went");
+		}
+		if (t - t_start > 12LL * 3600 * 1000)
+		{
+			note("watch: 12 hours: the watch ends");
+			watch_end("done", "12 hours");
+		}
+		usleep(250000);
+	}
+}
+
 int main(void)
 {
 	signal(SIGPIPE, SIG_IGN);
@@ -449,6 +1197,15 @@ int main(void)
 	field(req, "retry_ms", retry_text, sizeof(retry_text));
 	field(req, "guard_ms", guard_text, sizeof(guard_text));
 	field(req, "hard_ms", hard_text, sizeof(hard_text));
+	char watch_text[24], linger_text[24];
+	field(req, "watch", watch_text, sizeof(watch_text)); // 195
+	field(req, "linger_s", linger_text, sizeof(linger_text));
+	r.watch = atoi(watch_text) == 1;
+	r.linger_s = linger_text[0] ? atoi(linger_text) : 150;
+	if (r.linger_s < 1)
+		r.linger_s = 1;
+	if (r.linger_s > 600)
+		r.linger_s = 600;
 	r.guard_ms = rg_clamp_guard(guard_text[0] ? atoi(guard_text) : 0);
 	r.hard_ms = r.guard_ms ? rg_clamp_hard(hard_text[0] ? atoi(hard_text) : 0, r.guard_ms) : 0;
 	r.min_exit_ms = min_exit_text[0] ? atoi(min_exit_text) : 0;
@@ -485,6 +1242,8 @@ int main(void)
 	if (r.pid <= 1 || !r.launch[0] || g_state[0] != '/')
 		return 1; // a request without its fields: nothing is written (there is nowhere known to write it)
 	g_t0_ms = now_ms();
+	if (r.watch)
+		watch_main(&r); // 195: the session watch (it never returns)
 	{
 		// the log lies beside the state files; one that has grown past 64 KiB starts again
 		snprintf(g_log_path, sizeof(g_log_path), "%s", g_state);
@@ -542,8 +1301,24 @@ int main(void)
 	if (r.guard_ms)
 	{
 		int said = 0;
+		rl_klog_open(g_log_path); // 192: the kernel log of this leave
+		int dumps = 0; // 192: the old process's threads, after 4 s and 20 s still there
+		const long long guard_t0 = now_ms();
 		for (;;)
 		{
+			rl_klog_pump(0);
+			if (dumps < 2 && now_ms() - guard_t0 >= (dumps == 0 ? 4000 : 20000))
+			{
+				char threads[3000];
+				rl_threads(r.pid, threads, sizeof(threads));
+				// note() keeps 400 characters a line: the list goes out in pieces
+				const size_t total = strlen(threads);
+				if (total == 0)
+					note("guard: the process %d after %lld ms: its record can't be read", r.pid, now_ms() - guard_t0);
+				for (size_t at = 0; at < total; at += 320)
+					note("guard: the process %d after %lld ms (state, flags, first thread): %.320s", r.pid, now_ms() - guard_t0, threads + at);
+				dumps++;
+			}
 			if (cancelled())
 				cancel_exit();
 			if (exists_with(".alive"))
@@ -570,6 +1345,7 @@ int main(void)
 		int gone_polls = 0; // 186: polls in a row that found the closing title's app id gone (two make it so: one odd answer is not enough)
 		for (;;)
 		{
+			rl_klog_pump(0); // 192
 			if (cancelled())
 				cancel_exit();
 			const int alive = exists_with(".alive");

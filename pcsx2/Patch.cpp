@@ -17,6 +17,10 @@
 #include "IopMem.h"
 #include "Memory.h"
 #include "Patch.h"
+#ifdef __PROSPERO__
+#include "ps5/frontend/fe_pnach.h" // PS5SX2 2.41: which .pnach files are a game's (shared with the shelf)
+#include "VMManager.h"
+#endif
 #include "R5900.h"
 
 #include "IconsFontAwesome.h"
@@ -332,6 +336,49 @@ std::string Patch::GetPnachTemplate(const std::string_view serial, u32 crc, bool
 
 std::vector<std::string> Patch::FindPatchFilesOnDisk(const std::string_view serial, u32 crc, bool cheats, bool all_crcs)
 {
+#ifdef __PROSPERO__
+	// PS5SX2 2.41 (AI-assisted; the owner: "the naming is too strict"): ps5/frontend/fe_pnach.h decides which files are this game's
+	// (the serial or the CRC anywhere in the name, the game's file name, a folder named after either, a gametitle line; a file that
+	// names only other versions' CRCs is left out), the same rule the shelf and the settings page list them by. Letter case never
+	// matters. all_crcs (PCSX2's own patch list UI): other versions' files too.
+	{
+		const std::string disc = VMManager::GetDiscPath();
+		std::string stem(Path::GetFileTitle(disc));
+		if (disc.compare(0, 5, "/dev/") == 0)
+			stem.clear(); // a disc in the drive: no file name of its own
+		const fe::pnach::Game game{std::string(serial), crc, stem};
+		const char* const what = cheats ? "cheats" : "patches";
+		const std::string& dir = cheats ? EmuFolders::Cheats : EmuFolders::Patches;
+		std::vector<std::string> unmatched;
+		std::vector<std::string> ret;
+		for (const fe::pnach::Found& f : fe::pnach::List(dir, game, true, &unmatched))
+		{
+			if (!f.match.Ours())
+				continue;
+			const std::string rel = f.folder.empty() ? f.name : f.folder + "/" + f.name;
+			if (f.match.other_version && !all_crcs)
+			{
+				Console.WriteLn(Color_StrongOrange, fmt::format("Patch: {}/{} is for another version of this game (this one is CRC {:08X}): not loaded.",
+					what, rel, crc));
+				continue;
+			}
+			Console.WriteLn(fmt::format("Patch: {}/{}: {}.", what, rel, fe::pnach::WhyText(f.match.why)));
+			ret.push_back(f.path);
+		}
+		if (!unmatched.empty())
+		{
+			std::string list;
+			for (size_t i = 0; i < unmatched.size() && i < 8; i++)
+				list += (i ? ", " : "") + unmatched[i];
+			Console.WriteLn(Color_StrongOrange, fmt::format("Patch: {} file(s) in {}/ name no game (no serial, CRC or gametitle line){}: {}{}. Name them after "
+				"the game, or put them in a folder named after its serial.", unmatched.size(), what, stem.empty() ? "" : " and aren't named after this one",
+				list, unmatched.size() > 8 ? ", ..." : ""));
+		}
+		if (crc != 0 && !serial.empty())
+			fe::pnach::RememberCrc(Path::Combine(EmuFolders::Cache, "game-crcs.txt"), std::string(serial), crc); // for the shelf's lists
+		return ret;
+	}
+#endif
 	FileSystem::FindResultsArray files;
 	FileSystem::FindFiles(cheats ? EmuFolders::Cheats.c_str() : EmuFolders::Patches.c_str(),
 		GetPnachTemplate(serial, crc, true, true, all_crcs).c_str(),
@@ -790,6 +837,16 @@ void Patch::UpdateActivePatches(bool reload_enabled_list, bool verbose, bool ver
 	if (EmuConfig.EnableCheats)
 		c_count = EnablePatches(
 			&s_cheat_patches, s_enabled_cheats, apply_new_patches ? &s_just_enabled_cheats : nullptr);
+	else if (!Achievements::IsHardcoreModeActive())
+	{
+		// PS5SX2 2.41 (AI-assisted; daring_eagle8377, sp32083, slickkmoneytx: "my own cheats in data/PCSX2/cheats don't load"): a cheat file's
+		// cheats without a [group] name (a classic .pnach) apply on their own. The shelf and the settings page list cheats by group name and
+		// turn EnableCheats on with one, so such a file had no row and its cheats never ran. An empty list enables only the unnamed ones
+		// (EnablePatches: a named group must be in the list).
+		c_count = EnablePatches(&s_cheat_patches, std::vector<std::string>(), nullptr);
+		if (c_count > 0)
+			Console.WriteLn(Color_Green, fmt::format("Patch: {} cheat(s) without a group name are active (a .pnach without [names]).", c_count));
+	}
 	s_cheats_counts = c_count;
 	if (c_count > 0)
 		message.append_format("{}{}", message.empty() ? "" : "\n",

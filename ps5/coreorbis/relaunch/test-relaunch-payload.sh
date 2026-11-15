@@ -630,6 +630,39 @@ def case_guard_clamped():
     timing_after(r, r.app_end(), 1.0 + 0.1, "guard_clamp", "5 ms became 1 s", slack=1.2)
 
 
+
+# ---- 195: the session WATCH mode (request watch=1): it records and launches nothing; it ends linger_s after the app's process went, or at once when a
+# newer watch takes over (logs/session-watch.pid names another). ----
+def case_watch_lingers_then_ends():
+    r = Run("watch_linger", app_seconds=1.0, wait="", extra="watch=1\nlinger_s=2\n", forget_at=None)
+    r.sleep_until(0.5)
+    check("watch_linger", r.read(".started") is not None, ".started appears at once (the app waits for it)")
+    pidf = os.path.join(r.dir, "session-watch.pid")
+    owner = open(pidf).read().split("\n")[0] if os.path.exists(pidf) else ""
+    check("watch_linger", owner == str(r.p.pid), "session-watch.pid names the watch", owner)
+    rc = r.finish(timeout=15)
+    check("watch_linger", rc == 0, "exit code", str(rc))
+    check("watch_linger", not r.launches(), "a watch launches nothing", str(r.launches()))
+    check("watch_linger", r.status() == "done", "done says done", str(r.read(".done")))
+    wl = os.path.join(r.dir, "session-watch.log")
+    log = open(wl).read() if os.path.exists(wl) else ""
+    check("watch_linger", "watch: up" in log and "is gone" in log and "the watch ends" in log, "session-watch.log has the steps", log[-400:])
+    took = r.t_end - r.t0
+    check("watch_linger", 2.8 <= took <= 5.5, "ends about linger_s after the app went", "%.2f s" % took)
+    check("watch_linger", not os.path.exists(os.path.join(r.dir, "relaunch.log")), "a watch writes no relaunch.log")
+
+
+def case_watch_superseded():
+    r = Run("watch_super", app_seconds=30.0, wait="", extra="watch=1\n", forget_at=None)
+    r.sleep_until(1.0)
+    check("watch_super", r.p.poll() is None, "the watch runs while the app does")
+    open(os.path.join(r.dir, "session-watch.pid"), "w").write("999999\n1\n1\n")
+    r.finish(timeout=10)
+    check("watch_super", r.status() == "superseded", "done says superseded", str(r.read(".done")))
+    check("watch_super", r.t_end - r.t0 < 3.5, "ends within about a second of the newer watch", "%.2f s" % (r.t_end - r.t0))
+    check("watch_super", not r.launches(), "launches nothing")
+
+
 cases = [v for k, v in sorted(globals().items()) if k.startswith("case_") and callable(v)]
 t0 = time.time()
 with ThreadPoolExecutor(max_workers=len(cases)) as pool:

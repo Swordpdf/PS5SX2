@@ -56,6 +56,8 @@ struct AppConfig
 	TexturePackService texture_packs; // 2026-10-05: HD texture packs from archive.org (fe_texpacks.h); unset: no row
 	OnlinePatchService online_patches; // 2026-10-08: a game's patches and cheats from GitHub (fe_patchdl.h); unset: no row
 	bool system_menu = false; // 2026-10-08: the sheet for all games offers the PS2 system menu (App::SystemMenuChosen)
+	bool paged_sheet = false; // 2.41 (flag newsheet): a game's Settings tab as a home and pages (OptionsSheet::SetPaged)
+	int symbol_font = -1;     // 2.41 newsheet: Font Awesome Solid in the shelf's fonts (App::SheetIconCodepoints preloaded), -1: no icons
 	// vk-285-134 (AI-assisted): the PS2 BIOS. bios_present looks again and says whether there is one (null: never asked);
 	// while there isn't, the shelf says so (bios_problem: what was found instead) and a game picked stays on the shelf.
 	std::function<bool()> bios_present;
@@ -242,6 +244,7 @@ private:
 	void CloseSheet();
 	void UpdateSheet(double dt, const Input& in);
 	bool SheetMove(int dir); // false at either end
+	bool SheetWrap(int dir); // 2.41: to the other end (a fresh press at an end)
 	void BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint32_t accent);
 	void RefreshBadges();
 	// 2026-10-05: the sheet's HD texture pack row (fe_texpacks.h): its buttons, what it shows, its help line, and the
@@ -250,6 +253,10 @@ private:
 	std::string OnlinePatchValue() const; // 2026-10-08: the "Get patches and cheats" row's value
 	// 180: the PS5SX2 group's rows (fe_update.h): a press on either, what they show and say, and the close after the installer started.
 	void UpdateRowPress(const OptionsSheet::Row& row, double now);
+	// 192: L2 on the shelf opens System update (OpenUpdate); the button and its hint only where the sheet has the row (not a game tile's copy).
+	void OpenUpdate();
+	bool UpdateButtonShown() const;
+	std::string UpdateHintLabel() const;
 	void ReloadTileToggle(double now); // b185
 	std::string UpdateRowValue(const OptionsSheet::Row& row) const;
 	std::string UpdateRowHelp(const OptionsSheet::Row& row) const;
@@ -358,6 +365,7 @@ private:
 	void BuildDiscAsk(std::vector<UiVertex>& ui, float W, float H, float k, uint32_t accent);
 	bool m_ask_on = false;
 	std::string m_ask_title, m_ask_serial;
+	bool m_drive_picked = false; // 2.41: the drive's shelf entry was picked: the next question is shown whatever PS5SX2/DiscInsert says
 	int m_ask_sel = 0;     // 0 play from the disc, 1 copy it first
 	float m_ask_anim = 0;  // the panel's fade
 	void BuildAccount(std::vector<UiVertex>& ui, float W, float H, float k, uint32_t accent);
@@ -470,6 +478,11 @@ private:
 	bool m_sheet_global = false;
 	float m_sheet_anim = 0;
 	int m_sheet_row = 0;
+	std::map<std::string, int> m_sheet_last_page; // 2.41 newsheet: the page last opened, by the sheet's file (its row has the focus on the home)
+	void SheetFocusPage(int page);                // 2.41 newsheet: the focus on that page's row of the home (else the first row)
+public:
+	static std::vector<uint32_t> SheetIconCodepoints(); // 2.41 newsheet: the icons the pages and the Recommended row draw (Font Awesome Solid)
+private:
 	float m_sheet_scroll = 0, m_sheet_scroll_target = 0;
 	int m_sheet_held_v = 0, m_sheet_held_h = 0;
 	double m_sheet_held_for = 0, m_sheet_next_repeat = 0;
