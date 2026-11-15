@@ -15,6 +15,7 @@ to the releases:
 | `libarchive/` | libarchive 3.8.9 (`libarchive-3.8.9.tar.xz`, libarchive.org/downloads) | `888c934f9d95648ecb9163dc8e23ab80a476ecb81a8f1154704a227b5b676dde` | BSD 2-Clause (`libarchive/COPYING`); the BLAKE2 files are CC0/OpenSSL/Apache 2.0, used under CC0 |
 | `mbedtls/` | Mbed TLS 3.6.7 (`mbedtls-3.6.7.tar.bz2`, github.com/Mbed-TLS/mbedtls releases) | `a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6` | Apache-2.0 OR GPL-2.0-or-later (`mbedtls/LICENSE`), used under GPL-2.0-or-later |
 | `libnfs/` | libnfs 18.0.0, git `7613236464317bee2d9636f087f995148de4db27` (github.com/sahlberg/libnfs) | (a git commit, no tarball) | LGPL-2.1-or-later (`libnfs/LICENCE-LGPL-2.1.txt`; `COPYING` says which files), used under GPL-3.0; the XDR files are BSD (`LICENCE-BSD.txt`) |
+| `libsmb2/` | libsmb2 6.2, git tag `libsmb2-6.2`, `d67e213a5c4e7e4969fd81f0b95e4ca5831fbba1` (github.com/sahlberg/libsmb2) | (a git commit, no tarball) | LGPL-2.1-or-later (`libsmb2/LICENCE-LGPL-2.1.txt`) for most files, others below; used under GPL-3.0 |
 
 - **zlib:** inflate only: `adler32.c crc32.c inffast.c inflate.c inftrees.c zutil.c` and their headers
   (`gzguts.h` because `zutil.c` includes it). No deflate, no gz* file functions.
@@ -58,4 +59,13 @@ to the releases:
   SIGPIPE handler off); `config_linux.h` is the same build on Linux, for `ps5/coreorbis/tests/nfs/test-nfs.sh`. No
   Kerberos, no TLS, no NLM/NSM/rquota.
 
-`ps5/coreorbis/Makefile.vk` builds them (`CHD_CSRCS`, `LZ4_CSRCS`, `LIBARCHIVE_CSRCS`, `MBEDTLS_CSRCS`, `NFS_CSRCS`, and `SZ7_CSRCS` from `3rdparty/lzma`).
+- **libsmb2**: SMB shares (`ps5/coreorbis/orbis-shims/OrbisSmb.cpp`). `lib/` (the `.c` files of its CMake build, so
+  without `krb5-wrapper.c`, and the `.h` files), `include/smb2/`, and `include/`'s `libsmb2-private.h`,
+  `portable-endian.h`, `slist.h` and `asprintf.h`, byte-identical to the commit except `lib/socket.c` (`SO_NOSIGPIPE`,
+  marked in the file). `config.h` is ours; `config_ps5.h` and `config_linux.h` are libsmb2's CMake output with
+  `prospero-cmake` and on Linux. Files under other terms than the LGPL: `lib/aes.*`, `lib/md5.*` and
+  `include/portable-endian.h` are public domain; `lib/md4c.c` and `lib/md4.h` are derived from the RSA Data Security,
+  Inc. MD4 Message-Digest Algorithm (RFC 1320; RSA's notice is in the files); `lib/sha*`, `lib/usha.c` and `lib/hmac.c`
+  are the RFC 4634 code and `lib/hmac-md5.*` the RFC 2104 code, without notices.
+
+`ps5/coreorbis/Makefile.vk` builds them (`CHD_CSRCS`, `LZ4_CSRCS`, `LIBARCHIVE_CSRCS`, `MBEDTLS_CSRCS`, `NFS_CSRCS`, `SMB_CSRCS`, and `SZ7_CSRCS` from `3rdparty/lzma`).

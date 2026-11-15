@@ -79,6 +79,7 @@ constexpr const char* kCheatDiscKey = "PS5SX2/CheatDisc"; // vk-285-139: gs.ini,
 constexpr const char* kGameFoldersKey = "PS5SX2/GameFolders"; // folders separated by ';'
 constexpr const char* kBiosFolderKey = "PS5SX2/BiosFolder";
 constexpr const char* kNfsSharesKey = "PS5SX2/NfsShares"; // nfs:// addresses separated by ';'
+constexpr const char* kSmbSharesKey = "PS5SX2/SmbShares"; // smb:// addresses separated by ';'
 // 2026-10-16 (swordpdf: the texture replacements folder should be the one you set): the textures folder, a full path; unset: /data/PCSX2/textures
 // and the drives' texture folders as always. (The two switches under the folder rows are fe_roots.h's kScanUsbKey and kScanSubfoldersKey.)
 constexpr const char* kTexturesDirKey = "PS5SX2/TexturesDir";
@@ -106,6 +107,7 @@ public:
 		GameFolders, // vk-285-135: the sheet for all games: the game folders (the app's folder picker); 2026-10-16: once one is added, the only ones listed
 		BiosFolder,  // vk-285-135: where the BIOS is looked for (the folder picker); 2026-10-16: the only place, once set
 		NfsShares,   // vk-285-135: NFS shares' addresses (the app's list, the PS5's keyboard)
+		SmbShares,   // SMB shares' addresses, as NfsShares
 		TexturesFolder, // 2026-10-16: where texture packs are read from and HD packs are put (kTexturesDirKey; the folder picker)
 		CheatDisc,   // vk-285-139: the sheet for all games: the cheat disc (kCheatDiscKey, one of the shelf's images)
 		HomeTile,    // 2.12: a game's sheet: its tile on the PS5 home screen (the app asks the helper and draws the value and help: fe_gametile.h)

@@ -15,6 +15,7 @@
 #include <fcntl.h>
 
 #include "OrbisNfs.h"
+#include "OrbisSmb.h"
 
 extern "C" int sceKernelOpen(const char*, int, int);
 extern "C" int sceKernelGetdents(int, char*, int);
@@ -37,13 +38,15 @@ struct OrbisDIR
     bool eof;
     dirent entry; // vk-285-112: this directory's own (see above)
     void* nfs = nullptr; // vk-285-135: a folder on an NFS share (OrbisNfs.h), listed by OrbisNfs; fd is -1 then
+    bool smb = false; // `nfs` is an OrbisSmb folder
 };
 
 extern "C" DIR* opendir(const char* name)
 {
-    if (OrbisNfs::IsPath(name)) // vk-285-135: /nfs/<host>/... is a share's folder, not the kernel's
+    const bool smb = OrbisSmb::IsPath(name);
+    if (smb || OrbisNfs::IsPath(name)) // vk-285-135: /nfs/<host>/... is a share's folder, not the kernel's
     {
-        void* nfs = OrbisNfs::OpenDir(name);
+        void* nfs = smb ? OrbisSmb::OpenDir(name) : OrbisNfs::OpenDir(name);
         if (!nfs)
             return nullptr;
         OrbisDIR* d = new OrbisDIR();
@@ -52,6 +55,7 @@ extern "C" DIR* opendir(const char* name)
         d->length = 0;
         d->eof = false;
         d->nfs = nfs;
+        d->smb = smb;
         return reinterpret_cast<DIR*>(d);
     }
     const int flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
@@ -72,7 +76,10 @@ extern "C" struct dirent* readdir(DIR* dirp)
     if (!d || d->eof)
         return nullptr;
     if (d->nfs)
-        return OrbisNfs::ReadDir(d->nfs, &d->entry) ? &d->entry : nullptr;
+    {
+        const bool got = d->smb ? OrbisSmb::ReadDir(d->nfs, &d->entry) : OrbisNfs::ReadDir(d->nfs, &d->entry);
+        return got ? &d->entry : nullptr;
+    }
 
     // Consume one record from the current buffer.
     if (d->offset + 8 <= d->length)
@@ -142,7 +149,10 @@ extern "C" int closedir(DIR* dirp)
         return -1;
     if (d->nfs)
     {
-        OrbisNfs::CloseDir(d->nfs);
+        if (d->smb)
+            OrbisSmb::CloseDir(d->nfs);
+        else
+            OrbisNfs::CloseDir(d->nfs);
         delete d;
         return 0;
     }
