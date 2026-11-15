@@ -217,6 +217,21 @@ bool OrbisCachedRead(const char* path, std::string& out)
 	return ReadSmall(path, out); // not refreshed yet: this once, directly
 }
 
+// 2.50 (the owner's pick, 2026-11-15): the driver's cache wait after every compute pass (vk-285-133-recreated 8238634; the driver
+// leaves it out while vk_nocsbarrier is on) is for Lossless Scaling, whose passes read images an earlier pass stored. Every other game
+// gets 2.40's dispatches: PS5SX2's own frame generation never needed the wait, and on a base PS5 with old firmware a wait that has
+// to wait can cost a vblank. GSDeviceVK.cpp holds the two (weak here: the host tests link this file without it). The flag
+// vk_csbarrier keeps the wait on for every game.
+extern bool g_orbis_fg_wanted __attribute__((weak));
+extern int g_orbis_fg_method __attribute__((weak));
+
+bool OrbisComputeBarrierWanted()
+{
+	if (&g_orbis_fg_wanted == nullptr || &g_orbis_fg_method == nullptr)
+		return true;
+	return g_orbis_fg_wanted && g_orbis_fg_method == 1;
+}
+
 // The Vulkan driver's live flags (ps5vk_device.c, weak there): answered for files in the flags folder.
 extern "C" bool ps5vk_live_flag_hook(const char* path, bool* on)
 {
@@ -225,6 +240,12 @@ extern "C" bool ps5vk_live_flag_hook(const char* path, bool* on)
 		return false;
 	const char* name = path + prefix.size();
 	std::lock_guard<std::mutex> lock(s_snap_mutex);
+	if (std::strcmp(name, "vk_nocsbarrier") == 0 && !OrbisComputeBarrierWanted() &&
+		!(s_snap_ready && Has(s_snap_flags, "vk_csbarrier")))
+	{
+		*on = true; // 2.50: no wait after a compute pass (above)
+		return true;
+	}
 	if (!s_snap_ready)
 		return false;
 	*on = Has(s_snap_flags, name);

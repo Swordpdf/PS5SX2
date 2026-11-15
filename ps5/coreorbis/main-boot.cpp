@@ -5663,6 +5663,11 @@ int main()
         printf("[boot] frame generation method: %s (PS5SX2/FrameGenMethod%s)\n",
                g_orbis_fg_method == 1 ? "Lossless Scaling, with your own /data/PCSX2/lossless/Lossless.dll" : "PS5SX2's own",
                s_base_si.ContainsValue("PS5SX2", "FrameGenMethod") ? "" : " not set: the default");
+      // 2.50: the driver's cache wait after each compute pass, for Lossless Scaling only (orbis_paths.cpp)
+      extern bool OrbisComputeBarrierWanted();
+      printf("[boot] the driver's wait after each compute pass: %s\n",
+             OrbisComputeBarrierWanted() ? "on (Lossless Scaling's passes read what the pass before stored)"
+                                         : "off (only Lossless Scaling needs it; flag vk_csbarrier keeps it on)");
     }
     fflush(stdout);
     // 2.11: with a driver that has no 120 Hz output of its own (2.03 to 2.10's), the app's switch (flag fg120, opt-in; flag nofg120
