@@ -1,0 +1,37 @@
+#version 450
+// PS5SX2 (2026-11-14, AI-assisted): the host test's stand-in for the generate shader (resource 256 + 49): the bindings the
+// chain writes for it (lsfg_generate.cpp: buffer, 2 samplers, 5 images, the output), declared out of order and with
+// numbers far from 0..8 so that lsfg_translate.cpp's renumbering is what makes them line up. It writes the previous
+// and the current frame mixed by the buffer's timestamp (0.5), which the test reads back.
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 40, rgba8) uniform writeonly image2D out_image;   // -> 8
+layout(set = 0, binding = 21) uniform texture2D current_frame;             // -> 4
+layout(set = 0, binding = 12) uniform sampler edge_sampler;                // -> 2
+layout(set = 0, binding = 20) uniform texture2D previous_frame;            // -> 3
+layout(set = 0, binding = 22) uniform texture2D motion;                    // -> 5
+layout(set = 0, binding = 23) uniform texture2D detail1;                   // -> 6
+layout(set = 0, binding = 24) uniform texture2D detail2;                   // -> 7
+layout(set = 0, binding = 11) uniform sampler border_sampler;              // -> 1
+layout(set = 0, binding = 10) uniform Constants                            // -> 0
+{
+	uvec2 input_offset;
+	uint first_iter;
+	uint first_iter_s;
+	uint advanced_color_kind;
+	uint hdr_support;
+	float resolution_inv_scale;
+	float timestamp;
+	float ui_threshold;
+} cb;
+
+void main()
+{
+	const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	const ivec2 size = imageSize(out_image);
+	if (any(greaterThanEqual(p, size)))
+		return;
+	const vec2 uv = (vec2(p) + 0.5) / vec2(size);
+	const vec4 a = textureLod(sampler2D(previous_frame, edge_sampler), uv, 0.0);
+	const vec4 b = textureLod(sampler2D(current_frame, edge_sampler), uv, 0.0);
+	imageStore(out_image, p, mix(a, b, cb.timestamp));
+}

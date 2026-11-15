@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <dirent.h> // 2026-11-14: Lossless.dll for the Frame gen method row
+#include <strings.h>
 
 namespace fe
 {
@@ -464,6 +466,12 @@ const std::vector<OptionGroup>& OptionGroups()
 					"Shows a frame made between two of the game's: a 60 fps game at 120, a PAL game at 50 fps at 100, a 30 fps game at 60. "
 					"The 120 Hz output needs a TV that takes it and 120 Hz Output on in the PS5's Video Output settings (not at 1080p); without it "
 					"only games at 30 fps or less get frames. Only while the game holds its frame rate. Experimental.",
+					true),
+				// 2026-11-14 (AI-assisted): the frame generation method (GSDeviceVK.cpp, orbis-shims/lsfg). The help box adds whether
+				// Lossless.dll is on this console (OptionsSheet::Help).
+				Seg("PS5SX2/FrameGenMethod", "Frame gen method", "PS5SX2", "FG %", {{"PS5SX2", "PS5SX2"}, {"Lossless", "Lossless Scaling"}},
+					"How Frame generation makes its frames. Lossless Scaling needs your own Lossless.dll from Lossless Scaling's folder on a PC, "
+					"copied to /data/PCSX2/lossless (none comes with PS5SX2); without it PS5SX2's own is used. Experimental.",
 					true),
 			}},
 		{"Graphics",
@@ -1150,6 +1158,19 @@ std::string OptionsSheet::Help(const Row& r) const
 					list += (list.empty() ? "" : ", ") + name + " " + shown;
 				}
 				h += list.empty() ? " PCSX2 has no fixes of these for this game." : " This game's own fixes: " + list + ".";
+			}
+			else if (r.def->key == "PS5SX2/FrameGenMethod")
+			{
+				// 2026-11-14: whether Lossless.dll is there (any case, as GSDeviceVK.cpp finds it), so that the row says when the
+				// method is unavailable. Whether the console's GPU takes its shaders shows only in a game (boot.log, "[fg] lsfg:").
+				bool found = false;
+				if (DIR* dir = opendir("/data/PCSX2/lossless"))
+				{
+					while (const dirent* entry = readdir(dir))
+						found |= strcasecmp(entry->d_name, "Lossless.dll") == 0;
+					closedir(dir);
+				}
+				h = found ? "Lossless.dll is on this console. " + h : "Lossless Scaling: unavailable (no Lossless.dll on this console). " + h;
 			}
 			else if (r.def->manual_fix)
 			{

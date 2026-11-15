@@ -1883,6 +1883,16 @@ static bool orbis_mtvu_after_gamedb(bool from_settings)
 // two presents a frame at 120 Hz never fill the swapchain's queue. Applied to the settings layer at the boot and at each live reload
 // (which rebuilds the layer from the files).
 extern bool g_orbis_fg_wanted;
+// 2026-11-14 (AI-assisted): PS5SX2/FrameGenMethod (GSDeviceVK.cpp): "PS5SX2" (the default) or "Lossless" (Lossless Scaling's frame
+// generation, from the player's own /data/PCSX2/lossless/Lossless.dll). Read with PS5SX2/FrameGeneration, before the GS opens: the
+// device is made with what the method needs.
+extern int g_orbis_fg_method;
+static int orbis_fg_method_from(MemorySettingsInterface& si)
+{
+  std::string v;
+  si.GetStringValue("PS5SX2", "FrameGenMethod", &v);
+  return v == "Lossless" ? 1 : 0;
+}
 static void orbis_fg_hold(MemorySettingsInterface& si)
 {
   if (!g_orbis_fg_wanted)
@@ -1984,6 +1994,11 @@ void orbis_reload_gs_ini_cpu()
   if ((trial.GetBoolValue("PS5SX2", "FrameGeneration", false) && !g_sw_renderer) != g_orbis_fg_wanted)
   {
     printf("[gsini] frame generation stays %s until the next launch\n", g_orbis_fg_wanted ? "on" : "off");
+    kept = true;
+  }
+  if (orbis_fg_method_from(trial) != g_orbis_fg_method) // 2026-11-14: the same for its method
+  {
+    printf("[gsini] the frame generation method stays %s until the next launch\n", g_orbis_fg_method == 1 ? "Lossless Scaling" : "PS5SX2's own");
     kept = true;
   }
 #endif
@@ -5633,6 +5648,12 @@ int main()
                                          s_game_ini_path + (access(s_game_ini_path.c_str(), F_OK) == 0 ? " (found)" : " (none)")) +
               " or in gs.ini)";
       printf("[boot] frame generation: %s\n", why.c_str());
+      // 2026-11-14: its method (GSDeviceVK.cpp reads the DLL and logs "[fg] lsfg:" lines when it is Lossless Scaling).
+      g_orbis_fg_method = orbis_fg_method_from(s_base_si);
+      if (g_orbis_fg_wanted || g_orbis_fg_method == 1)
+        printf("[boot] frame generation method: %s (PS5SX2/FrameGenMethod%s)\n",
+               g_orbis_fg_method == 1 ? "Lossless Scaling, with your own /data/PCSX2/lossless/Lossless.dll" : "PS5SX2's own",
+               s_base_si.ContainsValue("PS5SX2", "FrameGenMethod") ? "" : " not set: the default");
     }
     fflush(stdout);
     // 2.11: with a driver that has no 120 Hz output of its own (2.03 to 2.10's), the app's switch (flag fg120, opt-in; flag nofg120

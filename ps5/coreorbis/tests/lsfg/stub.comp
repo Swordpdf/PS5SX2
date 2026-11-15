@@ -1,0 +1,14 @@
+#version 450
+// PS5SX2 (2026-11-14, AI-assisted): the host test's stand-in for the LSFG passes that are not checked (tests/lsfg):
+// no bindings, so it fits any of the chain's pipeline layouts. It declares Float16 and the Vulkan memory model, as
+// the real shaders do, so that the test device must enable both.
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_memory_scope_semantics : require
+#pragma use_vulkan_memory_model
+layout(local_size_x = 8, local_size_y = 8) in;
+void main()
+{
+	float16_t h = float16_t(gl_LocalInvocationIndex);
+	if (h < float16_t(0.0))
+		return;
+}
