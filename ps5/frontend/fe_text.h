@@ -69,6 +69,8 @@ public:
 
 	// Appends a filled rounded rectangle (top-left x, y).
 	static void AddRoundedRect(std::vector<UiVertex>& out, float x, float y, float w, float h, float radius, uint32_t color);
+	// vk-285-327: appends a rounded ring: the rectangle's edge, `thickness` pixels wide inwards (ui.frag's mode 3 + thickness).
+	static void AddRoundedRing(std::vector<UiVertex>& out, float x, float y, float w, float h, float radius, float thickness, uint32_t color);
 
 	// Ascent and descent (positive) of the text font at `px`.
 	float Ascent(float px) const;

@@ -54,8 +54,8 @@ std::unique_ptr<HTTPDownloader> HTTPDownloader::Create(std::string user_agent)
 // HostSys.cpp (excluded: needs cpuinfo lib) replacements.
 const CPUInfo& GetCPUInfo()
 {
-  // PS5 Pro: 8C/16T Zen2. poc2 measured ncpu=16.
-  static const CPUInfo info = {"AMD Zen2 (PS5 Pro)", 8, 0, 16, 1};
+  // PS5 and PS5 Pro: 8C/16T Zen2. poc2 measured ncpu=16. (vk-285-325: the name no longer says Pro, which the base PS5 showed too.)
+  static const CPUInfo info = {"AMD Zen 2 (PS5)", 8, 0, 16, 1};
   return info;
 }
 

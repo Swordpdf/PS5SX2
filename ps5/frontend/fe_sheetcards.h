@@ -139,6 +139,9 @@ struct Painter
 {
 	std::function<void(float x, float y, float w, float h, float radius, uint32_t color)> rect;
 	std::function<float(const char* text, float x, float baseline, float px, uint32_t color, float weight, Fonts::Align align)> text;
+	// vk-285-327: a rounded ring (the rectangle's edge, `thickness` wide inwards), where the caller can draw one (the shelf: ui.frag's
+	// mode 3); without it the focus is drawn as filled rectangles on one another, as before (the in-game menu).
+	std::function<void(float x, float y, float w, float h, float radius, float thickness, uint32_t color)> ring;
 };
 
 // Where a value comes from, which is its chip's colour.
@@ -265,9 +268,21 @@ inline void FocusRing(const Painter& paint, const float accent[3], const float p
 	float k)
 {
 	const auto lift = [](float v, float t) { return v + (1.0f - v) * t; };
-	paint.rect(x - 9 * k, y - 9 * k, w + 18 * k, h + 18 * k, radius + 9 * k, Col(accent[0], accent[1], accent[2], 0.14f));
-	paint.rect(x - 3 * k, y - 3 * k, w + 6 * k, h + 6 * k, radius + 3 * k,
-		Col(lift(accent[0], 0.2f), lift(accent[1], 0.2f), lift(accent[2], 0.2f), 0.96f));
+	if (paint.ring)
+	{
+		// vk-285-327 (swordpdf: "the highlighted selection box lingers"): the band and the outline as rings that end where the next
+		// layer starts (with a pixel under it, so no seam shows). As filled rectangles under the fill, they showed through it while a
+		// page rose into place or the sheet slid away (everything faded at once): the box came out solid in the accent colour.
+		paint.ring(x - 9 * k, y - 9 * k, w + 18 * k, h + 18 * k, radius + 9 * k, 6 * k + 1.0f, Col(accent[0], accent[1], accent[2], 0.14f));
+		paint.ring(x - 3 * k, y - 3 * k, w + 6 * k, h + 6 * k, radius + 3 * k, 3 * k + 1.0f,
+			Col(lift(accent[0], 0.2f), lift(accent[1], 0.2f), lift(accent[2], 0.2f), 0.96f));
+	}
+	else
+	{
+		paint.rect(x - 9 * k, y - 9 * k, w + 18 * k, h + 18 * k, radius + 9 * k, Col(accent[0], accent[1], accent[2], 0.14f));
+		paint.rect(x - 3 * k, y - 3 * k, w + 6 * k, h + 6 * k, radius + 3 * k,
+			Col(lift(accent[0], 0.2f), lift(accent[1], 0.2f), lift(accent[2], 0.2f), 0.96f));
+	}
 	paint.rect(x, y, w, h, radius, Col(lift(panel[0], 0.15f) * 0.94f + accent[0] * 0.06f, lift(panel[1], 0.15f) * 0.94f + accent[1] * 0.06f,
 		lift(panel[2], 0.15f) * 0.94f + accent[2] * 0.06f));
 }
@@ -366,9 +381,24 @@ inline void Draw(const Context& c)
 			goal[3] = p.h * k - 10 * k;
 		}
 	}
+	// vk-285-327 (swordpdf: "the highlighted selection box lingers there for a bit"): the glide (focus_drawn towards focus_goal, the
+	// caller's) is kept relative to the list's content: its left edge and its top at no scroll. In screen coordinates the box chased the
+	// panel: closing the sheet slid the panel away and left the box where it was until the sheet was gone, and a scroll made it trail the
+	// rows. Now the panel's slide and the list's scroll carry it at once, and only a move between rows glides.
+	const float ox = bx, oy = py(0.0f);
 	if (c.focus_goal)
-		std::copy(goal, goal + 4, c.focus_goal);
-	const float* const fr = (c.focus_drawn && c.focus_drawn[3] > 0 && goal[3] > 0) ? c.focus_drawn : goal;
+	{
+		const float rel[4] = {goal[0] - ox, goal[1] - oy, goal[2], goal[3]};
+		std::copy(rel, rel + 4, c.focus_goal);
+	}
+	float fr[4] = {goal[0], goal[1], goal[2], goal[3]};
+	if (c.focus_drawn && c.focus_drawn[3] > 0 && goal[3] > 0)
+	{
+		fr[0] = c.focus_drawn[0] + ox;
+		fr[1] = c.focus_drawn[1] + oy;
+		fr[2] = c.focus_drawn[2];
+		fr[3] = c.focus_drawn[3];
+	}
 	if (fr[3] > 0)
 		FocusRing(c.paint, c.accent, c.panel, fr[0], fr[1], fr[2], fr[3], (focus_tile ? 30.0f : 26.0f) * k, k);
 

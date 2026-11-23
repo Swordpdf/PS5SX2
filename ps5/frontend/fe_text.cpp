@@ -419,6 +419,15 @@ void Fonts::AddRoundedRect(std::vector<UiVertex>& out, float x, float y, float w
 	out.insert(out.end(), {a, b, c, a, c, d});
 }
 
+void Fonts::AddRoundedRing(std::vector<UiVertex>& out, float x, float y, float w, float h, float radius, float thickness, uint32_t color)
+{
+	const size_t first = out.size();
+	AddRoundedRect(out, x, y, w, h, radius, color);
+	const float mode = 3.0f + std::max(0.0f, thickness);
+	for (size_t i = first; i < out.size(); i++)
+		out[i].p3 = mode;
+}
+
 void Fonts::Raster(const char* utf8, float px, std::vector<uint8_t>& alpha, int& w, int& h, int& baseline_out) const
 {
 	const FontData& f = *m_fonts[0];

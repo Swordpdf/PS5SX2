@@ -29,7 +29,12 @@ void main()
 		vec2 q = abs(v_uv) - v_params.xy + vec2(v_params.z);
 		float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - v_params.z;
 		a = 1.0 - smoothstep(-0.75, 0.75, d);
+		// vk-285-327: mode 3 + t, a rounded ring t pixels wide inside the rectangle's edge (the options sheet's focus outline):
+		// as rings, the focus's layers no longer lie under one another, so fading them together fades the focus, where the
+		// outline under a translucent fill showed through as a bright box.
+		if (v_params.w > 2.5)
+			a *= smoothstep(-0.75, 0.75, d + (v_params.w - 3.0));
 	}
 	// Mode 2 draws RGBA achievement badges using the same vertex pipeline (AI-assisted).
-	o_color = v_params.w > 1.5 ? sample_color * v_color : vec4(v_color.rgb, v_color.a * a);
+	o_color = (v_params.w > 1.5 && v_params.w < 2.5) ? sample_color * v_color : vec4(v_color.rgb, v_color.a * a);
 }

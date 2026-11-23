@@ -2142,6 +2142,10 @@ void App::Build(FrameDesc& f, const std::string& clock)
 	if (m_bios_anim > 0.001f)
 		BuildBiosChoice(ui, W, H, k, accent); // bioscheck
 	BuildSearch(ui, W, H, k, accent); // 2.11: the search line and its keyboard, over everything but the disc question
+	// vk-285-325: the launch fade takes the UI too. It took only the scene, so the shelf's last frame was its text over black: ps5vk
+	// closed VideoOut with the swapchain and the screen went black, while RADV keeps the last frame on screen until the game's first.
+	if (m_launching)
+		FadeRange(ui, 0, ui.size(), f.fade);
 	f.ui_images = m_achievement_images; // 2.11: the texture changes among the UI vertices (badges, the disc being copied)
 }
 
@@ -3687,6 +3691,9 @@ void App::BuildSheet(std::vector<UiVertex>& ui, float W, float H, float k, uint3
 		sheetcards::Context c;
 		c.paint.rect = [&ui](float rx, float ry, float rw, float rh, float radius, uint32_t color) {
 			Fonts::AddRoundedRect(ui, rx, ry, rw, rh, radius, color);
+		};
+		c.paint.ring = [&ui](float rx, float ry, float rw, float rh, float radius, float thickness, uint32_t color) { // vk-285-327
+			Fonts::AddRoundedRing(ui, rx, ry, rw, rh, radius, thickness, color);
 		};
 		c.paint.text = [&ui, this](const char* s, float tx, float baseline, float px, uint32_t color, float weight, Fonts::Align align) {
 			return m_fonts->AddText(ui, s, tx, baseline, px, color, weight, align);

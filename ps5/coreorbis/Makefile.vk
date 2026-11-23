@@ -368,8 +368,7 @@ FE_SRCS := $(FE_DIR)/fe_app.cpp $(FE_DIR)/fe_covers.cpp $(FE_DIR)/fe_games.cpp \
 # vk-285-50: Project Nayuki's QR Code generator (MIT, C) for the shelf's QR tile, and the files
 # fe_ps5.cpp embeds from frontend/assets (the settings page, its icons, Font Awesome's brands font).
 FE_CSRCS := $(FE_DIR)/third_party/qrcodegen/qrcodegen.c $(FE_DIR)/fe_sevenzip.c
-FE_ASSETS := $(wildcard $(FE_DIR)/assets/web/*) $(wildcard $(FE_DIR)/assets/fonts/*.otf) $(FE_DIR)/assets/presets.ini $(FE_DIR)/assets/hd-pack-sources.json $(FE_DIR)/assets/launchbox-covers.txt \
-  $(FE_DIR)/assets/openps2bios/OpenPS2BIOS-0.5.bin $(FE_DIR)/assets/openps2bios/LICENSE
+FE_ASSETS := $(wildcard $(FE_DIR)/assets/web/*) $(wildcard $(FE_DIR)/assets/fonts/*.otf) $(FE_DIR)/assets/presets.ini $(FE_DIR)/assets/hd-pack-sources.json $(FE_DIR)/assets/launchbox-covers.txt
 FE_HDRS := $(wildcard $(FE_DIR)/*.h) $(FE_DIR)/fe_shaders.inc $(FE_DIR)/third_party/qrcodegen/qrcodegen.h $(FE_ASSETS)
 
 SRCS := $(SRCS) $(PCSX2)/pcsx2/USB/usb-mic/usb-mic.cpp \
@@ -635,9 +634,4 @@ clean:
 
 .PHONY: all clean
 
-# fix181 (AI-assisted): OPENBIOS_EMBED=0 leaves OpenPS2BIOS (4 MB) out of the eboot; the package then needs PPSA99203/openps2bios/OpenPS2BIOS-0.5.bin and
-# LICENSE (fe_ps5.cpp reads them on first use). For the console test of the slow "back to the menu" exec (180's eboot is 4.4 MB bigger than 179's).
-OPENBIOS_EMBED ?= 1
-ifeq ($(OPENBIOS_EMBED),0)
-$(OBJDIR)/frontend/fe_ps5.o: CXXFLAGS += -DFE_OPEN_BIOS_FILE
-endif
+# 2.60: PS5SX2 no longer ships OpenPS2BIOS (fe_ps5.cpp orbis_frontend_open_bios_image), so OPENBIOS_EMBED (fix181) is gone with it.

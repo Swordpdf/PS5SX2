@@ -411,10 +411,7 @@ const std::vector<OptionGroup>& OptionGroups()
 					"On: each games folder is listed together with the folders inside it, one level down. Off: only the disc images directly in "
 					"the folder itself. Read when PS5SX2 starts.",
 					true),
-				// bioscheck (2026-10-29, AI-assisted): the open-source BIOS PS5SX2 ships (orbis-shims/OrbisOpenBios.h), chosen on the shelf's
-				// BIOS question or here, and turned off here again.
-				Toggle("PS5SX2/OpenBios", "OpenPS2BIOS (experimental)", "false", "Open BIOS %",
-					"On: with no PS2 BIOS of your own, games start with OpenPS2BIOS, the open-source BIOS PS5SX2 ships (experimental: some games don't work yet; PS1 discs, audio CDs and DVD videos can't start). A BIOS of your own in /data/PCSX2/bios always comes first. Off: games need your own BIOS. Read at each start."),
+				// 2.60 (swordpdf, 2026-11-23: "we never ship the ps2 open source bios again"): the OpenPS2BIOS row is gone with the open BIOS.
 			},
 			kTabSettings, false, true},
 		// vk-285-137 (AI-assisted; swordpdf: "add an option to hide games from the shelf"): a game off the shelf (its own file
@@ -447,8 +444,8 @@ const std::vector<OptionGroup>& OptionGroups()
 		{"Display",
 			{
 				Seg("upscale_multiplier", "Resolution", "1", "%", {{"1", "1x"}, {"2", "2x"}, {"3", "3x"}, {"4", "4x"}, {"5", "5x"}, {"6", "6x"},
-										   {"8", "8x (PS5 Pro)"}},
-					"Internal resolution. 6x is about 4K; 8x draws more than the screen shows (about 5K, made smaller to fit): sharpest, and the heaviest on the GPU."),
+										   {"8", "8x"}, {"10", "10x"}},
+					"Internal resolution. 6x is about 4K; 8x and 10x draw more than the screen shows (about 5K and 6K, made smaller to fit): sharpest, and the heaviest on the GPU."),
 				Seg("AspectRatio", "Aspect ratio", "Auto 4:3/3:2", "Aspect %",
 					{{"Auto 4:3/3:2", "Auto"}, {"4:3", "4:3"}, {"16:9", "16:9"}, {"Stretch", "Stretch"}}),
 				Toggle("EmuCore/EnableWideScreenPatches", "Widescreen patches", "false", "Widescreen %",
@@ -1400,12 +1397,12 @@ std::string OptionsSheet::Help(const Row& r) const
 				summary += (summary.empty() ? "" : " \xC2\xB7 ") + p + " patch";
 			if (Paged()) // 2.41 newsheet: "Reset to defaults" on Game options
 				return std::string("Cross twice puts this game back the way PS5SX2 ships it: ") +
-					   (m_has_preset && !summary.empty() ? "what was tuned and tested for it on a PS5 Pro (" + summary + ")"
+					   (m_has_preset && !summary.empty() ? "what was tuned and tested for it (" + summary + ")"
 														 : std::string("following the settings for all games")) +
 					   ". Its controls and memory cards stay.";
 			if (!m_has_preset && !m_global)
 				return "Nothing tuned for this game yet: using it makes the game follow the settings for all games.";
-			return "What was tuned and tested on a PS5 Pro: " + (summary.empty() ? std::string("follows the settings for all games") : summary) + ".";
+			return "What was tuned and tested for this game: " + (summary.empty() ? std::string("follows the settings for all games") : summary) + ".";
 		}
 		case Kind::ResetAll:
 			if (m_tab == kTabControls) // vk-285-116
