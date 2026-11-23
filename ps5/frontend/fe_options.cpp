@@ -500,6 +500,10 @@ const std::vector<OptionGroup>& OptionGroups()
 					"How fast the game runs: 120% runs a 50 Hz PAL game at 60 frames a second, its sound and timing 20% fast too (a game's "
 					"own 60 Hz mode or patch is the real fix). Below 100% is slow motion, not a frame cap. Frame generation only at 100%.",
 					true),
+				// AI-assisted: native devkit memory exposure, applied at next game start.
+				Seg("EmuCore/CPU/ExtraMemory", "PS2 RAM", "false", "RAM %",
+					{{"false", "32 MB"}, {"true", "128 MB"}},
+					"32 MB is standard PS2 RAM. 128 MB enables expanded EE RAM and 8 MB IOP RAM for compatible mods. Takes effect on the next game start; cold boot when changing modes.", true),
 				Seg("EmuCore/Speedhacks/EECycleRate", "EE cycle rate", "0", "EE %",
 					{{"-3", "50%"}, {"-2", "60%"}, {"-1", "75%"}, {"0", "100%"}, {"1", "130%"}, {"2", "180%"}, {"3", "300%"}},
 					"Above 100% can smooth out slowdown the PS2 had; some games dislike it."),
