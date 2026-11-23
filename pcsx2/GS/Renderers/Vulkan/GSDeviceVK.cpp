@@ -1986,6 +1986,16 @@ void OrbisVkTraceTransfer(u8 kind, const GSTexture* tex, const GSVector4i& r)
 {
 	OrbisVkTraceOp(kind, tex, nullptr, r, 0);
 }
+
+// 322 (AI-assisted): the uploads, copies, clears and readbacks recorded since the last submission (OrbisVkTraceOp counts them;
+// OrbisVkSubmitDone clears the count at every submission, as the next command buffer clears m_orbis_submit_draws).
+static u32 OrbisSubmitOps()
+{
+	return s_orbis_sub_cur.ops;
+}
+// What the early-submit budget counts (RenderHW, SendHWDraw): the draws, and each upload, copy or clear as half a draw (~46 words
+// measured for a 16x16 upload, against ~50-110 a draw).
+#define ORBIS_SUBMIT_UNITS (m_orbis_submit_draws + OrbisSubmitOps() / 2)
 #endif
 
 #ifdef ORBIS_VULKAN
@@ -9202,12 +9212,16 @@ void GSDeviceVK::RenderHW(GSHWDrawConfig& config)
 		const u32 draws = groups + (config.alpha_second_pass.enable ? groups : 0) + (config.blend_multi_pass.enable ? 1 : 0);
 		// vk-285-115: ps5vk only. RADV has no such limit (it splits a long stream itself), so an early submit would only cost it a
 		// render pass restart.
-		if (m_orbis_submit_draws != 0 && m_orbis_submit_draws + draws > ORBIS_SUBMIT_DRAW_BUDGET && !OrbisDriverIsRADV())
+		// 322 (AI-assisted): the uploads, copies and clears count too (ORBIS_SUBMIT_UNITS). Shadow Hearts (SLUS-20347) at a tester's save
+		// spot (2.50, base PS5 fw 13.42, 2026-11-15, twice at the same frame): 3382 draws with a 16x16 texture upload in front of nearly
+		// every one, ~110 words a draw + ~46 an upload (the second command buffer held ~154k of the 525,620), so the stream overflowed
+		// below the 4400-draw budget. Counted this way that frame submits at ~2960 draws (~460k words).
+		if (m_orbis_submit_draws != 0 && ORBIS_SUBMIT_UNITS + draws > ORBIS_SUBMIT_DRAW_BUDGET && !OrbisDriverIsRADV())
 		{
 			static u32 s_budget_flushes = 0;
 			if (++s_budget_flushes <= 3 || (s_budget_flushes % 500) == 0)
-				Console.Warning("VK: %u draws in this submission and %u more coming, submitting early (%u times)",
-					m_orbis_submit_draws, draws, s_budget_flushes);
+				Console.Warning("VK: %u draws and %u uploads/copies/clears in this submission and %u more draws coming, submitting early (%u times)",
+					m_orbis_submit_draws, OrbisSubmitOps(), draws, s_budget_flushes);
 			ExecuteCommandBuffer(false);
 		}
 	}
@@ -9871,7 +9885,7 @@ void GSDeviceVK::SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, 
 		for (u32 n = 0, p = 0; n < draw_list_size; n++)
 		{
 #ifdef ORBIS_VULKAN
-			if (n != 0 && m_orbis_submit_draws >= ORBIS_SUBMIT_DRAW_BUDGET && !OrbisDriverIsRADV() && !SubmitBetweenGroups())
+			if (n != 0 && ORBIS_SUBMIT_UNITS >= ORBIS_SUBMIT_DRAW_BUDGET && !OrbisDriverIsRADV() && !SubmitBetweenGroups())
 				break; // ps5vk only (vk-285-115), as in RenderHW
 #endif
 			IssueBarriers();
