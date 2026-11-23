@@ -100,6 +100,7 @@ namespace
 		std::string path;
 		int fd = -1;
 		unsigned reads = 0, logged = 0;
+		uint16_t vid = 0, pid = 0; // 323: from the device descriptor, when it answered (0: unknown)
 	};
 	std::vector<Candidate> s_cands; // the thread's
 
@@ -222,6 +223,8 @@ namespace
 			d.format = Format::XInput;
 		else if (d.vid == 0x054C && d.pid == 0x0268)
 			d.format = Format::Ds3;
+		else if (Rb4Format(d.vid, d.pid) != Format::None)
+			d.format = Rb4Format(d.vid, d.pid); // 323: its descriptor is a DualSense's / DualShock 4's: read by the guitar's layout
 		else
 		{
 			if (report_desc_len > 0)
@@ -440,11 +443,14 @@ namespace
 			have_devd = true;
 		}
 		int only_ep = -1; // >0: the descriptor names the gamepad's interrupt IN endpoint; only that node is read
+		uint16_t dev_vid = 0, dev_pid = 0; // 323: kept with the candidates (a Rock Band 4 guitar is known by them)
 		if (have_devd)
 		{
 			const uint8_t cls = devd[4];
 			const uint16_t vid = static_cast<uint16_t>(devd[8] | (devd[9] << 8));
 			const uint16_t pid = static_cast<uint16_t>(devd[10] | (devd[11] << 8));
+			dev_vid = vid;
+			dev_pid = pid;
 			// 0xE0 wireless (Bluetooth / Wi-Fi radio), 0x09 hub, 0x08 storage, 0x01 audio, 0x0E video, and Sony's own pads.
 			if (cls == 0xE0 || cls == 0x09 || cls == 0x08 || cls == 0x01 || cls == 0x0E || SystemOwned(vid, pid))
 			{
@@ -522,6 +528,8 @@ namespace
 			Candidate c;
 			c.path = path;
 			c.fd = ep;
+			c.vid = dev_vid;
+			c.pid = dev_pid;
 			s_cands.push_back(c);
 			if (s_cands.size() >= 8)
 				break;
@@ -574,7 +582,11 @@ namespace
 					return false;
 				}
 				c.reads++;
-				const Format f = GuessFormat(buf, static_cast<int>(n));
+				// 323: a Rock Band 4 guitar is known by its USB IDs; its DualSense-shaped report looks like the PS3 layout to
+				// GuessFormat (GitHub #103: yellow and strum up held). Only its report 1 is taken.
+				const Format known = Rb4Format(c.vid, c.pid);
+				const Format f = known != Format::None ? (n > static_cast<ssize_t>(Rb4At(known).lower) && buf[0] == 0x01 ? known : Format::None)
+				                                       : GuessFormat(buf, static_cast<int>(n));
 				if (c.logged < 12)
 				{
 					c.logged++;
@@ -589,13 +601,19 @@ namespace
 				d.ep = c.fd;
 				d.format = f;
 				d.target.max_packet = 64;
-				d.guitar = OrbisFlag("usbguitar") ? true : OrbisFlag("usbpad") ? false : s_guitar_hint.load();
+				d.vid = c.vid;
+				d.pid = c.pid;
+				d.guitar = OrbisFlag("usbguitar") ? true : OrbisFlag("usbpad") ? false : (known != Format::None || s_guitar_hint.load());
 				s_cands.erase(s_cands.begin() + static_cast<long>(i));
 				for (Candidate& o : s_cands)
 					close(o.fd);
 				s_cands.clear();
-				Log("taken: %s by its reports' shape (%s), as a %s%s", d.name.c_str(), FormatName(f), d.guitar ? "guitar" : "controller",
-					OrbisFlag("usbguitar") ? " (flag usbguitar)" : OrbisFlag("usbpad") ? " (flag usbpad)" : d.guitar ? " (a Guitar Hero or Rock Band game)" : "");
+				if (known != Format::None)
+					Log("taken: %s by its USB IDs %04x:%04x (%s), as a %s%s", d.name.c_str(), d.vid, d.pid, FormatName(f),
+						d.guitar ? "guitar" : "controller", OrbisFlag("usbguitar") ? " (flag usbguitar)" : OrbisFlag("usbpad") ? " (flag usbpad)" : "");
+				else
+					Log("taken: %s by its reports' shape (%s), as a %s%s", d.name.c_str(), FormatName(f), d.guitar ? "guitar" : "controller",
+						OrbisFlag("usbguitar") ? " (flag usbguitar)" : OrbisFlag("usbpad") ? " (flag usbpad)" : d.guitar ? " (a Guitar Hero or Rock Band game)" : "");
 				return true;
 			}
 		}
@@ -1054,6 +1072,8 @@ namespace
 			case Format::Ps3Fixed: return DecodePs3Fixed(r, n, c);
 			case Format::Ds3: return DecodeDs3(r, n, c);
 			case Format::XInput: return DecodeXInput(r, n, c);
+			case Format::Rb4Ps5:
+			case Format::Rb4Ps4: return DecodeRb4(d.format, r, n, c); // 323
 			default: return false;
 		}
 	}
@@ -1126,7 +1146,8 @@ namespace
 				continue;
 			reports++;
 			// The first reports, then each change (the first 200, then every 100th), so a log shows what each press sends.
-			const bool changed = last.size() != static_cast<size_t>(n) || memcmp(last.data(), buf, n) != 0;
+			// 323: SameInput leaves out a Rock Band 4 guitar's counter and checksum, which change in every report.
+			const bool changed = last.size() != static_cast<size_t>(n) || !SameInput(d.format, last.data(), buf, static_cast<size_t>(n));
 			const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count();
 			if (reports <= 4 || (changed && (changes_logged < 200 || changes_logged % 100 == 0)))
 			{

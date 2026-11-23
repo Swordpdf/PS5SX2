@@ -291,8 +291,135 @@ int main()
 			DecodeDs3(r, rn, c);
 			DecodeXInput(r, rn, c);
 			DecodePs3Fixed(r, rn, c);
+			DecodeRb4(Format::Rb4Ps5, r, rn, c);
+			DecodeRb4(Format::Rb4Ps4, r, rn, c);
+			if (rn > 0)
+				SameInput(Format::Rb4Ps5, r, r, rn);
 		}
 		CHECK(true);
+	}
+
+	// 323: Rock Band 4 guitars. The idle report is the one in GitHub #103 (a PDP Riffmaster for PS5, 0e6f:0249, at Guitar
+	// Hero III's menu): the PS3 layout read it as yellow and strum up held.
+	{
+		static const uint8_t kIdle[64] = {
+			0x01, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0xae, 0x00, 0x7b, 0x18,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01,
+			0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf1, 0xca, 0xbf, 0x05, 0xe9, 0x8a, 0xf9, 0x25,
+		};
+		CHECK(Rb4Format(0x0E6F, 0x0249) == Format::Rb4Ps5);
+		CHECK(Rb4Format(0x3651, 0x5600) == Format::Rb4Ps5);
+		CHECK(Rb4Format(0x0E6F, 0x024A) == Format::Rb4Ps4);
+		CHECK(Rb4Format(0x0738, 0x8261) == Format::Rb4Ps4);
+		CHECK(Rb4Format(0x12BA, 0x0100) == Format::None);
+		CHECK(LooksLikeGuitar(0x0E6F, 0x0249, ""));
+		CHECK(!SystemOwned(0x0E6F, 0x0249));
+
+		// What 2.50 did with it: yellow and strum up held.
+		{
+			Common c;
+			WhammyCal cal;
+			CHECK(DecodePs3Fixed(kIdle, 64, c));
+			const GuitarOut g = ToGuitar(c, Format::Ps3Fixed, cal);
+			CHECK(g.yellow && g.strum_up);
+		}
+
+		// Now: nothing held.
+		Common c;
+		WhammyCal cal;
+		CHECK(DecodeRb4(Format::Rb4Ps5, kIdle, 64, c));
+		GuitarOut g = ToGuitar(c, Format::Rb4Ps5, cal);
+		CHECK(!g.green && !g.red && !g.yellow && !g.blue && !g.orange);
+		CHECK(!g.strum_up && !g.strum_down && !g.select && !g.start && !g.tilt);
+		CHECK(g.whammy == 0.0f);
+		CHECK(c.lx == 0x80 && c.ly == 0x80 && c.hat == 8);
+		CHECK(GuitarAsPad(g).buttons == 0);
+
+		// Each fret alone: by the upper bitmask (byte 43), the solo bitmask (44, with the solo flag), or the face flag alone.
+		struct
+		{
+			uint8_t mask, face_byte, face_bit;
+			int colour; // 0 green .. 4 orange
+		} frets[] = {{0x01, 8, 0x20, 0}, {0x02, 8, 0x40, 1}, {0x04, 8, 0x80, 2}, {0x08, 8, 0x10, 3}, {0x10, 9, 0x01, 4}};
+		for (const auto& f : frets)
+		{
+			for (int how = 0; how < 3; how++)
+			{
+				uint8_t r[64];
+				memcpy(r, kIdle, 64);
+				if (how == 0) r[43] = f.mask;
+				if (how == 1) { r[44] = f.mask; r[9] |= 0x40; }
+				if (how == 2) r[f.face_byte] |= f.face_bit;
+				Common k;
+				CHECK(DecodeRb4(Format::Rb4Ps5, r, 64, k));
+				const GuitarOut o = ToGuitar(k, Format::Rb4Ps5, cal);
+				const bool col[5] = {o.green, o.red, o.yellow, o.blue, o.orange};
+				for (int i = 0; i < 5; i++)
+					CHECK(col[i] == (i == f.colour));
+				CHECK(!(k.buttons & B_L3)); // a solo fret is not the joystick's click
+			}
+		}
+
+		// Strum, Share (star power), Options (start), the joystick's click, the whammy and the tilt.
+		{
+			uint8_t r[64];
+			memcpy(r, kIdle, 64);
+			r[8] = 0x04;               // hat down
+			r[9] = 0x10 | 0x20 | 0x40; // Share, Options, L3 without a solo fret
+			r[41] = 0xFF;              // whammy all the way
+			r[42] = 0xC0;              // tilted up
+			Common k;
+			CHECK(DecodeRb4(Format::Rb4Ps5, r, 64, k));
+			const GuitarOut o = ToGuitar(k, Format::Rb4Ps5, cal);
+			CHECK(o.strum_down && !o.strum_up && o.select && o.start && o.tilt);
+			CHECK(o.whammy > 0.99f);
+			CHECK(k.buttons & B_L3);
+			r[8] = 0x00;  // hat up
+			r[42] = 0x30; // flat
+			CHECK(DecodeRb4(Format::Rb4Ps5, r, 64, k));
+			const GuitarOut u = ToGuitar(k, Format::Rb4Ps5, cal);
+			CHECK(u.strum_up && !u.strum_down && !u.tilt);
+		}
+
+		// The PS4 layout: the face byte at 5, frets at 46 / 47, whammy 44, tilt 45.
+		{
+			uint8_t r[64] = {0x01, 0x80, 0x80, 0x80, 0x80, 0x08};
+			r[46] = 0x04; // yellow
+			r[47] = 0x10; // orange (solo)
+			r[44] = 0x80;
+			Common k;
+			WhammyCal c4;
+			c4.have = true;
+			c4.rest = 0;
+			CHECK(DecodeRb4(Format::Rb4Ps4, r, 64, k));
+			const GuitarOut o = ToGuitar(k, Format::Rb4Ps4, c4);
+			CHECK(o.yellow && o.orange && !o.green && !o.red && !o.blue && !o.strum_up && !o.strum_down);
+			CHECK(o.whammy > 0.4f && o.whammy < 0.6f);
+		}
+
+		// Short reports and other report IDs are not taken.
+		{
+			Common k;
+			CHECK(!DecodeRb4(Format::Rb4Ps5, kIdle, 44, k));
+			uint8_t r[64];
+			memcpy(r, kIdle, 64);
+			r[0] = 0x05;
+			CHECK(!DecodeRb4(Format::Rb4Ps5, r, 64, k));
+		}
+
+		// The log's "each change": the counter and the checksum don't count, a fret does.
+		{
+			uint8_t a[64], b[64];
+			memcpy(a, kIdle, 64);
+			memcpy(b, kIdle, 64);
+			b[12] = 0xb0;
+			b[60] = 0x11;
+			CHECK(SameInput(Format::Rb4Ps5, a, b, 64));
+			CHECK(!SameInput(Format::Ps3Fixed, a, b, 64));
+			b[43] = 0x01;
+			CHECK(!SameInput(Format::Rb4Ps5, a, b, 64));
+		}
 	}
 
 	if (s_failures)

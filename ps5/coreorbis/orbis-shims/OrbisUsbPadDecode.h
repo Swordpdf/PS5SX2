@@ -11,6 +11,11 @@
 //           the frets on Cross (green), Circle (red), Square (yellow), Triangle (blue) and L1 (orange), strum on the hat's
 //           up and down, the whammy on the right stick's X and star power on Select; XInput guitars use A, B, X, Y, LB, the
 //           D-pad, the right stick's X (whammy) and Y (tilt).
+//   323 (AI-assisted; GitHub #103, a tester's PDP Riffmaster for PS5, 0e6f:0249): Rock Band 4 guitars for PS5 and PS4 send
+//           a DualSense / DualShock 4 shaped report 1 (64 bytes) with the frets in bitmasks of their own, the whammy and the
+//           tilt in bytes of their own (TheNathannator's PlasticBand docs, "5-Fret Guitar/Rock Band/PS5.md" and "PS4.md"; the
+//           whammy and tilt offsets agree with Linux's hid-sony.c). Known by their USB IDs: the PS3 layout read them as yellow
+//           and strum up held (report ID 0x01 as Square, 0x80 as the hat's "up").
 //
 // Copyright (C) 2026 swordpdf
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -248,6 +253,8 @@ namespace orbis_usbpad
 		Ps3Fixed, // a PS3 USB pad without a descriptor to read: buttons in bytes 0-1, hat in 2, sticks in 3-6
 		Ds3,      // Sony's DualShock 3 (054c:0268), report 1
 		XInput,   // Xbox 360 wired protocol (vendor class 0xff, subclass 0x5d)
+		Rb4Ps5,   // 323: a Rock Band 4 guitar for PS5 (PDP Riffmaster, CRKD Gibson SG): DualSense-shaped report 1
+		Rb4Ps4,   // 323: a Rock Band 4 guitar for PS4 (Riffmaster, Gibson SG, Stratocaster, Jaguar): DualShock 4-shaped report 1
 	};
 
 	inline const char* FormatName(Format f)
@@ -258,6 +265,8 @@ namespace orbis_usbpad
 			case Format::Ps3Fixed: return "PS3 USB pad (fixed layout)";
 			case Format::Ds3: return "DualShock 3";
 			case Format::XInput: return "XInput";
+			case Format::Rb4Ps5: return "Rock Band 4 guitar (PS5)";
+			case Format::Rb4Ps4: return "Rock Band 4 guitar (PS4)";
 			default: return "none";
 		}
 	}
@@ -449,7 +458,92 @@ namespace orbis_usbpad
 		return true;
 	}
 
+	// 323: a Rock Band 4 guitar's report 1 (64 bytes over USB). Byte 0 is the report ID. PS5 / PS4:
+	//   bytes 1, 2       the Riffmaster's joystick (X left 0, Y up 0)
+	//   byte 8 / 5       the hat (strum: 0 up, 4 down, 15 none) and the face flags: Square 0x10 (blue), Cross 0x20 (green),
+	//                    Circle 0x40 (red), Triangle 0x80 (yellow)
+	//   byte 9 / 6       L1 0x01 (orange), R1 0x02, L2 0x04, R2 0x08, Share / Create 0x10 (select, overdrive), Options 0x20
+	//                    (start), L3 0x40 (the solo frets' flag, and the joystick's click), R3 0x80 (the Riffmaster's P1)
+	//   byte 10 / 7      the PS button 0x01, the touchpad 0x02 (the Gibson SG's P1); the PS4 report counts in the top bits
+	//   byte 41 / 44     the whammy, 0 at rest .. 0xFF all the way
+	//   byte 42 / 45     the tilt, 0 lying flat .. 0xFF straight up
+	//   byte 43 / 46     the upper frets: green 0x01, red 0x02, yellow 0x04, blue 0x08, orange 0x10
+	//   byte 44 / 47     the solo (lower) frets, the same bits
+	// The rest is a packet counter, the battery and a checksum. The frets go into the PS3 numbering by their face button
+	// (green Cross, red Circle, yellow Triangle, blue Square, orange L1); ToGuitar reads them back by colour.
+	constexpr uint8_t kRb4TiltOn = 0x80; // tilted up past about 45 degrees: star power
+
+	struct Rb4Offsets
+	{
+		uint8_t face, b2, b3, whammy, tilt, upper, lower;
+	};
+
+	inline Rb4Offsets Rb4At(Format f)
+	{
+		return f == Format::Rb4Ps5 ? Rb4Offsets{8, 9, 10, 41, 42, 43, 44} : Rb4Offsets{5, 6, 7, 44, 45, 46, 47};
+	}
+
+	inline bool DecodeRb4(Format f, const uint8_t* r, size_t n, Common& c)
+	{
+		const Rb4Offsets at = Rb4At(f);
+		if (n <= at.lower || r[0] != 0x01)
+			return false;
+		Common o;
+		const uint8_t face = r[at.face], b2 = r[at.b2], b3 = r[at.b3];
+		const uint8_t frets = static_cast<uint8_t>((r[at.upper] | r[at.lower]) & 0x1F);
+		if ((frets & 0x01) || (face & 0x20)) o.buttons |= B_CROSS;    // green
+		if ((frets & 0x02) || (face & 0x40)) o.buttons |= B_CIRCLE;   // red
+		if ((frets & 0x04) || (face & 0x80)) o.buttons |= B_TRIANGLE; // yellow
+		if ((frets & 0x08) || (face & 0x10)) o.buttons |= B_SQUARE;   // blue
+		if ((frets & 0x10) || (b2 & 0x01)) o.buttons |= B_L1;         // orange
+		if (b2 & 0x02) o.buttons |= B_R1;
+		if (b2 & 0x04) o.buttons |= B_L2;
+		if (b2 & 0x08) o.buttons |= B_R2;
+		if (b2 & 0x10) o.buttons |= B_SELECT;
+		if (b2 & 0x20) o.buttons |= B_START;
+		if ((b2 & 0x40) && (r[at.lower] & 0x1F) == 0) o.buttons |= B_L3; // the flag without a solo fret: the joystick's click
+		if (b2 & 0x80) o.buttons |= B_R3;
+		if (b3 & 0x01) o.buttons |= B_PS;
+		o.hat = (face & 0x0F) <= 7 ? (face & 0x0F) : 8;
+		o.lx = r[1];
+		o.ly = r[2];
+		o.rx = r[at.whammy]; // the whammy, where ToGuitar looks for it
+		o.ry = 128;
+		o.l2 = (o.buttons & B_L2) ? 255 : 0;
+		o.r2 = (o.buttons & B_R2) ? 255 : 0;
+		o.tilt = r[at.tilt] >= kRb4TiltOn;
+		c = o;
+		return true;
+	}
+
+	// Whether two reports say the same about the controls, for the log's "each change": the RB4 guitars' counter, battery
+	// and checksum change in every report, so only the bytes above are compared for them.
+	inline bool SameInput(Format f, const uint8_t* a, const uint8_t* b, size_t n)
+	{
+		if (f != Format::Rb4Ps5 && f != Format::Rb4Ps4)
+			return std::memcmp(a, b, n) == 0;
+		const Rb4Offsets at = Rb4At(f);
+		if (n <= at.lower)
+			return std::memcmp(a, b, n) == 0;
+		auto same = [&](size_t from, size_t to) { return std::memcmp(a + from, b + from, to - from + 1) == 0; };
+		const bool b3 = ((a[at.b3] ^ b[at.b3]) & 0x03) == 0; // the PS4 report's counter is in that byte's top bits
+		return same(0, 4) && same(at.face, at.b2) && b3 && same(at.whammy, at.lower);
+	}
+
 	// ---- Which devices, and as what ------------------------------------------------------------------------------------------
+
+	// 323: the Rock Band 4 guitars by their USB IDs (PlasticBand's device lists; Linux's hid-ids.h has the same Riffmaster
+	// and Gibson SG ones): PDP Riffmaster PS5 0e6f:0249 / PS4 0e6f:024a, CRKD Gibson SG PS5 3651:1600 (wired) and 3651:5600
+	// (dongle) / PS4 3651:1500 and 3651:5500, Mad Catz Stratocaster (PS4) 0738:8261, PDP Jaguar (PS4) 0e6f:0173.
+	inline Format Rb4Format(uint16_t vid, uint16_t pid)
+	{
+		if ((vid == 0x0E6F && pid == 0x0249) || (vid == 0x3651 && (pid == 0x1600 || pid == 0x5600)))
+			return Format::Rb4Ps5;
+		if ((vid == 0x0E6F && (pid == 0x024A || pid == 0x0173)) || (vid == 0x3651 && (pid == 0x1500 || pid == 0x5500)) ||
+			(vid == 0x0738 && pid == 0x8261))
+			return Format::Rb4Ps4;
+		return Format::None;
+	}
 
 	// Sony's PS4 and PS5 controllers and accessories are the system's: ScePad already reads them, and taking their
 	// interface away would take the controller from the whole console. The DualShock 3 (0268) is not a PS5 controller.
@@ -476,6 +570,8 @@ namespace orbis_usbpad
 		if (vid == 0x12BA && (pid == 0x0100 || pid == 0x0200))
 			return true;
 		if ((vid == 0x1430 && pid == 0x4748) || (vid == 0x1BAD && pid == 0x0002))
+			return true;
+		if (Rb4Format(vid, pid) != Format::None) // 323
 			return true;
 		return ContainsNoCase(product, "guitar");
 	}
@@ -561,14 +657,16 @@ namespace orbis_usbpad
 		g.red = b & B_CIRCLE;
 		// vk-285-143: yellow on Square / X and blue on Triangle / Y. The tester's guitars (vk-285-142, Guitar Hero II, a PS3-mode
 		// and an Xbox 360 one): "Blue and yellow are swapped on both 360 and PS3" with Triangle/Y as yellow.
-		g.yellow = b & B_SQUARE;
-		g.blue = b & B_TRIANGLE;
+		// 323: a Rock Band 4 guitar's frets are decoded by colour onto their face buttons (DecodeRb4): yellow Triangle, blue Square.
+		const bool rb4 = f == Format::Rb4Ps5 || f == Format::Rb4Ps4;
+		g.yellow = b & (rb4 ? B_TRIANGLE : B_SQUARE);
+		g.blue = b & (rb4 ? B_SQUARE : B_TRIANGLE);
 		g.orange = b & B_L1;
 		g.strum_up = c.hat == 0 || c.hat == 1 || c.hat == 7;
 		g.strum_down = c.hat == 3 || c.hat == 4 || c.hat == 5;
 		g.select = b & B_SELECT;
 		g.start = b & B_START;
-		g.tilt = f == Format::XInput ? c.tilt : (b & B_R1) != 0;
+		g.tilt = (f == Format::XInput || rb4) ? c.tilt : (b & B_R1) != 0;
 		if (!cal.have)
 		{
 			cal.have = true;
