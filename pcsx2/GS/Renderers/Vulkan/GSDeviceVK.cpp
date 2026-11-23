@@ -364,9 +364,10 @@ namespace
 	// vk-285-39: a copy the convert draw can make exactly: into a render target of the source's
 	// Color format (COPY) or a depth buffer of its DepthStencil format (DEPTH_COPY), the two pairs
 	// StretchRectAuto has a same-format shader for, from another texture.
+	// vk-285-325: never with RADV, whose vkCmdCopyImage is a GPU copy (ps5vk's ran on the CPU): upstream's copy.
 	bool OrbisCopyByDraw(const GSTextureVK* src, const GSTextureVK* dst)
 	{
-		if (src == dst || src->GetFormat() != dst->GetFormat() || OrbisCopiesAsImageCopies())
+		if (src == dst || src->GetFormat() != dst->GetFormat() || OrbisCopiesAsImageCopies() || OrbisDriverIsRADV())
 			return false;
 		switch (dst->GetFormat())
 		{
@@ -1879,7 +1880,7 @@ namespace
 		s_orbis_sub_cur = {};
 		if (((s_orbis_submit + 1) % 600) == 0)
 		{
-			if (s_orbis_sub_peak.draws >= 1000)
+			if (s_orbis_sub_peak.draws >= 1000 && !OrbisDriverIsRADV()) // vk-285-325: ps5vk's stream only (RADV chains its own)
 			{
 				printf("[vkhw] largest of the last 600 submits: %u driver draws (%u draw configs, %u other ops); the driver's stream holds ~7,800 feedback draws or ~10,500 plain ones\n",
 					s_orbis_sub_peak.draws, s_orbis_sub_peak.configs, s_orbis_sub_peak.ops);
@@ -1935,6 +1936,11 @@ namespace
 				header += StringUtil::StdStringFromFormat("; the last refused submission held %llu words.", held);
 			else
 				header += " (its size is not in the message: a driver without the vk-285-113 note).";
+		}
+		else if (OrbisDriverIsRADV()) // vk-285-325
+		{
+			header += "\nclass: RADV lost the device. A GPU stall shows in stderr.log as 'radv/ps5: the GPU has not reached submission N' "
+			          "(RADV waits 10 s for a submission before it gives up).";
 		}
 		else
 		{
@@ -4923,8 +4929,7 @@ namespace
 	// driver that lists 119.88 Hz gives a 60 fps game two refreshes a frame), else 59.94 (OrbisDisplayHz.h).
 	orbis_fg::DisplayHz OrbisFrameGenDisplayHz()
 	{
-		return orbis_fg::PickDisplayHzSource(ps5vk_output_refresh_millihertz ? ps5vk_output_refresh_millihertz() : 0u,
-			OrbisVideoOutRefreshMilliHz(), g_orbis_display_refresh_mhz);
+		return orbis_fg::PickDisplayHzSource(OrbisDriverOutputMilliHz(), OrbisVideoOutRefreshMilliHz(), g_orbis_display_refresh_mhz);
 	}
 
 	// 2.11: what the app's own 120 Hz switch did, for the frame generation lines: only when the driver has no output control of its own.
@@ -4932,7 +4937,7 @@ namespace
 	// was not switched"; the driver's verdict is the "[display] swapchain:" line (VKSwapChain.cpp).
 	std::string OrbisFrameGenVideoOut()
 	{
-		return ps5vk_output_refresh_millihertz ? std::string() : OrbisVideoOutSummary();
+		return OrbisDriverHasOutputControl() ? std::string() : OrbisVideoOutSummary();
 	}
 }
 
@@ -5131,7 +5136,7 @@ namespace
 		in.warm_frames = s.pacing.WarmFrames();
 		// The raw readings beside the rate used: the driver's word is 0 after its swapchain closed, and the pacing then falls back to
 		// the listed mode.
-		in.driver_mhz = ps5vk_output_refresh_millihertz ? ps5vk_output_refresh_millihertz() : 0u;
+		in.driver_mhz = OrbisDriverOutputMilliHz();
 		in.mode_mhz = g_orbis_display_refresh_mhz;
 		in.display = orbis_fg::PickDisplayHzSource(in.driver_mhz, OrbisVideoOutRefreshMilliHz(), g_orbis_display_refresh_mhz);
 		in.speed = speed;
@@ -5295,7 +5300,8 @@ u32 GSDeviceVK::OrbisFrameGenRecord(GSTexture* current, const GSVector4& src_uv,
 		// after this draw the generator's first pass finds its input flushed and does not split. On firmware 4.03 each step starts on an
 		// idle GPU only at the next vblank; the split made a generated pair three steps, so three vblanks (40 fps at 119.88 Hz,
 		// swordpdf's original PS5, 2026-11-03; the driver's own counter said splits/frame compute=0.18). The flag fgnobarrierdraw leaves it out.
-		static const bool s_no_barrier_draw = OrbisFlag("fgnobarrierdraw");
+		// vk-285-325: and RADV, which splits nothing at a dispatch (its barriers are the pipeline barrier recorded below).
+		static const bool s_no_barrier_draw = OrbisFlag("fgnobarrierdraw") || OrbisDriverIsRADV();
 		if (!s_no_barrier_draw)
 		{
 			if (!s.barrier_target)
@@ -9216,7 +9222,7 @@ void GSDeviceVK::RenderHW(GSHWDrawConfig& config)
 		// spot (2.50, base PS5 fw 13.42, 2026-11-15, twice at the same frame): 3382 draws with a 16x16 texture upload in front of nearly
 		// every one, ~110 words a draw + ~46 an upload (the second command buffer held ~154k of the 525,620), so the stream overflowed
 		// below the 4400-draw budget. Counted this way that frame submits at ~2960 draws (~460k words).
-		if (m_orbis_submit_draws != 0 && ORBIS_SUBMIT_UNITS + draws > ORBIS_SUBMIT_DRAW_BUDGET && !OrbisDriverIsRADV())
+		if (!OrbisDriverIsRADV() && m_orbis_submit_draws != 0 && ORBIS_SUBMIT_UNITS + draws > ORBIS_SUBMIT_DRAW_BUDGET) // vk-285-325: RADV first
 		{
 			static u32 s_budget_flushes = 0;
 			if (++s_budget_flushes <= 3 || (s_budget_flushes % 500) == 0)
@@ -9885,7 +9891,7 @@ void GSDeviceVK::SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, 
 		for (u32 n = 0, p = 0; n < draw_list_size; n++)
 		{
 #ifdef ORBIS_VULKAN
-			if (n != 0 && ORBIS_SUBMIT_UNITS >= ORBIS_SUBMIT_DRAW_BUDGET && !OrbisDriverIsRADV() && !SubmitBetweenGroups())
+			if (n != 0 && !OrbisDriverIsRADV() && ORBIS_SUBMIT_UNITS >= ORBIS_SUBMIT_DRAW_BUDGET && !SubmitBetweenGroups())
 				break; // ps5vk only (vk-285-115), as in RenderHW
 #endif
 			IssueBarriers();

@@ -1517,12 +1517,10 @@ extern "C" int sceSystemServiceLoadExec(const char* path, const char* argv[]);
 // default output back first (the driver's ps5vk_output_restore_default, vk-285-131; nothing without it or at 60 Hz).
 // 2.11: the linked driver has no such function (2.03 to 2.10 had no output code at all); then the app's own switch (flag fg120,
 // OrbisVideoOutMode.cpp) puts the output back when it was the one that changed it, and does nothing when it did not.
-extern "C" bool ps5vk_output_restore_default(void) __attribute__((weak));
+// vk-285-325: PS5SX2's RADV has it too (wsi_videoout_restore_default): OrbisDriverRestoreOutput asks whichever driver is linked.
 static void orbis_output_default()
 {
-  if (ps5vk_output_restore_default)
-    ps5vk_output_restore_default();
-  else
+  if (!OrbisDriverRestoreOutput())
     OrbisVideoOutRestore();
 }
 
@@ -3905,7 +3903,9 @@ static void orbis_ensure_data_layout()
 // back at every start). Renamed, not deleted: the last set stays for a report.
 static void orbis_set_aside_shader_caches()
 {
-  static const char* const kNames[] = {"vulkan_shaders.idx", "vulkan_shaders.bin", "vulkan_pipelines.bin"};
+  // vk-285-325: and the RADV eboot's (VKShaderCache.cpp names them *_radv), with RADV's own cache of compiled shaders.
+  static const char* const kNames[] = {"vulkan_shaders.idx", "vulkan_shaders.bin", "vulkan_pipelines.bin", "vulkan_shaders_radv.idx",
+                                       "vulkan_shaders_radv.bin", "vulkan_pipelines_radv.bin", "radv-shader-cache"};
   int moved = 0;
   for (const char* name : kNames)
   {
@@ -4080,17 +4080,43 @@ static void orbis_vk_param_json()
 static void orbis_vk_environment()
 {
   const bool hw = !g_sw_renderer;
-  // vk-285-115 (AI-assisted): the RADV eboot (link-radv.sh). RADV reads none of the PS5VK_* variables below. Its own: the shader
-  // cache, which RADV puts in /app0/radv-shader-cache unless told otherwise (next to PCSX2's caches instead, as ps5vk's), and its
-  // threaded recording for the vk_recordthread flag (RADV_THREADED_RECORDING; a RADV build older than the threaded layer ignores it).
+  // vk-285-115, vk-285-325 (AI-assisted): the RADV eboot (link-radv.sh; PS5SX2's RADV, Mihawk's PS5 Mesa with our patches). RADV
+  // reads none of the PS5VK_* variables below. What it takes before the device is made:
   if (OrbisDriverIsRADV())
   {
+    // Its disk cache of compiled shaders. Mesa keeps one only for a "normal user", whose real and effective ids are equal
+    // (util/u_debug.h __normal_user, util/disk_cache_os.c); leaving the sandbox leaves the effective group apart from the real one
+    // (egid 1, gid 0 on the Pro), so the effective group goes back to the real one first: an effective user may set it.
+    const unsigned gid = static_cast<unsigned>(getgid()), egid = static_cast<unsigned>(getegid());
+    const bool regrouped = egid != gid && setegid(getgid()) == 0;
+    const bool normal_user = geteuid() == getuid() && getegid() == getgid();
     setenv("MESA_SHADER_CACHE_DIR", (OrbisDir("cache") + "/radv-shader-cache").c_str(), 0);
-    if (hw && orbis_flag("vk_recordthread")) setenv("RADV_THREADED_RECORDING", "1", 0);
+    // The temporary files of the driver's platform layer (tmpfile, mkstemp) go to TMPDIR, /app0 without it, which a title outside
+    // the sandbox cannot write to.
+    const std::string tmp = OrbisDir("cache") + "/tmp";
+    if (mkdir(tmp.c_str(), 0777) == 0 || errno == EEXIST)
+      setenv("TMPDIR", tmp.c_str(), 0);
+    // Command recording on the driver's own thread (Mihawk's threaded layer, RADV_THREADED_RECORDING), for the hardware renderer:
+    // the GS thread copies the commands' arguments, the driver's thread records them. Our driver queues the push descriptors PCSX2
+    // writes for nearly every draw too (they made the GS thread wait for the recording thread at each draw). flags/vk_norecordthread
+    // records on the GS thread. flags/vk_zeroflush clears new buffers the old way (memset + cache flush, not streaming stores).
+    if (hw && !orbis_flag("vk_norecordthread"))
+      setenv("RADV_THREADED_RECORDING", "1", 0);
+    if (orbis_flag("vk_zeroflush"))
+      setenv("RADV_PS5_ZERO_FLUSH", "1", 0);
+    // The 120 Hz mode: the driver reads attribute3 from /app0/sce_sys/param.json unless PS5_VIDEOOUT_PARAM_JSON names the file.
+    orbis_vk_param_json();
+    if (const char* const declared = getenv("PS5VK_PARAM_JSON"))
+      setenv("PS5_VIDEOOUT_PARAM_JSON", declared, 0);
     const char* const cache = getenv("MESA_SHADER_CACHE_DIR");
     const char* const threaded = getenv("RADV_THREADED_RECORDING");
-    printf("[boot] RADV environment (hardware renderer %s): MESA_SHADER_CACHE_DIR=%s RADV_THREADED_RECORDING=%s\n", hw ? "yes" : "no",
-      cache ? cache : "-", threaded ? threaded : "-");
+    const char* const param = getenv("PS5_VIDEOOUT_PARAM_JSON");
+    const char* const tmpdir = getenv("TMPDIR");
+    printf("[boot] RADV: shader cache %s (%s; gid %u, egid %u%s), recording on %s, new buffers cleared %s, param.json %s, TMPDIR %s\n",
+      normal_user ? "on" : "OFF", cache ? cache : "-", gid, egid,
+      egid == gid ? "" : regrouped ? ", effective group set to the real one" : ", the effective group could not be changed",
+      threaded ? "the driver's thread" : "the GS thread", orbis_flag("vk_zeroflush") ? "with memset and a flush" : "with streaming stores",
+      param ? param : "-", tmpdir ? tmpdir : "-");
     fflush(stdout);
     return;
   }
@@ -4761,6 +4787,10 @@ int main()
   {
     printf("[boot] opened by \"back to the menu\": the shelf opens, the disc in the drive isn't started again%s\n",
       s_tile_is_game ? " (this is a game tile)" : tile_drive.empty() ? "" : " (this is a disc tile)");
+    // vk-285-327: the leave put the output back to 59.94 Hz (orbis_output_default) and may still be switching: PS5SX2's RADV is told
+    // not to measure the vblanks for an output left at 120 Hz, which would wait out that switch before the shelf's first frame.
+    if (OrbisDriverIsRADV())
+      setenv("PS5_VIDEOOUT_LEFTOVER_CHECK", "0", 1);
     // 176: the gap, from the press and from the exit being issued to here (the process had run so many ms before main(): see the line at the start); the shelf's
     // first frame adds its own ("[frontend] first frame on screen"). The same line goes to settings.log.
     if (s_leave_mark.mark_ms > 0)
@@ -5437,6 +5467,11 @@ int main()
     const std::string recbatch = OrbisDir("flags") + "/vk_recbatch";
     const std::string marker = OrbisLogPath("auto-vk_recbatch.txt");
     const bool tune = on && is_rac1 && !g_sw_renderer && !OrbisDriverIsRADV();
+    // vk-285-325: with RADV, the thread layout only: the draw budget and the recorder thread are ps5vk's, the layout of the EE, GS
+    // and VU threads is not (RADV's own threads are not in it).
+    const bool tune_radv = on && is_rac1 && !g_sw_renderer && OrbisDriverIsRADV();
+    if (tune_radv)
+      setenv("PS5SX2_PIN_LAYOUT", "2 6 4 8 10", 0);
     struct stat st;
     if (tune)
     {
@@ -5462,6 +5497,7 @@ int main()
       unlink(marker.c_str());
     }
     printf("[boot] game tuning: %s\n", tune ? "Ratchet & Clank (draw budget 6000, recorder thread + vk_recbatch, thread layout 2 6 4 8 10)" :
+      tune_radv ? "Ratchet & Clank (thread layout 2 6 4 8 10; its draw budget and recorder thread are ps5vk's)" :
       !on ? "off (PS5SX2/GameTuning)" : "none for this game");
     fflush(stdout);
   }
@@ -5665,9 +5701,12 @@ int main()
                s_base_si.ContainsValue("PS5SX2", "FrameGenMethod") ? "" : " not set: the default");
       // 2.50: the driver's cache wait after each compute pass, for Lossless Scaling only (orbis_paths.cpp)
       extern bool OrbisComputeBarrierWanted();
-      printf("[boot] the driver's wait after each compute pass: %s\n",
-             OrbisComputeBarrierWanted() ? "on (Lossless Scaling's passes read what the pass before stored)"
-                                         : "off (only Lossless Scaling needs it; flag vk_csbarrier keeps it on)");
+      if (OrbisDriverIsRADV()) // vk-285-325: a ps5vk switch; RADV orders compute passes by the pipeline barriers between them
+        printf("[boot] the driver's wait after each compute pass: RADV orders the passes by their pipeline barriers\n");
+      else
+        printf("[boot] the driver's wait after each compute pass: %s\n",
+               OrbisComputeBarrierWanted() ? "on (Lossless Scaling's passes read what the pass before stored)"
+                                           : "off (only Lossless Scaling needs it; flag vk_csbarrier keeps it on)");
     }
     fflush(stdout);
     // 2.11: with a driver that has no 120 Hz output of its own (2.03 to 2.10's), the app's switch (flag fg120, opt-in; flag nofg120

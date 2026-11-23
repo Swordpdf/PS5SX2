@@ -53,8 +53,12 @@ __fi static constexpr bool PreferReusedLabelledTexture()
 // renders into render targets and depth buffers. A texture the cache fills with a copy of a Color
 // render target or a DepthStencil depth buffer is therefore made one of those itself, so that
 // GSDeviceVK::CopyRect can make the copy a convert draw on the GPU.
+// vk-285-325: not with RADV, which copies images on the GPU (and GSDeviceVK::CopyRect makes no such draw there): upstream's texture.
+bool OrbisDriverIsRADV(); // orbis_vk.cpp
 static void OrbisTargetCopyUsage(const GSTexture* target, GSTexture::Usage* usage)
 {
+	if (OrbisDriverIsRADV())
+		return;
 	if (target->GetFormat() == GSTexture::Format::Color && target->IsRenderTarget())
 		*usage = GSTexture::RenderTarget;
 	else if (target->GetFormat() == GSTexture::Format::DepthStencil && target->IsDepthStencil())

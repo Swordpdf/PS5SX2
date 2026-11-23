@@ -115,6 +115,28 @@ done < "$here/objects.txt"
 echo "[link-radv] $(( $(wc -l < "$here/objects.txt") - ${#left_out[@]} )) port objects (left out for RADV: ${left_out[*]##*/})"
 (( ${#left_out[@]} == 7 )) || { echo "[link-radv] error: expected 7 objects to leave out (6 zlib, dirshim), found ${#left_out[@]}" >&2; exit 1; }
 
+# 2026-11-23: games on NFS shares (link-vk.sh's NFS_WRAP, vk-285-135) and the platform layer's memory streams both wrap fclose
+# and fflush. Chained: the C library's call -> orbis-shims/OrbisNfs.cpp's __wrap_ (NFS files) -> the platform's wrapper, renamed
+# ps5plat_wrap_ (memory streams) -> the C library (__real_). Copies of OrbisNfs.o and the platform archive carry the renames.
+OBJCOPY=${OBJCOPY:-llvm-objcopy-18}
+NFS_WRAP=()
+while IFS= read -r name; do
+  [[ -z $name || $name == \#* ]] && continue
+  NFS_WRAP+=("--wrap=$name")
+done < "$here/orbis-shims/OrbisNfs.wrap"
+nfs_obj=$(grep -o '[^ ]*orbis-shims/OrbisNfs\.o' <<<"$OBJS" | head -n 1)
+[[ -n $nfs_obj ]] || { echo "[link-radv] error: OrbisNfs.o is not among the port objects" >&2; exit 1; }
+"$OBJCOPY" --redefine-sym __real_fclose=ps5plat_wrap_fclose --redefine-sym __real_fflush=ps5plat_wrap_fflush \
+  "$nfs_obj" "$OUT/build/obj/OrbisNfs-radv.o"
+OBJS=${OBJS/"$nfs_obj"/"$OUT/build/obj/OrbisNfs-radv.o"}
+rm -rf "$OUT/build/platform" && mkdir -p "$OUT/build/platform"
+cp "$RADV_PLATFORM" "$OUT/build/platform/libps5platform.a"
+(cd "$OUT/build/platform" && ar x libps5platform.a memstream.o &&
+  "$OBJCOPY" --redefine-sym __wrap_fclose=ps5plat_wrap_fclose --redefine-sym __wrap_fflush=ps5plat_wrap_fflush memstream.o &&
+  ar r libps5platform.a memstream.o && rm memstream.o)
+RADV_PLATFORM="$OUT/build/platform/libps5platform.a"
+echo "[link-radv] NFS shares: ${#NFS_WRAP[@]} C library calls wrapped; fclose/fflush chained to the platform's memory streams"
+
 GLSLANG_LIBS=(
   "$GLSLANG/glslang/libglslang.a"
   "$GLSLANG/glslang/libglslang-default-resource-limits.a"
@@ -141,6 +163,15 @@ bound=(mkstemps openlog popen pclose open_memstream __xuname __assert
   opendir fdopendir readdir rewinddir dirfd closedir nl_langinfo nl_langinfo_l getpwuid_r
   posix_fallocate access
   openat unlinkat fchmodat fstatat mkdirat renameat memfd_create)
+# 2026-11-23 (PS5_Vulkan 7f492b4's radv-link.sh): names bound only when the platform layer has them. strcasestr and mkstemp are
+# defined only by libScePosixForWebKit's stub and readlink, link and symlink only by libkernel_sys's, each import null at run time
+# (RADV itself calls readlink in ac_gpu_info.c and mkstemp in aco_print_asm.cpp); localeconv in the C locale with '.' as the point.
+platform_symbols=$("$NM" --defined-only "$RADV_PLATFORM" 2>/dev/null || true)
+extra=()
+for name in localeconv strcasestr mkstemp readlink link symlink; do
+  if grep -q " T ps5_$name$" <<<"$platform_symbols"; then bound+=("$name"); extra+=("$name"); fi
+done
+echo "[link-radv] bound because the platform layer has them: ${extra[*]:-none}"
 map="$OUT/build/radv-platform-local.map"
 {
   printf '{\n    local:\n'
@@ -163,7 +194,7 @@ if [[ $ORDER_FILE != none && -f $ORDER_FILE ]]; then
 fi
 pie_link() {
   # shellcheck disable=SC2086
-  "$LLD" -m elf_x86_64 -pie -z max-page-size=0x4000 -mllvm -emulated-tls \
+  "$LLD" -m elf_x86_64 -pie -z max-page-size=0x4000 -mllvm -emulated-tls "${NFS_WRAP[@]}" \
     --hash-style=gnu -T "$NATIVE/tooling/native/ps5-pie.ld" -T "$here/orbis-shims/ehframe.ld" --eh-frame-hdr \
     --version-script "$NATIVE/tooling/native/app-symbols.map" "${ORDER_ARGS[@]}" "${radv_flags[@]}" "$@" -e _start \
     ${LLD_EXTRA:---no-dynamic-linker} \

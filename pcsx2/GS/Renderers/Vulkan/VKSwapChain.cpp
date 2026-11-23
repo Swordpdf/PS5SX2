@@ -307,16 +307,16 @@ std::unique_ptr<VKSwapChain> VKSwapChain::Create(const WindowInfo& wi, VkSurface
 		return nullptr;
 
 #ifdef ORBIS_VULKAN
-	if (ps5vk_output_status)
+	if (const char* const status = OrbisDriverOutputStatus()) // vk-285-325: ps5vk's, or PS5SX2's RADV's
 	{
-		printf("[display] swapchain: %s\n", ps5vk_output_status());
+		printf("[display] swapchain: %s\n", status);
 		fflush(stdout);
 	}
 	// 2.11 (swordpdf on build 175: "framegen at 50fps doesn't seem to work"): the rate frame generation paces against, now that the output
 	// has been opened: the driver's own word for it beside the listed mode's, so a refused 120 Hz output shows at a glance.
 	if (g_orbis_fg_wanted)
 	{
-		const uint32_t driver_mhz = ps5vk_output_refresh_millihertz ? ps5vk_output_refresh_millihertz() : 0u;
+		const uint32_t driver_mhz = OrbisDriverOutputMilliHz();
 		const orbis_fg::DisplayHz hz =
 			orbis_fg::PickDisplayHzSource(driver_mhz, OrbisVideoOutRefreshMilliHz(), g_orbis_display_refresh_mhz);
 		printf("[display] frame generation paces against %.2f Hz (%s; %s, the listed mode %.2f Hz)%s\n", hz.hz,

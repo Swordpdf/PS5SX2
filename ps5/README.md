@@ -1,6 +1,6 @@
 # PS5SX2: the PS5 layer
 
-PS5SX2 runs PCSX2 on a jailbroken PS5. Its renderer is PCSX2's Vulkan backend on a modified version of ps5vk, the Vulkan driver from [Mihawk-99](https://github.com/mihawk-99)'s [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan), tweaked specifically for PS5SX2 and linked into the app. It is developed on a PS5 Pro with firmware 11.40. The console runs the PS5SX2 Helper payload, which jailbreaks the app and mounts /data into its sandbox.
+PS5SX2 runs PCSX2 on a jailbroken PS5. Its renderer is PCSX2's Vulkan backend on RADV, Mesa's Vulkan driver for AMD GPUs, in [Mihawk-99](https://github.com/mihawk-99)'s PS5 port ([PS5_Mesa](https://github.com/mihawk-99/PS5_Mesa), [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan)) with PS5SX2's changes (`radv/`), linked into the app (since 2.60; 2.50 and earlier linked ps5vk, a smaller driver, which `coreorbis/link-vk.sh` still links). It is developed on a PS5 Pro with firmware 11.40. The console runs the PS5SX2 Helper payload, which jailbreaks the app and mounts /data into its sandbox.
 
 ## Layout
 
@@ -8,7 +8,8 @@ PS5SX2 runs PCSX2 on a jailbroken PS5. Its renderer is PCSX2's Vulkan backend on
 - **`ps5/coreorbis/`**:
   - the app's entry point, `main-boot.cpp`;
   - the PS5 shims PCSX2 runs on, in `orbis-shims/` and `include-orbis/`;
-  - the build, `Makefile.vk` and `link-vk.sh`.
+  - the build, `Makefile.vk`, then `link-radv.sh` (RADV, the releases' since 2.60) or `link-vk.sh` (ps5vk).
+- **`ps5/radv/`**: PS5SX2's RADV: the patch on Mihawk-99's PS5_Mesa, the script that builds it, and what it changes (its README).
 - **`ps5/frontend/`**: the game shelf and the settings web page. `fe_shaders.inc` is generated from `shaders/` by `build_shaders.sh`, which needs glslangValidator.
 - **`ps5/proto/native/`**: the host tool that converts and signs the eboot, plus the app's CRT and linker script. They come from BlackBearReloaded's ps5-native-app-boilerplate (GPL-3.0-or-later).
 - **`ps5/tools/`**:
@@ -18,7 +19,8 @@ PS5SX2 runs PCSX2 on a jailbroken PS5. Its renderer is PCSX2's Vulkan backend on
 
 ## Dependencies
 
-- **The driver:** Swordpdf/PS5HB_Vulkan at commit 5da7401, built with its own scripts (`tools/setup-native-dependencies.sh`, then `tools/build-driver.sh`). `PS5_VULKAN_DIR` names the checkout. The line `sources: driver ...` at the top of a build's `boot.log` (and in its eboot's strings) names the driver commit the build was really linked with; a release's `NOTICE.txt` has to name the same one.
+- **The driver (2.60 and later):** RADV, built by `ps5/radv/build-radv.sh` from Mihawk-99's PS5_Mesa at `75238ae4db3` with `ps5/radv/ps5sx2-radv.patch` (see `ps5/radv/README.md`), and linked by `ps5/coreorbis/link-radv.sh`. The line `sources: driver radv ...` at the top of a build's `boot.log` names the archive the build was linked with; a release's `NOTICE.txt` names the same one. The 120 Hz output (frame generation) is RADV's own: its swapchain switches the output to 119.88 Hz for a swapchain made in a 119.88 Hz mode and back to 59.94 Hz for one made in a 59.94 Hz mode and as the app leaves.
+- **ps5vk (2.50 and earlier, `link-vk.sh`):** a ps5vk build at commit 5da7401 or later, built with its own scripts (`tools/setup-native-dependencies.sh`, then `tools/build-driver.sh`); `PS5_VULKAN_DIR` names the checkout. What follows is about that driver.
   - **The 120 Hz output:** frame generation shows a 60 fps game at 120 Hz and a PAL game at 50 fps at 100 only when the console's output is 119.88 Hz. That needs the output code of Mihawk-99's PS5_Vulkan (commits 94598bb, a17abd5, 8577153, 49679c9 and 060c5ac: the mode with `sceVideoOutIsOutputSupported` and `sceVideoOutConfigureOutput`, the measured vblank period, the restore before the handle closes) plus what PS5SX2 adds to it: the exports `ps5vk_output_refresh_millihertz`, `ps5vk_output_restore_default` and `ps5vk_output_status`, the title's `param.json` read from `PS5VK_PARAM_JSON`, and a 5 s wait before VideoOut is opened again after a 120 Hz output closed. The 2.02 build's driver (commit 964919b914) had all of it. The driver of commit 5da7401 has none of it, and the builds linked with it show a 60 Hz display (`[display] modes offered: 3840x2160 at 60.00 Hz`) and generate frames only for games at 30 fps or less (25 for PAL). Until a driver with the output code is linked, `orbis-shims/OrbisVideoOutMode.*` can do the switch from the app, opt-in (flag `fg120`; `nofg120` turns it off); it has not been tried on a console. Build 175 (2.11) is linked with the 964919b914 release again (its `boot.log` says `sources: driver 964919b914`), whose driver has the output code, so the app's own switch stays out of the way there.
   - The console only takes the 120 Hz output when the title's `param.json` declares high frame rates (`attribute3` 0x80040, in `sce_sys/param.json`) and the PS5's Settings > Screen and Video > Video Output has the 120 Hz output on with a resolution of Automatic or 4K; at 1080p it refuses it. A 50 Hz or 100 Hz output cannot be selected from a title (the console's output selectors 0 to 63 were tried: only 59.94 and 119.88 Hz answer).
 - **`PS5SX2_DEPS`:** a folder holding:
@@ -49,14 +51,15 @@ the localized shelf credential lookup fix still requires console validation.
 
 ```sh
 export PS5SX2_DEPS=/path/to/deps
-export PS5_VULKAN_DIR=/path/to/PS5HB_Vulkan
+export PS5_VULKAN_DIR=/path/to/PS5HB_Vulkan   # make's driver headers, as before
 cd ps5/coreorbis
 make -f Makefile.vk -j"$(nproc)"
-ORBIS_BUILD_TAG=my-build bash link-vk.sh
+PS5_RADV_ARCHIVE=/path/to/radv/lib/libvulkan_radeon.ps5.a PS5_RADV_PLATFORM=/path/to/libps5platform.a \
+  PS5_RADV_BUILTINS=/path/to/libclang_rt.builtins-x86_64.a ORBIS_BUILD_TAG=my-build bash link-radv.sh
 ```
 
 - The first link also builds the host tool, into `ps5/proto/native/build/host/`.
-- The signed eboot is `ps5/build-vk/app/eboot.bin`.
+- The signed eboot is `ps5/build-radv/app/eboot.bin` (`link-vk.sh`: `ps5/build-vk/app/eboot.bin`).
 - On the console, the app folder `/data/homebrew/PPSA99203/` holds:
   - `eboot.bin`;
   - `sce_sys/`;
@@ -70,7 +73,9 @@ Third-party parts keep their licences:
 - the stb headers: public domain or MIT;
 - Project Nayuki's QR Code generator: MIT;
 - the Font Awesome Free brands font and icons: SIL OFL 1.1 for the font, CC BY 4.0 for the icons (`frontend/assets/SOURCES.txt`, `frontend/assets/fonts/FontAwesome-LICENSE.txt`);
-- OpenPS2BIOS 0.5 by Tamariba Devs, the open-source BIOS PS5SX2 ships for players without their own (embedded in the app, written to `cache/openps2bios/` with its licence when a player chooses it): MIT (`frontend/assets/openps2bios/LICENSE`, `frontend/assets/SOURCES.txt`).
+- Mesa and its RADV, in Mihawk-99's PS5 port, linked into the app: MIT (`radv/README.md`).
+
+PS5SX2 2.20 to 2.50 carried OpenPS2BIOS, an open-source BIOS; 2.60 and later do not: a game needs a BIOS dumped from the player's own PS2.
 
 The Discord and X logos are their owners' trademarks, used only to link to the author's accounts.
 

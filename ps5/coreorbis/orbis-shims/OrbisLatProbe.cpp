@@ -31,6 +31,7 @@ extern "C" int sceVideoOutGetFlipStatus(int32_t handle, uint64_t status[16]);
 // the driver's own word for the VideoOut handle the device presents through (driver/ps5vk_debug.h; -1 for none): the console's handles are not
 // the small numbers a search finds (0..63 answered nothing on the owner's console)
 extern "C" int ps5vk_debug_video_handle(void* device) __attribute__((weak));
+bool OrbisDriverIsRADV(); // orbis_vk.cpp
 extern "C" unsigned long sceKernelGetProcessTime(void); // microseconds since the process started
 extern "C" int sceKernelUsleep(unsigned microseconds);
 bool OrbisFlag(const char* name) __attribute__((weak));
@@ -84,6 +85,17 @@ void ReadFlags(LatProbe& p)
 {
 	if (p.enabled >= 0)
 		return;
+	// vk-285-325: RADV opens VideoOut itself and gives no handle (the search below asked 64 handles at every present, in vain), and its
+	// swapchain already keeps what the cap keeps: an acquire takes only a buffer neither on screen nor waiting for its flip, of 3, so a
+	// present has at most 1 frame before it waiting for the display (wsi_common_videoout.c, videoout_free_buffer_locked).
+	if (OrbisDriverIsRADV())
+	{
+		p.enabled = 0;
+		p.cap = -1;
+		std::printf("[latcap] off with RADV: its swapchain holds at most 1 frame waiting for the display before the one presented\n");
+		std::fflush(stdout);
+		return;
+	}
 	p.enabled = FlagFile("latprobe") ? 1 : 0;
 	p.cap = FlagFile("nolatcap") ? -1 : FlagFile("latcap0") ? 0 : FlagFile("latcap2") ? 2 : 1;
 	if (p.cap < 0)

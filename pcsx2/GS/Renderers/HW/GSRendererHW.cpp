@@ -11261,8 +11261,10 @@ void GSRendererHW::EndHLEHardwareDraw(bool force_copy_on_hazard /* = false */)
 			GSTexture* src = (config.tex == config.rt) ? config.rt : config.ds;
 #ifdef ORBIS_VULKAN
 			// vk-285-39: a copy of the target's own kind, so GSDeviceVK::CopyRect makes the copy a convert
-			// draw rather than the PS5 driver's CPU image copy.
-			copy = g_gs_device->CreateCompatible(src, false, true);
+			// draw rather than the PS5 driver's CPU image copy. vk-285-325: RADV copies on the GPU: upstream's texture.
+			extern bool OrbisDriverIsRADV();
+			copy = OrbisDriverIsRADV() ? g_gs_device->CreateTexture(src->GetWidth(), src->GetHeight(), 1, src->GetFormat(), true)
+									   : g_gs_device->CreateCompatible(src, false, true);
 #else
 			copy = g_gs_device->CreateTexture(src->GetWidth(), src->GetHeight(), 1, src->GetFormat(), true);
 #endif

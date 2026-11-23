@@ -1,0 +1,791 @@
+diff --git a/src/amd/vulkan/layers/radv_threaded_layer.c b/src/amd/vulkan/layers/radv_threaded_layer.c
+index 7a7e3a2082d..58384448c59 100644
+--- a/src/amd/vulkan/layers/radv_threaded_layer.c
++++ b/src/amd/vulkan/layers/radv_threaded_layer.c
+@@ -366,6 +366,143 @@ radv_threaded_queue_CmdPushConstants(VkCommandBuffer commandBuffer, VkPipelineLa
+    list_addtail(&cmd->cmd_link, &queue->cmds);
+ }
+ 
++/* PS5SX2: vkCmdPushDescriptorSet queued as the two above. The queue keeps a
++ * copy of the writes and of what each points to for its type (the image,
++ * buffer or texel buffer view array, the inline uniform data, the acceleration
++ * structure list); the handles in them are the application's, valid while the
++ * command buffer records (the layer's destroys wait for the worker first). */
++static bool
++radv_threaded_copyable_write(const VkWriteDescriptorSet *write)
++{
++   const VkBaseInStructure *const next = write->pNext;
++   switch (write->descriptorType) {
++   case VK_DESCRIPTOR_TYPE_SAMPLER:
++   case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
++   case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
++   case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
++   case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
++   case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
++   case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
++   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
++   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
++   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
++   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
++      return next == NULL;
++   case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
++      return next != NULL && next->sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK &&
++             next->pNext == NULL;
++   case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
++      return next != NULL && next->sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR &&
++             next->pNext == NULL;
++   default:
++      return false;
++   }
++}
++
++/* A copy of bytes at data in the queue's memory; NULL for nothing to copy, and
++ * *failed set when the memory ran out. */
++static void *
++radv_threaded_copy(struct vk_cmd_queue *queue, const void *data, size_t bytes, bool *failed)
++{
++   if (bytes == 0 || data == NULL)
++      return NULL;
++   void *const copy = linear_alloc_child(queue->ctx, bytes);
++   if (!copy) {
++      *failed = true;
++      return NULL;
++   }
++   memcpy(copy, data, bytes);
++   return copy;
++}
++
++bool
++radv_threaded_queue_CmdPushDescriptorSet(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
++                                         VkPipelineLayout layout, uint32_t set, uint32_t descriptorWriteCount,
++                                         const VkWriteDescriptorSet *pDescriptorWrites)
++{
++   VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
++   struct vk_cmd_queue *queue = &cmd_buffer->vk.cmd_queue;
++
++   if (vk_command_buffer_has_error(&cmd_buffer->vk))
++      return true;
++   for (uint32_t i = 0; i < descriptorWriteCount; i++) {
++      if (!radv_threaded_copyable_write(&pDescriptorWrites[i]))
++         return false;
++   }
++
++   bool failed = false;
++   struct vk_cmd_queue_entry *cmd =
++      linear_alloc_child(queue->ctx, vk_cmd_queue_type_sizes[VK_CMD_PUSH_DESCRIPTOR_SET]);
++   if (!cmd)
++      failed = true;
++   VkWriteDescriptorSet *const writes =
++      radv_threaded_copy(queue, pDescriptorWrites, sizeof(*writes) * descriptorWriteCount, &failed);
++
++   for (uint32_t i = 0; !failed && i < descriptorWriteCount; i++) {
++      const VkWriteDescriptorSet *const from = &pDescriptorWrites[i];
++      VkWriteDescriptorSet *const to = &writes[i];
++      const uint32_t count = from->descriptorCount;
++      /* What the type does not use may point anywhere: it is not copied. */
++      to->pNext = NULL;
++      to->pImageInfo = NULL;
++      to->pBufferInfo = NULL;
++      to->pTexelBufferView = NULL;
++      switch (from->descriptorType) {
++      case VK_DESCRIPTOR_TYPE_SAMPLER:
++      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
++      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
++      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
++      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
++         to->pImageInfo = radv_threaded_copy(queue, from->pImageInfo, sizeof(VkDescriptorImageInfo) * count, &failed);
++         break;
++      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
++      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
++         to->pTexelBufferView = radv_threaded_copy(queue, from->pTexelBufferView, sizeof(VkBufferView) * count, &failed);
++         break;
++      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
++      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
++      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
++      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
++         to->pBufferInfo = radv_threaded_copy(queue, from->pBufferInfo, sizeof(VkDescriptorBufferInfo) * count, &failed);
++         break;
++      case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: {
++         const VkWriteDescriptorSetInlineUniformBlock *const block = from->pNext;
++         VkWriteDescriptorSetInlineUniformBlock *const copy = radv_threaded_copy(queue, block, sizeof(*block), &failed);
++         if (copy)
++            copy->pData = radv_threaded_copy(queue, block->pData, block->dataSize, &failed);
++         to->pNext = copy;
++         break;
++      }
++      case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: {
++         const VkWriteDescriptorSetAccelerationStructureKHR *const list = from->pNext;
++         VkWriteDescriptorSetAccelerationStructureKHR *const copy =
++            radv_threaded_copy(queue, list, sizeof(*list), &failed);
++         if (copy)
++            copy->pAccelerationStructures =
++               radv_threaded_copy(queue, list->pAccelerationStructures,
++                                  sizeof(VkAccelerationStructureKHR) * list->accelerationStructureCount, &failed);
++         to->pNext = copy;
++         break;
++      }
++      default:
++         break;
++      }
++   }
++   if (failed) {
++      vk_command_buffer_set_error(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
++      return true;
++   }
++
++   cmd->type = VK_CMD_PUSH_DESCRIPTOR_SET;
++   cmd->u.push_descriptor_set.pipeline_bind_point = pipelineBindPoint;
++   cmd->u.push_descriptor_set.layout = layout;
++   cmd->u.push_descriptor_set.set = set;
++   cmd->u.push_descriptor_set.descriptor_write_count = descriptorWriteCount;
++   cmd->u.push_descriptor_set.descriptor_writes = writes;
++   list_addtail(&cmd->cmd_link, &queue->cmds);
++   return true;
++}
++
+ /* The command buffer lifecycle: an end records what is queued first; a
+  * begin, a reset or a free drops it (radv_threaded_discard). */
+ 
+diff --git a/src/amd/vulkan/layers/radv_threaded_layer.h b/src/amd/vulkan/layers/radv_threaded_layer.h
+index 9dce550ef45..c1ab5938ea6 100644
+--- a/src/amd/vulkan/layers/radv_threaded_layer.h
++++ b/src/amd/vulkan/layers/radv_threaded_layer.h
+@@ -49,4 +49,12 @@ void radv_threaded_queue_CmdPushConstants(VkCommandBuffer commandBuffer, VkPipel
+                                           VkShaderStageFlags stageFlags, uint32_t offset, uint32_t size,
+                                           const void *pValues);
+ 
++/* PS5SX2: false when a write holds something the copy does not know (a pNext
++ * other than inline uniform data or acceleration structures, or a descriptor
++ * type other than images, buffers, texel buffers and those two): the caller
++ * records the push directly then. */
++bool radv_threaded_queue_CmdPushDescriptorSet(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
++                                              VkPipelineLayout layout, uint32_t set, uint32_t descriptorWriteCount,
++                                              const VkWriteDescriptorSet *pDescriptorWrites);
++
+ #endif /* RADV_THREADED_LAYER_H */
+diff --git a/src/amd/vulkan/layers/radv_threaded_layer_gen.py b/src/amd/vulkan/layers/radv_threaded_layer_gen.py
+index 1a82c45475b..34efe467783 100644
+--- a/src/amd/vulkan/layers/radv_threaded_layer_gen.py
++++ b/src/amd/vulkan/layers/radv_threaded_layer_gen.py
+@@ -34,8 +34,15 @@ LAYER_QUEUED_COMMANDS = [
+     'CmdPushConstants',
+ ]
+ 
+-DIRECT_COMMANDS = [
++# PS5SX2: queued by the layer too, with a copy of every descriptor write and of
++# what it points to (radv_threaded_layer.c); a write the copy does not know is
++# recorded directly as before. PCSX2 pushes the descriptors of nearly every
++# draw, and each push recorded directly waited for the worker.
++LAYER_COPIED_COMMANDS = [
+     'CmdPushDescriptorSet',
++]
++
++DIRECT_COMMANDS = [
+     'CmdPushDescriptorSetWithTemplate',
+     'CmdSetDescriptorBufferOffsetsEXT',
+     'CmdBindDescriptorBufferEmbeddedSamplersEXT',
+@@ -93,6 +100,13 @@ threaded_${c.name}(${c.decl_params()})
+ % elif c.name in layer_queued_commands:
+    radv_threaded_queue_${c.name}(${c.call_params()});
+    radv_threaded_note(cmd_buffer, false);
++% elif c.name in layer_copied_commands:
++   if (radv_threaded_queue_${c.name}(${c.call_params()})) {
++      radv_threaded_note(cmd_buffer, false);
++   } else {
++      radv_threaded_drain(cmd_buffer);
++      device->layer_dispatch.threaded.${c.name}(${c.call_params()});
++   }
+ % else:
+    vk_cmd_enqueue_${c.name}(${c.call_params()});
+    radv_threaded_note(cmd_buffer, ${'true' if c.name in kick_commands else 'false'});
+@@ -160,6 +174,7 @@ def main():
+         "destroys": destroys,
+         "direct_commands": DIRECT_COMMANDS,
+         "layer_queued_commands": LAYER_QUEUED_COMMANDS,
++        "layer_copied_commands": LAYER_COPIED_COMMANDS,
+         "kick_commands": KICK_COMMANDS,
+     }
+ 
+diff --git a/src/amd/vulkan/winsys/ps5/radv_ps5_bo.c b/src/amd/vulkan/winsys/ps5/radv_ps5_bo.c
+index 9b2ad1df683..70fd97a832c 100644
+--- a/src/amd/vulkan/winsys/ps5/radv_ps5_bo.c
++++ b/src/amd/vulkan/winsys/ps5/radv_ps5_bo.c
+@@ -166,10 +166,8 @@ radv_ps5_buffer_create(struct radeon_winsys *rws, uint64_t size, unsigned alignm
+     * both: an event's buffer is never written before its first status read
+     * (dEQP-VK.api.command_buffers.submit_count_equal_zero read a stale 1).
+     * The GPU reads through the CPU's writes only once they are in memory. */
+-   if ((flags & RADEON_FLAG_ZERO_VRAM) || (domain & RADEON_DOMAIN_GTT)) {
+-      memset(bo->memory.cpu, 0, size);
+-      radv_ps5_cpu_flush(bo->memory.cpu, size);
+-   }
++   if ((flags & RADEON_FLAG_ZERO_VRAM) || (domain & RADEON_DOMAIN_GTT))
++      radv_ps5_zero_new(bo->memory.cpu, size);
+ 
+    p_atomic_add(&radv_ps5_allocated_bytes, bo->memory.bytes);
+    if (domain & RADEON_DOMAIN_VRAM)
+diff --git a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
+index 8da2d687237..6b7fe354179 100644
+--- a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
++++ b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.c
+@@ -21,6 +21,10 @@
+ #include "util/u_atomic.h"
+ #include "util/u_math.h"
+ 
++#if defined(__x86_64__)
++#include <immintrin.h>
++#endif
++
+ #if defined(__PROSPERO__)
+ #include <ps5platform/agc.h>
+ #include <ps5platform/kernel.h>
+@@ -172,6 +176,65 @@ radv_ps5_sleep_us(unsigned microseconds)
+    nanosleep(&delay, NULL);
+ }
+ 
++void
++radv_ps5_cnd_deadline(uint64_t abs_ns, struct timespec *until)
++{
++   struct timespec monotonic, wall;
++   clock_gettime(CLOCK_MONOTONIC, &monotonic);
++   clock_gettime(CLOCK_REALTIME, &wall);
++   const uint64_t now = (uint64_t)monotonic.tv_sec * UINT64_C(1000000000) + (uint64_t)monotonic.tv_nsec;
++   const uint64_t ahead = abs_ns > now ? abs_ns - now : 0;
++   const uint64_t at = (uint64_t)wall.tv_sec * UINT64_C(1000000000) + (uint64_t)wall.tv_nsec + ahead;
++   until->tv_sec = (time_t)(at / UINT64_C(1000000000));
++   until->tv_nsec = (long)(at % UINT64_C(1000000000));
++}
++
++void
++radv_ps5_zero_new(void *address, size_t bytes)
++{
++   static int flush = -1;
++   if (flush < 0) {
++      const char *const value = getenv("RADV_PS5_ZERO_FLUSH");
++      flush = value != NULL && value[0] == '1';
++   }
++   if (bytes == 0)
++      return;
++#if defined(__x86_64__)
++   if (!flush) {
++      /* A streaming store writes its line to memory without reading it first
++       * and leaves no copy of the line in the caches (a cached copy is
++       * evicted); the fence makes the stores visible before what follows, as
++       * the flush's closing MFENCE did. The edges that do not fill a whole
++       * 64-byte line go the old way. */
++      uint8_t *at = address;
++      size_t left = bytes;
++      const size_t head = MIN2((size_t)(-(uintptr_t)at & 63u), left);
++      if (head) {
++         memset(at, 0, head);
++         radv_ps5_cpu_flush(at, head);
++         at += head;
++         left -= head;
++      }
++      const size_t body = left & ~(size_t)63u;
++      const __m128i zero = _mm_setzero_si128();
++      for (size_t done = 0; done < body; done += 64) {
++         _mm_stream_si128((__m128i *)(at + done), zero);
++         _mm_stream_si128((__m128i *)(at + done + 16), zero);
++         _mm_stream_si128((__m128i *)(at + done + 32), zero);
++         _mm_stream_si128((__m128i *)(at + done + 48), zero);
++      }
++      _mm_sfence();
++      if (left > body) {
++         memset(at + body, 0, left - body);
++         radv_ps5_cpu_flush(at + body, left - body);
++      }
++      return;
++   }
++#endif
++   memset(address, 0, bytes);
++   radv_ps5_cpu_flush(address, bytes);
++}
++
+ void
+ radv_ps5_cpu_flush(const void *address, size_t bytes)
+ {
+diff --git a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.h b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.h
+index 70b718ec91f..937a2dc5211 100644
+--- a/src/amd/vulkan/winsys/ps5/radv_ps5_platform.h
++++ b/src/amd/vulkan/winsys/ps5/radv_ps5_platform.h
+@@ -135,4 +135,17 @@ int radv_ps5_set_hs_offchip_param(uint32_t granularity, uint32_t buffering);
+ uint64_t radv_ps5_now_ns(void);
+ void radv_ps5_sleep_us(unsigned microseconds);
+ 
++struct timespec;
++/* PS5SX2: abs_ns, a time on os_time_get_nano's clock (CLOCK_MONOTONIC), as the
++ * CLOCK_REALTIME time a cnd_timedwait deadline is measured against. C11's
++ * condition variables are pthread_cond_init's with no attributes, which wait
++ * on the wall clock; a monotonic deadline lies decades in its past, so such a
++ * wait returned at once and its caller spun with the lock it shares. */
++void radv_ps5_cnd_deadline(uint64_t abs_ns, struct timespec *until);
++
++/* PS5SX2: zeroes new memory so that the zeroes are in memory and no line of the
++ * range is in a CPU cache, as memset followed by radv_ps5_cpu_flush leaves it,
++ * in one pass of streaming stores (RADV_PS5_ZERO_FLUSH=1: the memset and flush). */
++void radv_ps5_zero_new(void *address, size_t bytes);
++
+ #endif /* RADV_PS5_PLATFORM_H */
+diff --git a/src/amd/vulkan/winsys/ps5/radv_ps5_sync.c b/src/amd/vulkan/winsys/ps5/radv_ps5_sync.c
+index a01b3bcc055..25cac45a251 100644
+--- a/src/amd/vulkan/winsys/ps5/radv_ps5_sync.c
++++ b/src/amd/vulkan/winsys/ps5/radv_ps5_sync.c
+@@ -159,9 +159,7 @@ radv_ps5_sync_wait_many(struct vk_device *device, uint32_t wait_count, const str
+       /* A signal still has to be submitted: sleep until one is, or a
+        * millisecond passes so running work is polled too. */
+       struct timespec until;
+-      const uint64_t wake = MIN2(abs_timeout_ns, now + 1000000);
+-      until.tv_sec = wake / 1000000000;
+-      until.tv_nsec = wake % 1000000000;
++      radv_ps5_cnd_deadline(MIN2(abs_timeout_ns, now + 1000000), &until);
+       cnd_timedwait(&queue->sync_cond, &queue->sync_lock, &until);
+    }
+ }
+diff --git a/src/vulkan/wsi/wsi_common_videoout.c b/src/vulkan/wsi/wsi_common_videoout.c
+index 1f59ac2120e..c75dac525a5 100644
+--- a/src/vulkan/wsi/wsi_common_videoout.c
++++ b/src/vulkan/wsi/wsi_common_videoout.c
+@@ -42,6 +42,7 @@
+ 
+ #include <assert.h>
+ #include <inttypes.h>
++#include <stdarg.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -78,6 +79,20 @@
+  * (a 120 Hz mode that requires VRR), which turns the system's VRR off; retail titles with VRR
+  * declare 0x40 with 0x40000. VideoOut itself grants mode 15 or refuses it. */
+ #define VIDEOOUT_ATTRIBUTE3_HIGH_FRAME_RATE 0x40u
++/* PS5SX2: the flip check of an accepted 119.88 Hz mode whose bare vblanks were
++ * slow (videoout_open_locked): this many vblank intervals with a flip before
++ * each, the shortest run of the window's length decides, up to the checks'
++ * number apart by the pause. A run slower than the default limit is 60 Hz
++ * (or less); between it and the high limit another check may tell. */
++#define VIDEOOUT_FLIP_INTERVALS 12
++#define VIDEOOUT_FLIP_WINDOW 4
++#define VIDEOOUT_FLIP_CHECKS 3
++#define VIDEOOUT_FLIP_RETRY_US 300000
++#define VIDEOOUT_DEFAULT_REFRESH_LIMIT_NS UINT64_C(18500000)
++/* How long a flip still pending gets before the next is submitted anyway, and
++ * the vblanks the last flips get to show. */
++#define VIDEOOUT_FLIP_SETTLE_NS UINT64_C(1000000)
++#define VIDEOOUT_FLIP_DRAIN_VBLANKS 120
+ 
+ #if !defined(__PROSPERO__)
+ /* The host model: flips show at once and a vblank comes every millisecond,
+@@ -147,6 +162,12 @@ sceVideoOutWaitVblank(int32_t handle)
+    return 0;
+ }
+ 
++static int
++sceVideoOutIsFlipPending(int32_t handle)
++{
++   return 0;
++}
++
+ static int
+ sceVideoOutIsOutputSupported(int32_t handle, uint32_t mode, const void *a, const void *b, const void *c)
+ {
+@@ -252,9 +273,21 @@ struct wsi_videoout_output {
+    cnd_t changed;
+    bool opened;
+    int handle;
++   /* PS5SX2: the output is at 119.88 Hz now (put there by a swapchain made in a
++    * 119.88 Hz mode, videoout_select_rate_locked); at 59.94 Hz otherwise. */
+    bool high_frame_rate;
+    bool modes_settled;
+    bool high_mode_offered;
++   /* PS5SX2: the title declares high frame rates (param.json), and the
++    * console's present output offers mode 15 (IsOutputSupported), as read at
++    * the open: the 119.88 Hz modes are listed then. */
++   bool declares_high;
++   bool high_supported;
++   /* PS5SX2: a 59.94 Hz swapchain looked for an output an earlier process
++    * left at 119.88 Hz (once per process). */
++   bool leftover_checked;
++   /* PS5SX2: what the output did last, one sentence (wsi_videoout_output_status). */
++   char status[320];
+    /* A set of buffers for each size a swapchain has used, in the order they
+     * were registered; set i's buffers are indices i * VIDEOOUT_BUFFERS on. */
+    struct wsi_videoout_set {
+@@ -359,9 +392,142 @@ videoout_vblank_period_ns(int handle)
+    return intervals[VIDEOOUT_PERIOD_INTERVALS / 2];
+ }
+ 
+-/* Opens VideoOut once per process, in the high-frame-rate mode where the
+- * title declares it, the output takes it and the display then refreshes at
+- * it. Under lock. */
++/* PS5SX2: abs_ns, a time on os_time_get_nano's clock (CLOCK_MONOTONIC), as the
++ * CLOCK_REALTIME time a cnd_timedwait deadline is measured against: C11's
++ * condition variables wait on the wall clock, and a monotonic deadline lies
++ * decades in its past, so the acquire's 20 ms wait returned at once and the
++ * acquiring thread spun, taking the output's lock from the flip thread. */
++static void
++videoout_cnd_deadline(uint64_t abs_ns, struct timespec *until)
++{
++   struct timespec monotonic, wall;
++   clock_gettime(CLOCK_MONOTONIC, &monotonic);
++   clock_gettime(CLOCK_REALTIME, &wall);
++   const uint64_t now = (uint64_t)monotonic.tv_sec * UINT64_C(1000000000) + (uint64_t)monotonic.tv_nsec;
++   const uint64_t ahead = abs_ns > now ? abs_ns - now : 0;
++   const uint64_t at = (uint64_t)wall.tv_sec * UINT64_C(1000000000) + (uint64_t)wall.tv_nsec + ahead;
++   until->tv_sec = (time_t)(at / UINT64_C(1000000000));
++   until->tv_nsec = (long)(at % UINT64_C(1000000000));
++}
++
++static VkResult videoout_register_locked(const struct wsi_videoout_size *size, const struct wsi_videoout_set **set_out);
++
++/* PS5SX2: the output's refresh period under flips: a set's buffers, cleared,
++ * flipped one after the other with a flip before each vblank wait (the one
++ * before has been taken by then; a status that trails the vblank gets a
++ * millisecond, and the next flip goes either way). The flips are counted as
++ * the flip thread counts them, so the last of them is the buffer on screen
++ * for the acquires that follow. The shortest run of VIDEOOUT_FLIP_WINDOW
++ * intervals, per interval; 0 when VideoOut took no flip or a wait failed.
++ * Under lock, before any swapchain presents. */
++static uint64_t
++videoout_flip_period_locked(const struct wsi_videoout_set *set)
++{
++   struct wsi_videoout_output *out = &videoout_output;
++   const uint32_t first = (uint32_t)(set - out->sets) * VIDEOOUT_BUFFERS;
++   uint64_t times[VIDEOOUT_FLIP_INTERVALS + 1];
++   uint32_t next = 0;
++   unsigned flips = 0;
++   for (unsigned at = 0; at <= VIDEOOUT_FLIP_INTERVALS; at++) {
++      const uint64_t woke = os_time_get_nano();
++      while (sceVideoOutIsFlipPending(out->handle) > 0 && os_time_get_nano() - woke < VIDEOOUT_FLIP_SETTLE_NS)
++         ;
++      const int64_t argument = out->flip_argument + 1;
++      if (sceVideoOutSubmitFlip(out->handle, (int32_t)(first + next), PS5_VIDEO_OUT_FLIP_VSYNC, argument) == 0) {
++         out->flip_argument = argument;
++         out->buffer[first + next].argument = argument;
++         next = (next + 1) % VIDEOOUT_BUFFERS;
++         flips++;
++      }
++      if (sceVideoOutWaitVblank(out->handle) != 0)
++         return 0;
++      times[at] = os_time_get_nano();
++   }
++   for (unsigned wait = 0; wait < VIDEOOUT_FLIP_DRAIN_VBLANKS && sceVideoOutIsFlipPending(out->handle) > 0; wait++)
++      sceVideoOutWaitVblank(out->handle);
++   if (flips == 0)
++      return 0;
++   uint64_t shortest = UINT64_MAX;
++   for (unsigned at = 0; at + VIDEOOUT_FLIP_WINDOW <= VIDEOOUT_FLIP_INTERVALS; at++)
++      shortest = MIN2(shortest, times[at + VIDEOOUT_FLIP_WINDOW] - times[at]);
++   return shortest / VIDEOOUT_FLIP_WINDOW;
++}
++
++/* PS5SX2: one sentence on what the output did, kept for
++ * wsi_videoout_output_status and written to stderr. Under lock. */
++static void PRINTFLIKE(1, 2)
++videoout_note_locked(const char *format, ...)
++{
++   va_list args;
++   va_start(args, format);
++   vsnprintf(videoout_output.status, sizeof(videoout_output.status), format, args);
++   va_end(args);
++   fprintf(stderr, "wsi/videoout: %s\n", videoout_output.status);
++}
++
++/* PS5SX2: framebuffer memory cleared so that the display, which reads memory
++ * and not the CPU's caches, sees it cleared: streaming stores write whole
++ * lines to memory without reading them and leave no copy in the caches (one
++ * pass, where memset with a CLFLUSH a line took three). */
++static void
++videoout_zero(void *address, size_t bytes)
++{
++#if defined(__PROSPERO__)
++   uint8_t *const at = address;
++   const __m128i zero = _mm_setzero_si128();
++   /* The sets are whole 2 MiB pieces. */
++   for (size_t done = 0; done + 64 <= bytes; done += 64) {
++      _mm_stream_si128((__m128i *)(at + done), zero);
++      _mm_stream_si128((__m128i *)(at + done + 16), zero);
++      _mm_stream_si128((__m128i *)(at + done + 32), zero);
++      _mm_stream_si128((__m128i *)(at + done + 48), zero);
++   }
++   _mm_sfence();
++#else
++   memset(address, 0, bytes);
++#endif
++}
++
++/* PS5SX2: the output back at 59.94 Hz, VideoOut's answer returned and the
++ * call's time in *ms. Nothing waits for the switch after it: the display
++ * takes a second or two to follow and no vblank comes meanwhile (the leave
++ * waited 1669 ms for two of them, 2026-11-23), and what follows needs none
++ * first: a title leaving overlaps the switch with its next start, and a
++ * swapchain's flips show once the display has followed. Under lock. */
++static int
++videoout_restore_locked(unsigned *ms)
++{
++   const uint64_t start = os_time_get_nano();
++   const int restored =
++      sceVideoOutConfigureOutput(videoout_output.handle, PS5_VIDEO_OUT_MODE_RESTORE, NULL, NULL, NULL);
++   *ms = (unsigned)((os_time_get_nano() - start) / UINT64_C(1000000));
++   return restored;
++}
++
++/* PS5SX2: the output back at 59.94 Hz when the process ends with it at
++ * 119.88 Hz: VideoOut keeps the mode for whatever runs next. The title's own
++ * leave path asks first (wsi_videoout_restore_default); this is for an exit
++ * that does not. A thread holding the lock at exit does not stop it. */
++static bool videoout_exit_restore_armed;
++
++static void
++videoout_restore_at_exit(void)
++{
++   struct wsi_videoout_output *out = &videoout_output;
++   const bool locked = mtx_trylock(&out->lock) == thrd_success;
++   if (out->high_frame_rate && out->handle >= 0) {
++      sceVideoOutConfigureOutput(out->handle, PS5_VIDEO_OUT_MODE_RESTORE, NULL, NULL, NULL);
++      out->high_frame_rate = false;
++   }
++   if (locked)
++      mtx_unlock(&out->lock);
++}
++
++/* Opens VideoOut once per process. PS5SX2: the 119.88 Hz modes are offered
++ * where the title declares high frame rates and the console's present output
++ * offers mode 15; the output is switched only when a swapchain is made in one
++ * of them (videoout_select_rate_locked), as ps5vk did, so a title's 59.94 Hz
++ * swapchains get 59.94 Hz (it was 119.88 Hz for the whole process). Under lock. */
+ static bool
+ videoout_open_locked(void)
+ {
+@@ -374,41 +540,166 @@ videoout_open_locked(void)
+       fprintf(stderr, "wsi/videoout: sceVideoOutOpen failed: 0x%08x\n", (unsigned)out->handle);
+       return false;
+    }
+-   if (videoout_title_declares_high_frame_rate()) {
++   out->declares_high = videoout_title_declares_high_frame_rate();
++   if (out->declares_high) {
+       /* Positive: the output takes the mode. 0: it does not at the
+        * console's present output, which is no error. A 1440p display answered
+        * 0 while the console sent it 1080p (the console logged no 120 Hz format
+-       * for it) and 1 once it sent 1440p (PS5_FrameGen, 2026-10-10). So only
+-       * a configure that was asked for and returned 0 counts. */
++       * for it) and 1 once it sent 1440p (PS5_FrameGen, 2026-10-10). */
+       const int supported =
+          sceVideoOutIsOutputSupported(out->handle, PS5_VIDEO_OUT_MODE_HIGH_FRAME_RATE, NULL, NULL, NULL);
+-      const int configured =
+-         supported > 0
+-            ? sceVideoOutConfigureOutput(out->handle, PS5_VIDEO_OUT_MODE_HIGH_FRAME_RATE, NULL, NULL, NULL)
+-            : -1;
+-      out->high_frame_rate = supported > 0 && configured == 0;
++      out->high_supported = supported > 0;
++      if (out->high_supported)
++         videoout_note_locked("119.88 Hz offered (the output is switched when a swapchain is made in a 119.88 Hz mode)");
++      else
++         videoout_note_locked("119.88 Hz not offered on the console's present output (%d): 59.94 Hz only", supported);
++   } else {
++      videoout_note_locked("the title declares no high frame rates (param.json attribute3 0x40): 59.94 Hz only");
++   }
++   return true;
++}
++
++/* PS5SX2: the output at the rate of the swapchain being made in set, before
++ * its images are made. A 119.88 Hz swapchain switches the output to mode 15
++ * and keeps it where the display then refreshes at 120 Hz: bare vblanks show
++ * it, or, slow as they also are on a display with a variable refresh rate
++ * (it idles at the bottom of its range while nothing is flipped: 47.9 Hz, a
++ * vblank every 20.87 ms, on the owner's), the set's buffers cleared and
++ * flipped in turn. A 59.94 Hz swapchain puts the output back at 59.94 Hz, or
++ * finds it left at 120 Hz by an earlier process. The output's state is
++ * wsi_videoout_refresh_millihertz's answer. Under lock. */
++static void
++videoout_select_rate_locked(const struct wsi_videoout_set *set, bool high)
++{
++   struct wsi_videoout_output *out = &videoout_output;
++   /* An older swapchain's flips still queued go first: they would show after the switch. */
++   while (out->queue_count)
++      cnd_wait(&out->changed, &out->lock);
++
++   if (!high) {
++      unsigned ms = 0;
+       if (out->high_frame_rate) {
+-         /* A period of 0 is a failed wait: never taken for 119.88 Hz */
++         const int restored = videoout_restore_locked(&ms);
++         out->high_frame_rate = false;
++         videoout_note_locked("59.94 Hz restored for a swapchain in a 59.94 Hz mode (0x%08x, %u ms)", (unsigned)restored,
++                              ms);
++      } else if (out->declares_high && !out->leftover_checked) {
++         out->leftover_checked = true;
++         /* PS5_VIDEOOUT_LEFTOVER_CHECK=0: the title knows the process before
++          * it put the output back (PS5SX2's "back to the menu" does as it
++          * leaves): the vblanks are not measured, which would wait out the
++          * display's switch that may still be going on. */
++         const char *const check = getenv("PS5_VIDEOOUT_LEFTOVER_CHECK");
++         if (check != NULL && check[0] == '0') {
++            videoout_note_locked("59.94 Hz (the swapchain's mode; the title put the output back as it last left, so it "
++                                 "is not looked at for 120 Hz)");
++            return;
++         }
+          const uint64_t period = videoout_vblank_period_ns(out->handle);
+-         if (period == 0 || period > VIDEOOUT_HIGH_REFRESH_LIMIT_NS) {
+-            sceVideoOutConfigureOutput(out->handle, PS5_VIDEO_OUT_MODE_RESTORE, NULL, NULL, NULL);
+-            out->high_frame_rate = false;
+-            if (period == 0)
+-               fprintf(stderr, "wsi/videoout: 119.88 Hz accepted, but a vblank wait failed; 59.94 Hz restored\n");
+-            else
+-               fprintf(stderr,
+-                       "wsi/videoout: 119.88 Hz accepted, but a vblank comes every %.3f ms; 59.94 Hz restored\n",
+-                       (double)period / 1e6);
++         if (period != 0 && period <= VIDEOOUT_HIGH_REFRESH_LIMIT_NS) {
++            const int restored = videoout_restore_locked(&ms);
++            videoout_note_locked("found at 120 Hz (a vblank every %.3f ms), left by an earlier process: 59.94 Hz "
++                                 "restored (0x%08x, %u ms)",
++                                 (double)period / 1e6, (unsigned)restored, ms);
++         } else {
++            videoout_note_locked("59.94 Hz (the swapchain's mode; a vblank every %.3f ms with nothing flipping)",
++                                 (double)period / 1e6);
+          }
+-      } else if (supported > 0) {
+-         fprintf(stderr, "wsi/videoout: 119.88 Hz refused (%d); presenting at 59.94 Hz\n", configured);
+-      } else {
+-         fprintf(stderr,
+-                 "wsi/videoout: 119.88 Hz not offered on the console's present output (%d); presenting at 59.94 Hz\n",
+-                 supported);
+       }
++      return;
+    }
+-   return true;
++
++   if (out->high_frame_rate)
++      return;
++   out->leftover_checked = true;
++   const int configured =
++      sceVideoOutConfigureOutput(out->handle, PS5_VIDEO_OUT_MODE_HIGH_FRAME_RATE, NULL, NULL, NULL);
++   if (configured != 0) {
++      /* The console refuses with 0x80290016 without the declaration, and at a
++       * 1080p output. The restore puts the output in a known mode whatever
++       * the refusal left. */
++      const int restored = sceVideoOutConfigureOutput(out->handle, PS5_VIDEO_OUT_MODE_RESTORE, NULL, NULL, NULL);
++      videoout_note_locked("119.88 Hz refused (0x%08x, restore 0x%08x): presenting at 59.94 Hz", (unsigned)configured,
++                           (unsigned)restored);
++      return;
++   }
++   if (!videoout_exit_restore_armed) {
++      videoout_exit_restore_armed = true;
++      atexit(videoout_restore_at_exit);
++   }
++   /* A period of 0 is a failed wait: never taken for 119.88 Hz. */
++   const uint64_t period = videoout_vblank_period_ns(out->handle);
++   if (period != 0 && period <= VIDEOOUT_HIGH_REFRESH_LIMIT_NS) {
++      out->high_frame_rate = true;
++      videoout_note_locked("119.88 Hz selected, a vblank every %.3f ms", (double)period / 1e6);
++      return;
++   }
++   /* Flips decide. The buffers hold an older swapchain's frames: they are
++    * cleared first, or the check would show them. */
++   videoout_zero(set->buffers, VIDEOOUT_BUFFERS * set->size->buffer_bytes);
++   uint64_t flipped = 0;
++   unsigned checks = 0;
++   while (checks < VIDEOOUT_FLIP_CHECKS) {
++      flipped = videoout_flip_period_locked(set);
++      checks++;
++      /* 119.88 Hz, 59.94 Hz or no answer: another check would say the same. */
++      if (flipped <= VIDEOOUT_DEFAULT_REFRESH_LIMIT_NS || checks == VIDEOOUT_FLIP_CHECKS)
++         break;
++      os_time_sleep(VIDEOOUT_FLIP_RETRY_US);
++   }
++   if (flipped != 0 && flipped <= VIDEOOUT_HIGH_REFRESH_LIMIT_NS) {
++      out->high_frame_rate = true;
++      videoout_note_locked("119.88 Hz selected, a flip every %.3f ms (flip check %u; with nothing flipping a vblank came "
++                           "every %.3f ms, as on a display with a variable refresh rate)",
++                           (double)flipped / 1e6, checks, (double)period / 1e6);
++      return;
++   }
++   unsigned ms = 0;
++   const int restored = videoout_restore_locked(&ms);
++   videoout_note_locked("119.88 Hz accepted, but a vblank comes every %.3f ms and a flip every %.3f ms (%u flip "
++                        "check(s)): the display is not refreshing at 120 Hz, so 59.94 Hz is restored (0x%08x, %u ms)",
++                        (double)period / 1e6, (double)flipped / 1e6, checks, (unsigned)restored, ms);
++}
++
++PUBLIC uint32_t wsi_videoout_refresh_millihertz(void);
++PUBLIC const char *wsi_videoout_output_status(void);
++PUBLIC void wsi_videoout_restore_default(void);
++
++/* PS5SX2: the output's refresh now, in millihertz: 119880 once a 119.88 Hz
++ * swapchain took it, 59940 otherwise, 0 before VideoOut is open. */
++PUBLIC uint32_t
++wsi_videoout_refresh_millihertz(void)
++{
++   call_once(&videoout_once, videoout_output_init_once);
++   mtx_lock(&videoout_output.lock);
++   const uint32_t millihertz = !videoout_output.opened || videoout_output.handle < 0 ? 0
++                               : videoout_output.high_frame_rate                    ? VIDEOOUT_HIGH_REFRESH_MILLIHERTZ
++                                                                                    : VIDEOOUT_REFRESH_MILLIHERTZ;
++   mtx_unlock(&videoout_output.lock);
++   return millihertz;
++}
++
++/* PS5SX2: the sentence on what the output did last ("" before the open). */
++PUBLIC const char *
++wsi_videoout_output_status(void)
++{
++   return videoout_output.status;
++}
++
++/* PS5SX2: the output back at 59.94 Hz, for a title leaving with it at
++ * 119.88 Hz (the console keeps the mode for what runs next). */
++PUBLIC void
++wsi_videoout_restore_default(void)
++{
++   call_once(&videoout_once, videoout_output_init_once);
++   mtx_lock(&videoout_output.lock);
++   if (videoout_output.high_frame_rate && videoout_output.handle >= 0) {
++      unsigned ms = 0;
++      const int restored = videoout_restore_locked(&ms);
++      videoout_output.high_frame_rate = false;
++      videoout_note_locked("59.94 Hz restored as the title leaves (0x%08x, %u ms)", (unsigned)restored, ms);
++   }
++   mtx_unlock(&videoout_output.lock);
+ }
+ 
+ PUBLIC int wsi_videoout_set_flip_rate(int rate);
+@@ -439,7 +730,7 @@ videoout_settle_modes(void)
+    mtx_lock(&videoout_output.lock);
+    if (!videoout_output.modes_settled) {
+       videoout_output.modes_settled = true;
+-      videoout_output.high_mode_offered = videoout_open_locked() && videoout_output.high_frame_rate;
++      videoout_output.high_mode_offered = videoout_open_locked() && videoout_output.high_supported;
+    }
+    mtx_unlock(&videoout_output.lock);
+ }
+@@ -477,10 +768,7 @@ videoout_register_locked(const struct wsi_videoout_size *size, const struct wsi_
+    }
+    buffers = address;
+    /* The display reads memory, not the CPU's cache. */
+-   memset(buffers, 0, bytes);
+-   for (size_t at = 0; at < bytes; at += 64)
+-      _mm_clflush(buffers + at);
+-   _mm_mfence();
++   videoout_zero(buffers, bytes);
+ #else
+    buffers = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (buffers == MAP_FAILED)
+@@ -1036,9 +1324,7 @@ videoout_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain, const VkA
+       } else {
+          /* A flip waiting for its frame, or an image held: wait for either. */
+          struct timespec until;
+-         const uint64_t wake = MIN2(deadline, os_time_get_nano() + UINT64_C(20000000));
+-         until.tv_sec = wake / 1000000000;
+-         until.tv_nsec = wake % 1000000000;
++         videoout_cnd_deadline(MIN2(deadline, os_time_get_nano() + UINT64_C(20000000)), &until);
+          cnd_timedwait(&out->changed, &out->lock, &until);
+       }
+    }
+@@ -1153,6 +1439,9 @@ videoout_surface_create_swapchain(VkIcdSurfaceBase *icd_surface, VkDevice device
+    if (result == VK_SUCCESS && out->current && out->current != (struct wsi_videoout_swapchain *)
+                                                  wsi_swapchain_from_handle(pCreateInfo->oldSwapchain))
+       result = VK_ERROR_NATIVE_WINDOW_IN_USE_KHR;
++   /* PS5SX2: the output at the rate of this swapchain's mode. */
++   if (result == VK_SUCCESS)
++      videoout_select_rate_locked(set, mode->high_frame_rate);
+    mtx_unlock(&out->lock);
+    if (result != VK_SUCCESS)
+       return result;

@@ -34,6 +34,49 @@ extern "C"
 	uint32_t ps5vk_output_refresh_millihertz(void) __attribute__((weak));
 	const char* ps5vk_output_status(void) __attribute__((weak));
 	bool ps5vk_output_restore_default(void) __attribute__((weak));
+	// vk-285-325: PS5SX2's RADV (Mihawk's PS5 Mesa with our patches, wsi_common_videoout.c) has its own too: the output follows the
+	// mode of each swapchain, and these say how it went.
+	uint32_t wsi_videoout_refresh_millihertz(void) __attribute__((weak));
+	const char* wsi_videoout_output_status(void) __attribute__((weak));
+	void wsi_videoout_restore_default(void) __attribute__((weak));
+}
+
+uint32_t OrbisDriverOutputMilliHz()
+{
+	if (ps5vk_output_refresh_millihertz)
+		return ps5vk_output_refresh_millihertz();
+	if (wsi_videoout_refresh_millihertz)
+		return wsi_videoout_refresh_millihertz();
+	return 0;
+}
+
+const char* OrbisDriverOutputStatus()
+{
+	if (ps5vk_output_status)
+		return ps5vk_output_status();
+	if (wsi_videoout_output_status)
+		return wsi_videoout_output_status();
+	return nullptr;
+}
+
+bool OrbisDriverHasOutputControl()
+{
+	return ps5vk_output_status || ps5vk_output_refresh_millihertz || ps5vk_output_restore_default || wsi_videoout_refresh_millihertz;
+}
+
+bool OrbisDriverRestoreOutput()
+{
+	if (ps5vk_output_restore_default)
+	{
+		ps5vk_output_restore_default();
+		return true;
+	}
+	if (wsi_videoout_restore_default)
+	{
+		wsi_videoout_restore_default();
+		return true;
+	}
+	return false;
 }
 
 namespace

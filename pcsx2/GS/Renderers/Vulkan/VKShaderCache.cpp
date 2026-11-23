@@ -626,9 +626,19 @@ void VKShaderCache::ClosePipelineCache()
 	m_pipeline_cache = VK_NULL_HANDLE;
 }
 
+#ifdef ORBIS_VULKAN
+// vk-285-325 (AI-assisted): RADV's caches under their own names. The index's header names the device (vendor, device, its UUID), so
+// the ps5vk and RADV eboots each found the other's files wrong and deleted them: every switch between the two built everything again.
+bool OrbisDriverIsRADV(); // orbis_vk.cpp
+#endif
+
 std::string VKShaderCache::GetShaderCacheBaseFileName(bool debug)
 {
 	std::string base_filename = "vulkan_shaders";
+#ifdef ORBIS_VULKAN
+	if (OrbisDriverIsRADV())
+		base_filename += "_radv";
+#endif
 
 	if (debug)
 		base_filename += "_debug";
@@ -639,6 +649,10 @@ std::string VKShaderCache::GetShaderCacheBaseFileName(bool debug)
 std::string VKShaderCache::GetPipelineCacheBaseFileName(bool debug)
 {
 	std::string base_filename = "vulkan_pipelines";
+#ifdef ORBIS_VULKAN
+	if (OrbisDriverIsRADV())
+		base_filename += "_radv";
+#endif
 
 	if (debug)
 		base_filename += "_debug";

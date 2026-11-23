@@ -353,3 +353,10 @@ void OrbisVideoOutNoteSurfaceClosed();
 void OrbisVideoOutRestore();
 // One line for boot.log and the frame generation log: what the switch did, or why it did not run.
 std::string OrbisVideoOutSummary();
+// vk-285-325: the linked driver's own output control (ps5vk's ps5vk_output_*, or PS5SX2's RADV's wsi_videoout_*). Its refresh of
+// the output in millihertz (0: no such call, or the output not open), its last sentence on the output (nullptr: none), whether it
+// has such control at all, and the default output put back (false: the driver has no call for it).
+uint32_t OrbisDriverOutputMilliHz();
+const char* OrbisDriverOutputStatus();
+bool OrbisDriverHasOutputControl();
+bool OrbisDriverRestoreOutput();
