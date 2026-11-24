@@ -843,15 +843,21 @@ struct Display
 				continue;
 			std::vector<VkDisplayModePropertiesKHR> modes(mode_count);
 			vk.vkGetDisplayModePropertiesKHR(pd, d.display, &mode_count, modes.data());
-			auto off_60hz = [](const VkDisplayModePropertiesKHR& x) {
+			// 2026-11-24 (AI-assisted; owner: the shelf "doesn't feel smooth at all now"; with 120 Hz "feels good", "yes, make it
+			// default"): the mode nearest 120 Hz, where the display offers one (the driver offers 119.88 Hz modes when the title
+			// declares high frame rates and the output supports them, else only 59.94 Hz ones); the flag shelf60 keeps the shelf at
+			// 60 Hz. On the owner's Pro: at 60 Hz the shelf drew all 300 frames of every 5 s while scrolling (the worst 17-22 ms) and
+			// still felt choppy after a game at 120 Hz; at 119.88 Hz it draws 600 (the worst 9-15 ms).
+			static const int64_t target_mhz = OrbisFlag("shelf60") ? 60000 : 120000;
+			auto off_target = [](const VkDisplayModePropertiesKHR& x) {
 				const int64_t mhz = static_cast<int64_t>(x.parameters.refreshRate);
-				return mhz > 60000 ? mhz - 60000 : 60000 - mhz;
+				return mhz > target_mhz ? mhz - target_mhz : target_mhz - mhz;
 			};
 			for (const VkDisplayModePropertiesKHR& m : modes)
 			{
 				const uint64_t area = static_cast<uint64_t>(m.parameters.visibleRegion.width) * m.parameters.visibleRegion.height;
 				const uint64_t best = static_cast<uint64_t>(mode.parameters.visibleRegion.width) * mode.parameters.visibleRegion.height;
-				if (!display || area > best || (area == best && off_60hz(m) < off_60hz(mode)))
+				if (!display || area > best || (area == best && off_target(m) < off_target(mode)))
 				{
 					display = d.display;
 					mode = m;

@@ -2945,7 +2945,14 @@ static bool orbis_leave_process(bool relay, const OrbisLeaveFlags& fl)
   const long long t_output = orbis_steady_us();
   // fix181 (bisect of the exec regression, owner: "introduced in like 2.00"; 2.00 added this call before the exec): flag menu_keepoutput skips it (the next
   // start puts a 120 Hz output back itself, OrbisVideoOutBootCheck)
-  if (!orbis_flag("menu_keepoutput"))
+  // 2026-11-24: so does an output at 119.88 Hz now, unless the flag shelf60 is set: the shelf takes the 119.88 Hz mode itself when it
+  // is offered (fe_ps5.cpp), so a game's 120 Hz output goes on into the shelf without a change to 60 Hz and back on the way. An output
+  // at 59.94 Hz (or anything else) is put back as before.
+  const uint32_t output_mhz = OrbisDriverOutputMilliHz();
+  const bool keep_for_shelf = output_mhz == 119880 && !orbis_flag("shelf60");
+  if (keep_for_shelf)
+    printf("[menu] the output stays at 119.88 Hz: the shelf takes that mode too (flag shelf60: back to 59.94 Hz as the game leaves)\n");
+  if (!orbis_flag("menu_keepoutput") && !keep_for_shelf)
   {
     orbis_output_default(); // before the exit, never after: frame generation's 120 Hz output (and the PAL modes) go back to the default first
     orbis_leave_note_ms("output default restored", t_output); // 176: with frame generation's 120 Hz this is an HDMI mode change
