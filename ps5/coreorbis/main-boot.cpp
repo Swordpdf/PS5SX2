@@ -109,6 +109,139 @@ bool g_orbis_sw_on_gl = false;
 // eerec-278: bumped by the pad thread when L3+R3 are held ~0.4 s (cycles the present filter).
 std::atomic<int> g_orbis_filter_cycle{0};
 extern std::atomic<int> g_orbis_state_request; // eerec-282 (StubHost.cpp)
+
+// 2026-11-24 (AI-assisted; owner: "goptimize sotc"; test builds, branch ps5sx2-sotc): a hands-off bench run, as PS5SX3's goptimize
+// does it. logs/bench.txt, read and deleted when a game starts, names the savestate the game starts in ("state=<path>"), how long the
+// run lasts ("seconds=<n>") and a name for it ("tag=<name>"). Each second of the run goes to logs/bench-result.txt (emulation speed,
+// vsyncs and game frames a second, the EE, GS and VU threads' loads, frame times), then the game goes back to the shelf, so the next
+// run starts the same way (disc-launch.txt + disc-launch-exec.txt). Without bench.txt nothing changes.
+static std::string s_bench_state, s_bench_tag;
+static int s_bench_seconds = 0;
+static bool s_bench_session = false; // "session=1": after the first run the game stays and takes more runs from logs/bench-cmd.txt
+static void orbis_bench_read()
+{
+  const std::string path = OrbisLogPath("bench.txt");
+  FILE* f = fopen(path.c_str(), "r");
+  if (!f)
+    return;
+  char line[1024];
+  while (fgets(line, sizeof(line), f))
+  {
+    std::string l(line);
+    while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' '))
+      l.pop_back();
+    if (l.rfind("state=", 0) == 0)
+      s_bench_state = l.substr(6);
+    else if (l.rfind("seconds=", 0) == 0)
+      s_bench_seconds = atoi(l.c_str() + 8);
+    else if (l.rfind("tag=", 0) == 0)
+      s_bench_tag = l.substr(4);
+    else if (l == "session=1")
+      s_bench_session = true;
+  }
+  fclose(f);
+  unlink(path.c_str());
+  struct stat st = {};
+  if (!s_bench_state.empty() && stat(s_bench_state.c_str(), &st) != 0)
+  {
+    printf("[bench] %s: not there (errno %d): the game starts without it\n", s_bench_state.c_str(), errno);
+    s_bench_state.clear();
+  }
+  printf("[bench] run '%s': state %s, %d s, then back to the shelf\n", s_bench_tag.c_str(),
+    s_bench_state.empty() ? "(none)" : s_bench_state.c_str(), s_bench_seconds);
+  fflush(stdout);
+}
+static void orbis_bench_start()
+{
+  if (s_bench_seconds <= 0)
+    return;
+  std::thread([]() {
+    // One run: its seconds into logs/bench-result.txt (written over by each run).
+    const auto one_run = [](const std::string& tag, int seconds) {
+      const std::string out = OrbisLogPath("bench-result.txt");
+      FILE* f = fopen(out.c_str(), "w");
+      if (f)
+      {
+        fprintf(f, "tag=%s\nstate=%s\nseconds=%d\n", tag.c_str(), s_bench_state.c_str(), seconds);
+        fflush(f);
+      }
+      printf("[bench] run '%s': %d s\n", tag.c_str(), seconds);
+      fflush(stdout);
+      for (int t = 1; t <= seconds; t++)
+      {
+        sleep(1);
+        if (!f)
+          continue;
+        fprintf(f, "t=%d frame=%llu speed=%.1f vps=%.2f fps=%.2f ee=%.1f gs=%.1f vu=%.1f gpu=%.1f ft=%.2f/%.2f/%.2f\n", t,
+          static_cast<unsigned long long>(PerformanceMetrics::GetFrameNumber()), PerformanceMetrics::GetSpeed(),
+          PerformanceMetrics::GetFPS(), PerformanceMetrics::GetInternalFPS(), PerformanceMetrics::GetCPUThreadUsage(),
+          PerformanceMetrics::GetGSThreadUsage(), PerformanceMetrics::GetVUThreadUsage(), PerformanceMetrics::GetGPUUsage(),
+          PerformanceMetrics::GetMinimumFrameTime(), PerformanceMetrics::GetAverageFrameTime(), PerformanceMetrics::GetMaximumFrameTime());
+        fflush(f);
+      }
+      if (f)
+      {
+        fprintf(f, "end\n");
+        fclose(f);
+      }
+      printf("[bench] run '%s': done\n", tag.c_str());
+      fflush(stdout);
+    };
+    one_run(s_bench_tag, s_bench_seconds);
+    // 2026-11-24: session mode. Two kernel panics came at a shelf process's exec into the next run, so a batch now runs in one game:
+    // logs/bench-cmd.txt ("tag=<name>" + "seconds=<n>", or "quit") is read once a second; a run reloads slot 1 (request 2: the
+    // bench's state is the game's slot 1) after the PC wrote that run's settings (the game's settings file is applied live).
+    // Nothing for 15 minutes, or "quit": back to the shelf.
+    if (s_bench_session && s_bench_state.find(".01.p2s") != std::string::npos)
+    {
+      const std::string cmd_path = OrbisLogPath("bench-cmd.txt");
+      int idle = 0;
+      while (idle < 900)
+      {
+        sleep(1);
+        FILE* c = fopen(cmd_path.c_str(), "r");
+        if (!c)
+        {
+          idle++;
+          continue;
+        }
+        std::string tag, text;
+        int seconds = 0;
+        char line[512];
+        while (fgets(line, sizeof(line), c))
+        {
+          std::string l(line);
+          while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' '))
+            l.pop_back();
+          text += l + ";";
+          if (l.rfind("tag=", 0) == 0)
+            tag = l.substr(4);
+          else if (l.rfind("seconds=", 0) == 0)
+            seconds = atoi(l.c_str() + 8);
+        }
+        fclose(c);
+        if (text.find("quit") != std::string::npos)
+        {
+          unlink(cmd_path.c_str());
+          break;
+        }
+        if (tag.empty() || seconds <= 0)
+          continue; // still being written
+        unlink(cmd_path.c_str());
+        idle = 0;
+        g_orbis_state_request.store(2, std::memory_order_release); // StubHost.cpp: load slot 1 at the next vsync
+        printf("[bench] session: run '%s' (slot 1 reloaded)\n", tag.c_str());
+        fflush(stdout);
+        sleep(2);
+        one_run(tag, seconds);
+      }
+    }
+    printf("[bench] back to the shelf\n");
+    fflush(stdout);
+    g_orbis_state_request.store(3, std::memory_order_release); // StubHost.cpp: back to the menu at the next vsync
+  }).detach();
+}
+
 std::atomic<int> g_orbis_ingame_request{0}; // 2.31: the in-game menu combo asks; StubHost.cpp pauses the game for it
 // 2026-11-15 (diagnostic, flag lsfgdump; AI-assisted): how far player 1's sticks are from their centres (0-127, the larger axis of the
 // two), for the frame capture that waits until the player moves (GSDeviceVK.cpp, OrbisFrameGenRecord).
@@ -1486,9 +1619,67 @@ static void orbis_apply_ini_file(MemorySettingsInterface& si, const char* path, 
   fflush(stdout);
 }
 
+// 2026-11-24 (AI-assisted; SotC goptimize, owner: "Yes, make it default"): a game's built-in settings, applied between gs.ini and the
+// game's own file: they win over the settings for all games (gs.ini's EE cycle rate, say) and lose to anything the player set for
+// this game. PS5SX2/GameTuning=false (gs.ini or the game's file) leaves them out, as it does R&C1's tuning.
+// Shadow of the Colossus: the set that held 100% speed and 60 fps (min 59.8) at its heaviest spot on the owner's PS5 Pro with RADV
+// (tests 338 and 339 at 6x; 120 on screen with Lossless): EE cycle rate 180% (it draws a frame per vsync only with enough EE
+// cycles, else it locks to 30: 130% is 100% speed at 30 fps, 300% is EE-bound at ~88%), MTVU with its thread's spin off (+2
+// points), Instant DMA, the VU's fast min/max, and the VU and FPU overflow clamps off. Its looks (patches, resolution, texture
+// downloads, frame generation) stay the player's. Not run on a base PS5 yet.
+static std::string s_game_image_path; // the game being started, for its serial (orbis_apply_game_defaults)
+static const char* s_game_defaults_name = nullptr; // whose built-in settings were applied, for the [boot] game tuning line
+
+static void orbis_apply_game_defaults(MemorySettingsInterface& si, bool quiet)
+{
+  if (s_game_image_path.empty() || s_game_ini_path.empty() ||
+      (s_game_image_path.size() > 4 && strcasecmp(s_game_image_path.c_str() + s_game_image_path.size() - 4, ".elf") == 0))
+    return;
+  static std::string s_read_path, s_serial; // the disc's serial, read once per game
+  if (s_read_path != s_game_image_path)
+  {
+    s_read_path = s_game_image_path;
+    s_serial = fe::ReadSerial(s_game_image_path);
+  }
+  static const char* const sotc[] = {"SCUS-97472", "SCES-53326", "SCPS-15097", "SCPS-19320", "SCPS-19335", // the releases
+                                     "SCUS-97505", "SCED-53962"};                                       // the demos
+  bool is_sotc = false;
+  for (const char* s : sotc)
+    is_sotc = is_sotc || s_serial == s;
+  if (!is_sotc)
+    return;
+  // on unless gs.ini (already in si) or the game's own file turns game tuning off
+  MemorySettingsInterface own;
+  orbis_apply_ini_file(own, s_game_ini_path.c_str(), "game ini", true);
+  if (!own.GetBoolValue("PS5SX2", "GameTuning", si.GetBoolValue("PS5SX2", "GameTuning", true)))
+  {
+    if (!quiet)
+      printf("[boot] game defaults: Shadow of the Colossus's left out (PS5SX2/GameTuning=false)\n");
+    return;
+  }
+  si.SetIntValue("EmuCore/Speedhacks", "EECycleRate", 2);
+  si.SetIntValue("EmuCore/Speedhacks", "EECycleSkip", 0);
+  si.SetBoolValue("EmuCore/Speedhacks", "vuThread", true);
+  si.SetBoolValue("EmuCore/Speedhacks", "OrbisMTVUSpin", false);
+  si.SetBoolValue("EmuCore/Gamefixes", "InstantDMAHack", true);
+  si.SetBoolValue("EmuCore/CPU/Recompiler", "OrbisVUFastMinMax", true);
+  for (const char* k : {"vu0Overflow", "vu0ExtraOverflow", "vu0SignOverflow", "vu1Overflow", "vu1ExtraOverflow", "vu1SignOverflow",
+                        "fpuOverflow", "fpuExtraOverflow", "fpuFullMode"})
+    si.SetBoolValue("EmuCore/CPU/Recompiler", k, false);
+  s_game_defaults_name = "Shadow of the Colossus";
+  if (!quiet)
+  {
+    printf("[boot] game defaults: Shadow of the Colossus (%s): EE cycle rate 180%%, MTVU with its spin off, Instant DMA, VU fast "
+           "min/max, VU and FPU overflow clamps off (over gs.ini, under the game's own file; PS5SX2/GameTuning=false leaves them out)\n",
+           s_serial.c_str());
+    fflush(stdout);
+  }
+}
+
 static void orbis_apply_gs_ini(MemorySettingsInterface& si, bool quiet = false)
 {
   orbis_apply_ini_file(si, "/data/PCSX2/gs.ini", "gs.ini", quiet);
+  orbis_apply_game_defaults(si, quiet); // 2026-11-24: a game's built-in settings, between the two
   if (!s_game_ini_path.empty()) // vk-285-32: then the game's own
     orbis_apply_ini_file(si, s_game_ini_path.c_str(), "game ini", quiet);
 #ifdef PS5SX2_ACHIEVEMENTS
@@ -4077,6 +4268,20 @@ static void orbis_vk_param_json()
   fflush(stdout);
 }
 
+// 2026-11-24 (AI-assisted; SotC goptimize): the CPU RADV's recording thread runs on, from PS5SX2/RecorderCpu and PS5SX2/ThreadLayout.
+// Unset: CPU 0 with the default layout ("auto" or unset; owner 2026-11-24 "make it default": core 0 is the one core of the first group of
+// four the layout EE 2 / GS 6 / VU 4 leaves free; SotC at 180%: 100.0% twice, lowest 97 and 100, against 99.4-99.7% unpinned, lowest
+// 94-96, and 96.8-97.2% on CPU 8, the other group), anywhere with any other layout. "off" or -1: anywhere; 0-12: that CPU. -1: anywhere.
+static int orbis_recorder_cpu(const std::string& rec, const std::string& layout, bool hw)
+{
+  if (rec.empty())
+    return (hw && (layout.empty() || layout == "auto")) ? 0 : -1;
+  if (rec == "off")
+    return -1;
+  const int cpu = atoi(rec.c_str());
+  return (cpu >= 0 && cpu <= 12) ? cpu : -1;
+}
+
 static void orbis_vk_environment()
 {
   const bool hw = !g_sw_renderer;
@@ -4104,6 +4309,15 @@ static void orbis_vk_environment()
       setenv("RADV_THREADED_RECORDING", "1", 0);
     if (orbis_flag("vk_zeroflush"))
       setenv("RADV_PS5_ZERO_FLUSH", "1", 0);
+    // 2026-11-24 (SotC goptimize): the CPU RADV's recording thread starts on (orbis_recorder_cpu), from gs.ini here: a device made
+    // now (the shelf's) gets it. The game's tuning below decides again with the game's own file, before the game's device is made.
+    {
+      const int cpu = orbis_recorder_cpu(orbis_gs_ini_string("RecorderCpu"), orbis_gs_ini_string("ThreadLayout"), hw);
+      if (cpu >= 0)
+        setenv("RADV_PS5_RECORD_CPU", std::to_string(cpu).c_str(), 1);
+      else
+        unsetenv("RADV_PS5_RECORD_CPU");
+    }
     // The 120 Hz mode: the driver reads attribute3 from /app0/sce_sys/param.json unless PS5_VIDEOOUT_PARAM_JSON names the file.
     orbis_vk_param_json();
     if (const char* const declared = getenv("PS5VK_PARAM_JSON"))
@@ -5145,6 +5359,7 @@ int main()
   {
     s_game_path.clear();
     s_game_ini_path.clear();
+    s_game_image_path.clear();
     printf("[boot] the PS2 system menu (no disc); settings: gs.ini only\n");
     orbis_eventf("game start: the PS2 system menu (no disc) | all games (gs.ini): %s", orbis_ini_summary("/data/PCSX2/gs.ini").c_str());
     fflush(stdout);
@@ -5181,6 +5396,7 @@ int main()
     }
     web_stem = stem;
     s_game_ini_path = "/data/PCSX2/settings/" + stem + ".ini";
+    s_game_image_path = s_game_path; // 2026-11-24: the game's built-in settings (orbis_apply_game_defaults) go by its serial
   }
 #ifdef ORBIS_VULKAN
   if (!system_menu)
@@ -5470,8 +5686,50 @@ int main()
     // vk-285-325: with RADV, the thread layout only: the draw budget and the recorder thread are ps5vk's, the layout of the EE, GS
     // and VU threads is not (RADV's own threads are not in it).
     const bool tune_radv = on && is_rac1 && !g_sw_renderer && OrbisDriverIsRADV();
+    // 2026-11-24: its EE, GS and VU CPUs only: the recorder 8 and queue 10 were ps5vk's threads, and RADV's recording thread is now
+    // in the layout too (the default below, CPU 0: on CPU 8, in the other group of cores, it cost SotC ~3% with dips).
     if (tune_radv)
-      setenv("PS5SX2_PIN_LAYOUT", "2 6 4 8 10", 0);
+      setenv("PS5SX2_PIN_LAYOUT", "2 6 4 -1 -1", 0);
+    // 2026-11-24 (AI-assisted; SotC goptimize, owner: "they all run amazingly" with the pins on 3 more games): with RADV, every game
+    // gets the thread layout EE 2, GS 6, VU 4: a core each, all three in the first group of four cores (one L3). SotC at its heavy
+    // spot: 94% speed unpinned, 99.7% with it (EE 4 / GS 8 / VU 10, across the groups: 74%). PS5SX2/ThreadLayout (gs.ini or the
+    // game's file): "auto" (the default), "off", or three CPUs "ee gs vu"; a pin key in live.ini still wins (GSRenderer.cpp).
+    // PS5SX2/RecorderCpu: the CPU RADV's recording thread runs on (orbis_recorder_cpu: unset is CPU 0 with this layout, in the same
+    // group of cores; "off" anywhere). PS5SX2/KeepCoresFree: every other thread off the layout's cores.
+    if (OrbisDriverIsRADV() && !g_sw_renderer)
+    {
+      // gs.ini and then the game's own file (peek): unset or "auto" is the default layout.
+      const std::string layout = peek.GetStringValue("PS5SX2", "ThreadLayout", "");
+      // RADV's recording thread (orbis_recorder_cpu), decided again with the game's file. The game's device is made after this,
+      // so the driver's thread starts there; the app's layout pins it too (radv_ps5_recorder_thread) and keeps its core free.
+      const int rec = orbis_recorder_cpu(peek.GetStringValue("PS5SX2", "RecorderCpu", ""), layout, true);
+      if (rec >= 0)
+        setenv("RADV_PS5_RECORD_CPU", std::to_string(rec).c_str(), 1);
+      else
+        unsetenv("RADV_PS5_RECORD_CPU");
+      int ee = 2, gs = 6, vu = 4;
+      const bool custom = sscanf(layout.c_str(), "%d %d %d", &ee, &gs, &vu) == 3;
+      if (layout.empty() || layout == "auto" || custom)
+      {
+        char b[64];
+        snprintf(b, sizeof(b), "%d %d %d %d -1", ee, gs, vu, rec);
+        setenv("PS5SX2_PIN_LAYOUT", b, 0); // a game's own layout (R&C1's, above) stays
+      }
+      // PS5SX2/KeepCoresFree (gs.ini or the game's file; default off while it is benched): every other thread of the app off the
+      // layout's cores, as live.ini's pin_all=1.
+      const bool keep_free = peek.GetBoolValue("PS5SX2", "KeepCoresFree", false);
+      if (keep_free)
+        setenv("PS5SX2_PIN_ALL", "1", 1);
+      else
+        unsetenv("PS5SX2_PIN_ALL");
+      const char* const pins = getenv("PS5SX2_PIN_LAYOUT");
+      printf("[boot] thread layout: %s (\"ee gs vu recorder queue\"; PS5SX2/ThreadLayout %s); RADV's recording thread: %s; other "
+             "threads %s (PS5SX2/KeepCoresFree)\n",
+        pins ? pins : "none", layout.empty() ? "unset: auto" : layout.c_str(),
+        rec >= 0 ? ("cpu " + std::to_string(rec)).c_str() : "anywhere (PS5SX2/RecorderCpu off, or not the default layout)",
+        keep_free ? "kept off the layout's cores" : "anywhere else");
+      fflush(stdout);
+    }
     struct stat st;
     if (tune)
     {
@@ -5497,8 +5755,9 @@ int main()
       unlink(marker.c_str());
     }
     printf("[boot] game tuning: %s\n", tune ? "Ratchet & Clank (draw budget 6000, recorder thread + vk_recbatch, thread layout 2 6 4 8 10)" :
-      tune_radv ? "Ratchet & Clank (thread layout 2 6 4 8 10; its draw budget and recorder thread are ps5vk's)" :
-      !on ? "off (PS5SX2/GameTuning)" : "none for this game");
+      tune_radv ? "Ratchet & Clank (thread layout EE 2 GS 6 VU 4; its draw budget and recorder thread setting are ps5vk's)" :
+      !on ? "off (PS5SX2/GameTuning)" :
+      s_game_defaults_name ? "Shadow of the Colossus (its built-in settings: the [boot] game defaults line)" : "none for this game");
     fflush(stdout);
   }
 #endif
@@ -5774,6 +6033,13 @@ int main()
     printf("[boot] ELF %s, %s\n", s_game_path.c_str(), disc.empty() ? "no disc (PS5SX2/ElfDisc not set or not found)" : ("disc " + disc).c_str());
     fflush(stdout);
   }
+  // 2026-11-24 (goptimize bench, test builds): a bench run starts the game in its savestate (orbis_bench_read).
+  if (!s_game_path.empty())
+  {
+    orbis_bench_read();
+    if (!s_bench_state.empty())
+      params.save_state = s_bench_state;
+  }
 
   // The PS5 account service uses native notifications instead of ImGui overlays.
 #ifndef PS5SX2_ACHIEVEMENTS
@@ -5942,6 +6208,9 @@ int main()
   init_done = true;
   printf("[boot] Initialize=%d err=%s\n", (int)res, err.GetDescription().c_str());
   fflush(stdout);
+  if (res == VMBootResult::StartupSuccess)
+    orbis_bench_start(); // 2026-11-24 (goptimize bench, test builds): the run's seconds, then back to the shelf
+
   // bioscheck: OpenPS2BIOS starts PS2 discs only (its README): a PS1 disc, an audio CD or a DVD video is said so and not run.
   if (res == VMBootResult::StartupSuccess && s_bios_open && !system_menu && !s_game_path.empty() &&
       !(s_game_path.size() > 4 && strcasecmp(s_game_path.c_str() + s_game_path.size() - 4, ".elf") == 0))

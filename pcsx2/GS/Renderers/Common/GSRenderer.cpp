@@ -124,6 +124,7 @@ static std::atomic<int> s_orbis_pin_all{0};
 void* OrbisVkDeviceHandle(); // GSDeviceVK.cpp
 extern "C" uint32_t ps5vk_debug_threads(void* device, pthread_t* recorder, pthread_t* queue_worker)
 	__attribute__((weak)); // the driver (ps5vk_debug.h)
+extern "C" int radv_ps5_recorder_thread(pthread_t* out) __attribute__((weak)); // our RADV (radv_threaded_layer.c)
 #endif
 static pthread_t s_orbis_thr[ORBIS_CPU_SLOTS];
 static unsigned s_orbis_cpu_hist[ORBIS_CPU_SLOTS][16];
@@ -255,6 +256,26 @@ static void OrbisApplyLayout(unsigned long long orig)
 		reserved |= 1ull << (cpu[ORBIS_PIN_EE] ^ 1);
 	if (cpu[ORBIS_PIN_VU] >= 0)
 		reserved |= 1ull << (cpu[ORBIS_PIN_VU] ^ 1);
+#ifdef ORBIS_VULKAN
+	// 2026-11-24 (AI-assisted; SotC goptimize): with RADV, a layout that names no recorder CPU (live.ini's pin keys without pin_rec)
+	// keeps the CPU the driver's recording thread was placed on (RADV_PS5_RECORD_CPU, main-boot: CPU 0 with the default layout), when
+	// no thread named above uses that core: otherwise the recorder would get the CPUs left over below, which can be the other group.
+	if (cpu[ORBIS_PIN_REC] < 0 && radv_ps5_recorder_thread)
+	{
+		if (const char* const env = getenv("RADV_PS5_RECORD_CPU"))
+		{
+			const int c = atoi(env);
+			if (c >= 0 && c <= 15 && ((orig >> c) & 1ull) && !(reserved & (3ull << (c & ~1))))
+			{
+				cpu[ORBIS_PIN_REC] = c;
+				reserved |= 1ull << c;
+			}
+		}
+	}
+#endif
+	// 2026-11-24 (SotC goptimize): the recorder's core whole too, so no unnamed thread shares RADV's recording thread's core.
+	if (cpu[ORBIS_PIN_REC] >= 0)
+		reserved |= 1ull << (cpu[ORBIS_PIN_REC] ^ 1);
 	unsigned long long rest = orig & ~reserved;
 	if (rest == 0)
 		rest = orig;
@@ -298,6 +319,14 @@ static void OrbisApplyLayout(unsigned long long orig)
 			if (found & 2u)
 				rc_queue = scePthreadSetaffinity(queue, mask_of(ORBIS_PIN_QUEUE));
 		}
+	}
+	// 2026-11-24: RADV's recording thread (our RADV exports it; ps5vk's debug call above is absent with RADV), on its CPU when the
+	// layout has one; with none it stays where the driver put it (pin_all above has moved it to the CPUs left over, as every thread).
+	if (!ps5vk_debug_threads && radv_ps5_recorder_thread && cpu[ORBIS_PIN_REC] >= 0)
+	{
+		pthread_t recorder{};
+		if (radv_ps5_recorder_thread(&recorder))
+			rc_rec = scePthreadSetaffinity(recorder, 1ull << cpu[ORBIS_PIN_REC]);
 	}
 #endif
 	printf("[pin] mode=3 ee=%d gs=%d vu=%d rec=%d queue=%d rest=%#llx all=%d rc ee=%d gs=%d vu=%d rec=%d queue=%d\n",
@@ -1016,6 +1045,10 @@ static void OrbisLiveTune()
 		{
 			for (int i = 0; i < ORBIS_PIN_COUNT; i++)
 				s_orbis_pin_cpu[i].store(c[i], std::memory_order_release);
+			// 2026-11-24: PS5SX2_PIN_ALL=1 (main-boot: PS5SX2/KeepCoresFree, gs.ini or the game's file): every other thread of the
+			// app off the layout's cores, as live.ini's pin_all=1.
+			if (const char* all = getenv("PS5SX2_PIN_ALL"); all && all[0] == '1')
+				s_orbis_pin_all.store(1, std::memory_order_release);
 			s_pin_default = 1;
 			g_orbis_pin_request.store(3, std::memory_order_release);
 			printf("[present] the game's thread layout (no pin key in live.ini): EE %d GS %d VU %d recorder %d queue %d\n",

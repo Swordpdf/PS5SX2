@@ -1117,6 +1117,40 @@ namespace
 				}
 			}
 
+			// 2026-11-24 (AI-assisted; SotC goptimize bench): logs/shelf-launch.txt (a game's path on the first line) starts that game from the
+			// shelf in this process, the way a disc's copy starts (orbis_frontend_request_launch: the shelf ends as usual, its last frame
+			// drawn, the GPU idle, its swapchain gone, and the game boots here). The bench used disc-launch-exec.txt, whose self-exec
+			// kills this process while the shelf is still drawing: the owner's Pro panicked three times at that moment (2026-11-24),
+			// never at a game's orderly way back to the shelf. A file older than 60 s is left over and only removed.
+			{
+				const std::string shelf_launch = OrbisLogPath("shelf-launch.txt");
+				if (FILE* sf = fopen(shelf_launch.c_str(), "r"))
+				{
+					char line[1024] = {};
+					const bool got = fgets(line, sizeof(line), sf) != nullptr;
+					struct stat sst{};
+					const bool stale = fstat(fileno(sf), &sst) == 0 &&
+						orbis_disc::StaleLaunchFile(static_cast<long long>(time(nullptr)), static_cast<long long>(sst.st_mtime), 60);
+					fclose(sf);
+					size_t n = got ? strlen(line) : 0;
+					while (n && (line[n - 1] == '\n' || line[n - 1] == '\r' || line[n - 1] == ' '))
+						line[--n] = '\0';
+					struct stat gst{};
+					if (stale || !n || stat(line, &gst) != 0)
+					{
+						unlink(shelf_launch.c_str());
+						Log("shelf-launch.txt: %s: %s", n ? line : "(empty)", stale ? "left over, removed" : "no such game, removed");
+					}
+					else if (orbis_frontend_request_launch(line))
+					{
+						unlink(shelf_launch.c_str());
+						NoteGameStarting("shelf-launch.txt"); // from now on the disc helper's exec signal is ignored, as for a disc's copy
+						Log("shelf-launch.txt: %s handed to the shelf (it starts the game in this process)", line);
+					}
+					// else: the shelf isn't up yet (or asks for a BIOS first): looked at again in 2 s
+				}
+			}
+
 			const std::vector<std::string> nodes = Candidates(first);
 			bool any_ps2 = false;
 			bool waiting = false;
