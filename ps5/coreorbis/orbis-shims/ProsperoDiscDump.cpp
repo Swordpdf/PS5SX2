@@ -1093,7 +1093,71 @@ namespace
 					Log("disc-launch-exec.txt: seen (the copy ended %lld ms ago, a game is starting since %lld ms, tile %d, flags discexec %d nodiscexec %d): %s",
 						copy_end ? now_ms - copy_end : -1LL, starting ? now_ms - starting : -1LL, ein.is_tile ? 1 : 0, ein.flag_discexec ? 1 : 0,
 						ein.flag_nodiscexec ? 1 : 0, orbis_disc::ExecVerdictText(verdict));
-					if (verdict != orbis_disc::ExecVerdict::Honor)
+					// 2026-11-24 (AI-assisted; owner: "Yes, do it here"): with the shelf up in this process, the game the helper names in
+					// disc-launch.txt starts here, the way the shelf starts one (orbis_frontend_request_launch: the shelf ends, its last
+					// frame drawn and its swapchain gone, and the game boots in this process), not through a self-exec. The owner's Pro
+					// panicked three times when this process was killed by LoadExec while its shelf was drawing (the bench's starts,
+					// 2026-11-24), and never in seven sessions started from the shelf instead. The self-exec never brought the app to the
+					// front anyway: the helper does (sceLncUtilLaunchApp, 3 s after this file is gone, disc_launch.c), so that is
+					// unchanged. The file is read as main-boot reads it at a start: line 1 the game (older than 600 s: left over), line 2
+					// the serial for the autostart guard. A shelf that isn't up (or asks for a BIOS) gets the self-exec as before, and
+					// so does every signal with the flag discselfexec.
+					bool started_here = false;
+					if (verdict == orbis_disc::ExecVerdict::Honor && !OrbisFlag("discselfexec"))
+					{
+						const std::string launch_txt = OrbisLogPath("disc-launch.txt");
+						if (FILE* lf = fopen(launch_txt.c_str(), "r"))
+						{
+							char iso[1024] = {}, serial[64] = {};
+							const bool got = fgets(iso, sizeof(iso), lf) != nullptr;
+							if (got && !fgets(serial, sizeof(serial), lf))
+								serial[0] = '\0';
+							struct stat lst{};
+							const bool stale = fstat(fileno(lf), &lst) == 0 &&
+								orbis_disc::StaleLaunchFile(static_cast<long long>(time(nullptr)), static_cast<long long>(lst.st_mtime));
+							fclose(lf);
+							for (char* s : {iso, serial})
+							{
+								size_t n = strlen(s);
+								while (n && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' '))
+									s[--n] = '\0';
+							}
+							struct stat gst{};
+							if (stale || !iso[0] || stat(iso, &gst) != 0)
+							{
+								Log("disc-launch-exec.txt: disc-launch.txt names %s: %s", iso[0] ? iso : "(nothing)",
+									stale ? "left over (older than 600 s), removed with the signal" : "no such game, removed with the signal");
+								unlink(launch_txt.c_str());
+								started_here = true; // nothing to start: no self-exec either
+							}
+							else if (orbis_frontend_request_launch(iso))
+							{
+								unlink(launch_txt.c_str());
+								if (serial[0])
+									if (FILE* af = fopen(OrbisLogPath("disc-autostart.txt").c_str(), "w")) // as main-boot: the autostart guard
+									{
+										fprintf(af, "%s %lld\n", serial, static_cast<long long>(time(nullptr)));
+										fclose(af);
+									}
+								if (FILE* rf = fopen(ReForegroundMarkPath().c_str(), "w")) // as the self-exec below (flag disc_refg)
+								{
+									fprintf(rf, "disc-auto %lld\n", static_cast<long long>(time(nullptr)));
+									fclose(rf);
+								}
+								NoteGameStarting("disc-launch-exec.txt, in this process");
+								Log("disc-launch-exec.txt: %s (%s) handed to the shelf: it starts the game in this process, no self-exec "
+									"(the helper brings the app to the front; flag discselfexec: the self-exec)", iso, serial[0] ? serial : "no serial");
+								started_here = true;
+							}
+							else
+								Log("disc-launch-exec.txt: the shelf isn't up to start %s here: self-exec as before", iso);
+						}
+					}
+					if (started_here)
+					{
+						// started here above, or nothing to start: no self-exec
+					}
+					else if (verdict != orbis_disc::ExecVerdict::Honor)
 						orbis_disc::RemoveSignalFiles(OrbisLogPath("disc-launch.txt"), exec_mark);
 					else
 					{

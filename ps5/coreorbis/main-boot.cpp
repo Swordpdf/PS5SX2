@@ -5146,6 +5146,8 @@ int main()
   // exec.txt and self-exec so PS5SX2 comes to the foreground.  Skip disc-launch.txt now to avoid
   // starting the game twice (once here in the background and again on the foreground boot).
   // Leave disc-launch.txt on disk; the disc watcher's self-exec boot will pick it up cleanly.
+  // 2026-11-24: the watcher now starts that game from the shelf in this process instead of a self-exec (ProsperoDiscDump.cpp),
+  // so the deferred file is read there, once the shelf is up; the self-exec stays for a shelf that isn't up (flag discselfexec).
   {
       OrbisDiscLogSignalFiles("at start"); // 2.11 (dumpxmb): which of the helper's files were there when this process started, and how old
       const std::string dlp = OrbisLogPath("disc-launch.txt");

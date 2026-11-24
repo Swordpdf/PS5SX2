@@ -23,7 +23,8 @@ namespace orbis_disc
 {
 enum class ExecVerdict
 {
-	Honor,              // re-execute the app's own eboot (it comes to the front; the new process reads disc-launch.txt and starts the game)
+	Honor,              // start disc-launch.txt's game: from the shelf in this process when it is up (2026-11-24, ProsperoDiscDump.cpp), else by
+	                    // re-executing the app's own eboot (the new process reads disc-launch.txt); the helper brings the app to the front
 	IgnoreTile,         // this process is a disc tile
 	IgnoreGameStarting, // a game is being started, or runs, in this process
 	IgnoreFlag,         // flag nodiscexec
@@ -55,7 +56,7 @@ constexpr const char* ExecVerdictText(ExecVerdict v)
 {
 	switch (v)
 	{
-		case ExecVerdict::Honor: return "honoured: self-exec to come to the foreground";
+		case ExecVerdict::Honor: return "honoured: the game starts (from the shelf in this process when it is up, else by a self-exec)";
 		case ExecVerdict::IgnoreTile: return "ignored: this is a disc tile";
 		case ExecVerdict::IgnoreGameStarting: return "ignored: a game is already starting here";
 		case ExecVerdict::IgnoreFlag: return "ignored: flag nodiscexec";
