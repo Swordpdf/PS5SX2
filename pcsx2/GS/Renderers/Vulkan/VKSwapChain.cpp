@@ -507,10 +507,29 @@ bool VKSwapChain::CreateSwapChain()
 
 	// Select number of images in swap chain, we prefer one buffer in the background to work on in triple-buffered mode.
 	// maxImageCount can be zero, in which case there isn't an upper limit on the number of buffers.
+	u32 wanted_images = (m_present_mode == VK_PRESENT_MODE_MAILBOX_KHR) ? 3 : 2;
+#ifdef ORBIS_VULKAN
+	// 2026-11-24 (AI-assisted; SotC goptimize): frame generation on RADV. A 30 fps game on the 120 Hz output has 4 refreshes a frame,
+	// and the pacing presents once a refresh (the generated frame twice, then the game's twice). With 2-3 images in FIFO the GS thread
+	// then waits for a vblank to free one at each of those presents: Shadow of the Colossus at 30 fps spent ~25 ms of every 33 ms frame in
+	// vkAcquireNextImageKHR (5.1 s in a 75 s run), the EE waited for it, and the game fell to ~80% speed, so frame generation paused itself.
+	// With as many images as the driver has (RADV's videoout: 5) a game frame's presents all go into the queue at once and the GS thread
+	// goes on; the queue holds about one game frame more. Flag fgswap3 keeps the old count, for A/B runs.
+	extern bool OrbisDriverIsRADV();
+	extern bool OrbisFlag(const char* name);
+	if (g_orbis_fg_wanted && OrbisDriverIsRADV() && !OrbisFlag("fgswap3"))
+		wanted_images = 5;
+#endif
 	u32 image_count = std::clamp<u32>(
-		(m_present_mode == VK_PRESENT_MODE_MAILBOX_KHR) ? 3 : 2, surface_capabilities.minImageCount,
+		wanted_images, surface_capabilities.minImageCount,
 		(surface_capabilities.maxImageCount == 0) ? std::numeric_limits<u32>::max() : surface_capabilities.maxImageCount);
 	DEV_LOG("Creating a swap chain with {} images in present mode {}", image_count, PresentModeToString(m_present_mode));
+#ifdef ORBIS_VULKAN
+	printf("[display] swapchain images: %u (asked %u; the surface allows %u-%u)%s\n", image_count, wanted_images,
+		surface_capabilities.minImageCount, surface_capabilities.maxImageCount,
+		wanted_images == 5 ? ": frame generation on RADV queues a game frame's presents (flag fgswap3: the old count)" : "");
+	fflush(stdout);
+#endif
 
 	// Determine the dimensions of the swap chain. Values of -1 indicate the size we specify here
 	// determines window size?
