@@ -13,9 +13,12 @@
 
 #ifdef ORBIS_VULKAN
 #include "GS/Renderers/Vulkan/VKOrbisTiming.h" // vk-285-113: the readback counters
+#include "OrbisDeferredLog.h" // 2026-11-24: the render-target allocation line (textures are made on the GS thread)
 // vk-285-14: GPU-hang forensics ring (GSDeviceVK.cpp).
 void OrbisVkTraceClear(const GSTexture* tex, u32 value);
 void OrbisVkTraceTransfer(u8 kind, const GSTexture* tex, const GSVector4i& r);
+bool OrbisDriverIsRADV(); // orbis_vk.cpp
+bool OrbisFlag(const char* name); // OrbisPaths.h
 #endif
 
 VkFramebuffer GSTextureVK::CreateNullFramebuffer(u32 w, u32 h)
@@ -142,7 +145,22 @@ std::unique_ptr<GSTextureVK> GSTextureVK::Create(Usage usage, Format format, int
 	}
 
 	// Use dedicated allocations for typical RT size
-	if (IsRenderTargetOrDepthStencil(usage) && width >= 512 && height >= 448)
+	// 2026-11-24 (AI-assisted; SotC goptimize, owner: "do all of them"): with RADV and flag vk_rtblocks, from the allocator's shared
+	// blocks instead (256 MiB, VMA's default; it still gives a dedicated one to anything over half a block): a target is then a range
+	// of memory already there, not a new buffer object (the console's memory call and a mapping) each time. Measured on the Pro (test
+	// 337, SotC, 3 runs each): no difference in speed or hitches, so it stays off and PCSX2's dedicated allocations are the default.
+#ifdef ORBIS_VULKAN
+	static const bool s_rt_blocks = [] {
+		const bool blocks = OrbisDriverIsRADV() && OrbisFlag("vk_rtblocks");
+		OrbisDeferredPrintf("[vk] render targets: %s\n", blocks ?
+			"from the allocator's shared blocks (flag vk_rtblocks)" :
+			"one allocation each (PCSX2's dedicated allocations; flag vk_rtblocks: shared blocks)");
+		return blocks;
+	}();
+#else
+	static constexpr bool s_rt_blocks = false;
+#endif
+	if (IsRenderTargetOrDepthStencil(usage) && width >= 512 && height >= 448 && !s_rt_blocks)
 		aci.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
 
 	VkImage image = VK_NULL_HANDLE;

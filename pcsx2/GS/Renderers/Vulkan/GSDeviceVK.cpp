@@ -26,9 +26,13 @@
 #include "imgui.h"
 
 #include <bit>
+#include <condition_variable> // 2026-11-24: the background pipeline compile (fast pipelines)
+#include <deque>
 #include <limits>
 #include <mutex>
+#include <pthread.h>
 #include <sstream>
+#include <thread>
 #ifdef ORBIS_VULKAN
 void OrbisLatProbePresent(void* vk_device); // 186 (orbis-shims/OrbisLatProbe.cpp)
 void OrbisLatCapBeforePresent(void* vk_device); // 186: the display-queue cap (the same file)
@@ -4507,6 +4511,14 @@ bool GSDeviceVK::CheckFeatures()
 	                 m_device_features.fragmentStoresAndAtomics &&
 	                 has_rov_storage_flags &&
 	                 !m_features.framebuffer_fetch;
+#ifdef ORBIS_VULKAN
+	// 2026-11-24 (SotC goptimize): whether the setting EmuCore/GS/HWROV (rasterizer ordered views for the blending that reads the
+	// target) can be used with this driver.
+	printf("[vk] rasterizer ordered views: %s (fragment shader interlock %s, stores in fragment shaders %s, storage target formats "
+		"%s, framebuffer fetch %s; used with EmuCore/GS/HWROV)\n", m_features.rov ? "available" : "not available",
+		m_optional_extensions.vk_ext_fragment_shader_interlock ? "yes" : "no", m_device_features.fragmentStoresAndAtomics ? "yes" : "no",
+		has_rov_storage_flags ? "yes" : "no", m_features.framebuffer_fetch ? "yes (so not needed)" : "no");
+#endif
 
 	return true;
 }
@@ -7902,6 +7914,9 @@ bool GSDeviceVK::DoCAS(
 
 void GSDeviceVK::DestroyResources()
 {
+#ifdef ORBIS_VULKAN
+	OrbisStopAsyncPipelines(); // 2026-11-24: the background compiles end before the shaders and pipelines they use go
+#endif
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
 		FreePersistentDescriptorSet(m_tfx_ubo_descriptor_set);
 
@@ -8173,14 +8188,146 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	return mod;
 }
 
+#ifdef ORBIS_VULKAN
+// 2026-11-24 (AI-assisted; SotC goptimize, owner: "do all of them"): fast pipelines. The GS thread compiled every new TFX pipeline
+// before its draw (a hitch the first time an effect appears, worst with an empty driver cache). With RADV it now builds a quick one
+// (the driver's optimisations off) and queues the optimised build for one background thread on the second group of cores (CPUs
+// 8-12, away from the EE, GS and VU threads; it would inherit the GS thread's CPU, and pin_all can move it, so it re-pins itself
+// for each job). The GS thread swaps finished pipelines in at its next pipeline lookup (it alone touches m_tfx_pipelines and the
+// 64-entry cache); the quick ones stay until the device's resources go (a draw already recorded may still use one). The jobs hold
+// shader modules, render passes and the pipeline cache, which live until DestroyResources: it stops the thread first. Off by default
+// (OrbisAsyncPipelinesOn: it made the start slower); flag vk_asyncpipe turns it on.
+extern "C" int scePthreadSetaffinity(pthread_t thread, unsigned long long mask);
+namespace
+{
+struct OrbisAsyncJob
+{
+	GSDeviceVK::PipelineSelector p;
+	GSHWDrawConfig::BlendState pbs;
+	VkShaderModule vs, fs;
+	VkRenderPass rp;
+	VkPipelineCache cache;
+	VkPipeline fast, opt;
+};
+constexpr unsigned long long kAsyncPipelineCpus = 0x1F00ull; // CPUs 8-12
+std::mutex s_aj_mutex; // guards everything below except the GS thread's own s_aj_retired and counters
+std::condition_variable s_aj_cv;
+std::deque<OrbisAsyncJob> s_aj_jobs;
+std::vector<OrbisAsyncJob> s_aj_done;
+std::atomic<int> s_aj_done_count{0}; // jobs in s_aj_done: the GS thread looks at it without the lock
+std::thread s_aj_thread;
+bool s_aj_stop = false;
+std::vector<VkPipeline> s_aj_retired; // quick pipelines replaced (GS thread only)
+u64 s_aj_queued = 0, s_aj_swapped = 0, s_aj_failed = 0; // GS thread only
+} // namespace
+
+// Measured 2026-11-24 (SotC, test 337): OFF by default. With it on, the start of a game spent 2.4-2.5 s compiling its 203 pipelines
+// against 0.72 s with it off, empty driver cache or not (no frame for ~2 s): RADV's unoptimised build of PCSX2's shaders is no
+// quicker (more code left for ACO's register allocation), and the background thread's optimised builds compete with it. Flag
+// vk_asyncpipe turns it on for experiments.
+static bool OrbisAsyncPipelinesOn()
+{
+	static const bool on = [] {
+		extern bool OrbisDriverIsRADV();
+		extern bool OrbisFlag(const char* name);
+		const bool v = OrbisDriverIsRADV() && OrbisFlag("vk_asyncpipe");
+		printf("[vk] new pipelines: %s\n", v ? "a quick one first, the optimised one built on a background thread (flag "
+			"vk_asyncpipe)" : "compiled before the draw (flag vk_asyncpipe: a quick one first, the optimised one in the background)");
+		return v;
+	}();
+	return on;
+}
+
+void GSDeviceVK::OrbisQueueAsyncPipeline(const PipelineSelector& p, const GSHWDrawConfig::BlendState& pbs, VkShaderModule vs,
+	VkShaderModule fs, VkRenderPass rp, VkPipelineCache cache, VkPipeline fast)
+{
+	std::unique_lock lock(s_aj_mutex);
+	if (!s_aj_thread.joinable())
+	{
+		s_aj_stop = false;
+		s_aj_thread = std::thread([this]() {
+			std::unique_lock lk(s_aj_mutex);
+			for (;;)
+			{
+				s_aj_cv.wait(lk, [] { return s_aj_stop || !s_aj_jobs.empty(); });
+				if (s_aj_stop)
+					break;
+				OrbisAsyncJob job = s_aj_jobs.front();
+				s_aj_jobs.pop_front();
+				lk.unlock();
+				scePthreadSetaffinity(pthread_self(), kAsyncPipelineCpus);
+				job.opt = BuildTFXPipeline(job.p, job.pbs, job.vs, job.fs, job.rp, 0, job.cache, true);
+				lk.lock();
+				s_aj_done.push_back(job);
+				s_aj_done_count.store(static_cast<int>(s_aj_done.size()), std::memory_order_release);
+			}
+		});
+	}
+	s_aj_jobs.push_back({p, pbs, vs, fs, rp, cache, fast, VK_NULL_HANDLE});
+	lock.unlock();
+	s_aj_cv.notify_one();
+	s_aj_queued++;
+}
+
+void GSDeviceVK::OrbisSwapAsyncPipelines()
+{
+	std::vector<OrbisAsyncJob> done;
+	{
+		std::lock_guard lock(s_aj_mutex);
+		done.swap(s_aj_done);
+		s_aj_done_count.store(0, std::memory_order_relaxed);
+	}
+	for (const OrbisAsyncJob& job : done)
+	{
+		const auto it = m_tfx_pipelines.find(job.p);
+		if (job.opt == VK_NULL_HANDLE || it == m_tfx_pipelines.end() || it->second != job.fast)
+		{
+			if (job.opt != VK_NULL_HANDLE)
+				vkDestroyPipeline(m_device, job.opt, nullptr); // never used by a draw
+			else
+				s_aj_failed++; // the quick one stays
+			continue;
+		}
+		it->second = job.opt;
+		s_aj_retired.push_back(job.fast);
+		for (OrbisPipeSlot& slot : m_orbis_pipe_cache)
+			if (slot.pipeline == job.fast)
+				slot.pipeline = job.opt;
+		s_aj_swapped++;
+	}
+	static u64 s_logged = 0;
+	if (s_aj_swapped >= s_logged + 100 || (s_logged == 0 && s_aj_swapped))
+	{
+		s_logged = s_aj_swapped;
+		printf("[vk] fast pipelines: %llu queued, %llu optimised ones swapped in, %llu failed (the quick one kept)\n",
+			static_cast<unsigned long long>(s_aj_queued), static_cast<unsigned long long>(s_aj_swapped),
+			static_cast<unsigned long long>(s_aj_failed));
+	}
+}
+
+void GSDeviceVK::OrbisStopAsyncPipelines()
+{
+	{
+		std::lock_guard lock(s_aj_mutex);
+		s_aj_stop = true;
+		s_aj_jobs.clear();
+	}
+	s_aj_cv.notify_all();
+	if (s_aj_thread.joinable())
+		s_aj_thread.join();
+	for (const OrbisAsyncJob& job : s_aj_done)
+		if (job.opt != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, job.opt, nullptr);
+	s_aj_done.clear();
+	s_aj_done_count.store(0, std::memory_order_relaxed);
+	for (VkPipeline pipe : s_aj_retired)
+		vkDestroyPipeline(m_device, pipe, nullptr);
+	s_aj_retired.clear();
+}
+#endif
+
 VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 {
-	static constexpr std::array<VkPrimitiveTopology, 3> topology_lookup = {{
-		VK_PRIMITIVE_TOPOLOGY_POINT_LIST, // Point
-		VK_PRIMITIVE_TOPOLOGY_LINE_LIST, // Line
-		VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, // Triangle
-	}};
-
 	GSHWDrawConfig::BlendState pbs{p.bs};
 	GSHWDrawConfig::PSSelector pps{p.ps};
 	if (!p.bs.IsEffective(p.cms))
@@ -8195,25 +8342,47 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE)
 		return VK_NULL_HANDLE;
 
+	const VkRenderPass rp = IsDATEModePrimIDInit(p.ps.date) ?
+		m_primid_image_setup_render_passes[p.ds][0] : // DATE image prepass
+		GetTFXRenderPass(p.rt, p.ds, p.ps.colclip_hw, p.dss.date,
+			p.IsRTFeedbackLoop(), p.IsTestingAndSamplingDepth(),
+			p.rt ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			p.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+	const VkPipelineCache cache = g_vulkan_shader_cache->GetPipelineCache(true);
+#ifdef ORBIS_VULKAN
+	if (OrbisAsyncPipelinesOn())
+	{
+		// 2026-11-24 (AI-assisted; fast pipelines): a new pipeline is built quickly first (the driver's optimisations off: RADV skips
+		// its NIR optimisations and ACO's optimiser and schedulers) so the draw goes on now, and the optimised one on the background
+		// thread, which replaces it when done (OrbisSwapAsyncPipelines). Only with flag vk_asyncpipe (see OrbisAsyncPipelinesOn).
+		const VkPipeline fast = BuildTFXPipeline(p, pbs, vs, fs, rp, VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT, cache, false);
+		if (fast != VK_NULL_HANDLE)
+		{
+			OrbisQueueAsyncPipeline(p, pbs, vs, fs, rp, cache, fast);
+			return fast;
+		}
+	}
+#endif
+	return BuildTFXPipeline(p, pbs, vs, fs, rp, 0, cache, false);
+}
+
+VkPipeline GSDeviceVK::BuildTFXPipeline(const PipelineSelector& p, const GSHWDrawConfig::BlendState& pbs, VkShaderModule vs,
+	VkShaderModule fs, VkRenderPass rp, VkPipelineCreateFlags flags, VkPipelineCache cache, bool background)
+{
+	static constexpr std::array<VkPrimitiveTopology, 3> topology_lookup = {{
+		VK_PRIMITIVE_TOPOLOGY_POINT_LIST, // Point
+		VK_PRIMITIVE_TOPOLOGY_LINE_LIST, // Line
+		VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, // Triangle
+	}};
+
 	Vulkan::GraphicsPipelineBuilder gpb;
 	SetPipelineProvokingVertex(m_features, gpb);
+	if (flags)
+		gpb.AddPipelineFlags(flags);
 
 	// Common state
 	gpb.SetPipelineLayout(m_tfx_pipeline_layout);
-	if (IsDATEModePrimIDInit(p.ps.date))
-	{
-		// DATE image prepass
-		gpb.SetRenderPass(m_primid_image_setup_render_passes[p.ds][0], 0);
-	}
-	else
-	{
-		gpb.SetRenderPass(
-			GetTFXRenderPass(p.rt, p.ds, p.ps.colclip_hw, p.dss.date,
-				p.IsRTFeedbackLoop(), p.IsTestingAndSamplingDepth(),
-				p.rt ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-				p.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
-			0);
-	}
+	gpb.SetRenderPass(rp, 0);
 	gpb.SetPrimitiveTopology(topology_lookup[p.topology]);
 	gpb.SetRasterizationState(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
 	if (m_optional_extensions.vk_ext_line_rasterization &&
@@ -8290,7 +8459,18 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	if (m_features.framebuffer_fetch && p.IsRTFeedbackLoop())
 		gpb.AddBlendFlags(VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT);
 
-	VkPipeline pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true));
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	if (background)
+	{
+		// A background thread's build: the driver call alone (Create()'s compile indicator and timings are the GS thread's). The
+		// pipeline cache is internally synchronised (not made with VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT).
+		if (vkCreateGraphicsPipelines(m_device, cache, 1, gpb.GetCreateInfo(), nullptr, &pipeline) != VK_SUCCESS)
+			pipeline = VK_NULL_HANDLE;
+	}
+	else
+	{
+		pipeline = gpb.Create(m_device, cache);
+	}
 	if (pipeline)
 	{
 		Vulkan::SetObjectName(
@@ -8303,6 +8483,8 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 {
 #ifdef ORBIS_VULKAN
+	if (s_aj_done_count.load(std::memory_order_acquire)) // 2026-11-24: optimised pipelines finished in the background
+		OrbisSwapAsyncPipelines();
 	// PS5 port (vk-285-85): consecutive draws often repeat the selector; the hash and map lookup were
 	// ~1.3% of the GS thread in vk-285-84's Shadow of the Colossus profile. vk-285-90: a 64-entry
 	// direct-mapped cache instead of the last lookup alone (the map lookup was still ~1.5% in vk-285-89's:

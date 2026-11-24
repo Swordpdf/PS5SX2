@@ -522,6 +522,18 @@ private:
 	VkShaderModule GetTFXFragmentShader(const GSHWDrawConfig::PSSelector& sel);
 	VkPipeline CreateTFXPipeline(const PipelineSelector& p);
 	VkPipeline GetTFXPipeline(const PipelineSelector& p);
+	// PS5 port 2026-11-24 (fast pipelines): the TFX pipeline from shader modules and a render pass already made. It reads no cache
+	// map, so a background thread can run it too (background: vkCreateGraphicsPipelines without the GS thread's compile timers).
+	VkPipeline BuildTFXPipeline(const PipelineSelector& p, const GSHWDrawConfig::BlendState& pbs, VkShaderModule vs,
+		VkShaderModule fs, VkRenderPass rp, VkPipelineCreateFlags flags, VkPipelineCache cache, bool background);
+#ifdef ORBIS_VULKAN
+	// The background compile of the optimised pipelines: queue one, swap the finished ones in (GS thread), stop (before the
+	// shaders and pipelines go).
+	void OrbisQueueAsyncPipeline(const PipelineSelector& p, const GSHWDrawConfig::BlendState& pbs, VkShaderModule vs,
+		VkShaderModule fs, VkRenderPass rp, VkPipelineCache cache, VkPipeline fast);
+	void OrbisSwapAsyncPipelines();
+	void OrbisStopAsyncPipelines();
+#endif
 
 	VkShaderModule GetUtilityVertexShader(const std::string& source, const char* replace_main);
 	VkShaderModule GetUtilityFragmentShader(const std::string& source, const char* replace_main);

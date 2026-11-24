@@ -123,6 +123,10 @@ namespace Vulkan
 			u32 attachment, VkColorComponentFlags write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
 			                                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
 		void AddBlendFlags(u32 flags);
+		// PS5 port 2026-11-24 (fast pipelines): the create flags, and the finished create info for a vkCreateGraphicsPipelines
+		// call of the caller's own (a background thread's, without Create()'s compile timers, which are the GS thread's).
+		void AddPipelineFlags(VkPipelineCreateFlags flags) { m_ci.flags |= flags; }
+		const VkGraphicsPipelineCreateInfo* GetCreateInfo() const { return &m_ci; }
 		void ClearBlendAttachments();
 
 		void SetBlendConstants(float r, float g, float b, float a);
