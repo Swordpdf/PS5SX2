@@ -8,7 +8,7 @@ namespace Ps2MemSize
 {
 	static constexpr u32 MainRam = _32mb;      // 32 MB main memory.
 	static constexpr u32 ExtraRam = _1mb * 96; // 32+96 MB devkit memory.
-	static constexpr u32 TotalRam = _1mb * 32; // 32 MB standard (no extra memory)
+	static constexpr u32 TotalRam = MainRam + ExtraRam; // Allocate capacity for either EE RAM mode.
 	static constexpr u32 Rom = _1mb * 4;       // 4 MB main rom
 	static constexpr u32 Rom1 = _1mb * 4;      // DVD player
 	static constexpr u32 Rom2 = _1mb * 4;      // Chinese rom extension
@@ -53,7 +53,7 @@ struct EEVM_MemoryAllocMess
 // Needs to fit within IOPmemSize of Memory.h
 struct IopVM_MemoryAllocMess
 {
-	u8 Main[Ps2MemSize::TotalRam]; // Main memory
+	u8 Main[Ps2MemSize::TotalIopRam]; // IOP capacity
 	u8 P[_64kb];                   // I really have no idea what this is... --air
 	u8 Sif[0x100];                 // a few special SIF/SBUS registers (likely not needed)
 };
