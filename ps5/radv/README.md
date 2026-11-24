@@ -21,6 +21,13 @@ Since 2.60, PS5SX2 draws with RADV, Mesa's Vulkan driver for AMD GPUs, in the PS
   (the shelf, games without frame generation), and the output goes back to 59.94 Hz as the title leaves (`wsi_videoout_restore_default`,
   and at exit). On a display with a variable refresh rate, which idles at the bottom of its range with nothing flipping, flips decide whether
   the display follows. `wsi_videoout_refresh_millihertz` and `wsi_videoout_output_status` tell the title what the output did.
+- **The shader disk cache works on the console (2.61).** The console refuses to map the cache index shared (errno 0x80020016) and an
+  anonymous mapping of its size too, and Mesa then switched the whole disk cache off without a word, so every start compiled every
+  pipeline. The database and single-file caches need nothing from that index across runs, so on the PS5 it is kept in the heap
+  (`index_in_heap`, `disk_cache_os.c`); a database part's exclusive lock refused for any reason but another holder no longer leaves the
+  part off (`mesa_cache_db.c`). On a PS5 Pro, Shadow of the Colossus's 200 pipelines load in 7.8 ms on a warm start instead of ~710 ms.
+- **The recording thread's CPU (2.61).** `RADV_PS5_RECORD_CPU` pins the threaded layer's recording thread to that CPU, and
+  `radv_ps5_recorder_thread()` hands the thread to the title so that its thread layout can pin it too.
 
 ## Building it
 

@@ -1,8 +1,92 @@
 diff --git a/src/amd/vulkan/layers/radv_threaded_layer.c b/src/amd/vulkan/layers/radv_threaded_layer.c
-index 7a7e3a2082d..58384448c59 100644
+index 7a7e3a2082d..d907340f06a 100644
 --- a/src/amd/vulkan/layers/radv_threaded_layer.c
 +++ b/src/amd/vulkan/layers/radv_threaded_layer.c
-@@ -366,6 +366,143 @@ radv_threaded_queue_CmdPushConstants(VkCommandBuffer commandBuffer, VkPipelineLa
+@@ -27,6 +27,11 @@
+ #include "radv_device.h"
+ #include "radv_entrypoints.h"
+ 
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
+ #include "util/list.h"
+ #include "util/os_misc.h"
+ #include "util/u_atomic.h"
+@@ -83,12 +88,71 @@ radv_threaded_now_ns(void)
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+ }
+ 
++#ifdef __PROSPERO__
++/* PS5SX2 (2026-11-24, SotC goptimize): the recording worker's placement.
++ * - radv_ps5_recorder_thread() hands the app the worker's thread, so the app's own thread layout pins it like its EE, GS and VU threads
++ *   (a core of its own in the same group of four cores) and keeps other threads off that core. 1 once a worker runs.
++ * - RADV_PS5_RECORD_CPU (0-12, set by the app before the device is made) places it at once, before the app's layout is applied.
++ * - Its line goes through the app's log hook when there is one (ps5vk_log_hook, weak: the app's deferred log, into boot.log): this
++ *   driver's stderr is not the app's. */
++static pthread_t radv_ps5_worker;
++static int radv_ps5_worker_known;
++int radv_ps5_recorder_thread(pthread_t *out);
++int
++radv_ps5_recorder_thread(pthread_t *out)
++{
++   if (!__atomic_load_n(&radv_ps5_worker_known, __ATOMIC_ACQUIRE))
++      return 0;
++   *out = radv_ps5_worker;
++   return 1;
++}
++
++extern int scePthreadSetaffinity(pthread_t thread, unsigned long long mask) __attribute__((weak));
++extern void ps5vk_log_hook(int stream, const char *text, size_t len) __attribute__((weak));
++
++static void
++radv_threaded_log(const char *text)
++{
++   if (ps5vk_log_hook)
++      ps5vk_log_hook(2, text, strlen(text));
++   else
++      fputs(text, stderr);
++}
++
++static void
++radv_threaded_place_worker(void)
++{
++   radv_ps5_worker = pthread_self();
++   __atomic_store_n(&radv_ps5_worker_known, 1, __ATOMIC_RELEASE);
++   char line[160];
++   const char *v = getenv("RADV_PS5_RECORD_CPU");
++   const int cpu = v ? atoi(v) : -1;
++   if (cpu < 0 || cpu > 12) {
++      radv_threaded_log("[radv] recording thread started: no CPU named (RADV_PS5_RECORD_CPU): the app's layout places it\n");
++      return;
++   }
++   if (!scePthreadSetaffinity) {
++      radv_threaded_log("[radv] recording thread started: scePthreadSetaffinity not linked: not placed\n");
++      return;
++   }
++   const int rc = scePthreadSetaffinity(pthread_self(), 1ull << cpu);
++   snprintf(line, sizeof(line), "[radv] recording thread started on cpu %d (rc=%d)\n", cpu, rc);
++   radv_threaded_log(line);
++}
++#else
++static void
++radv_threaded_place_worker(void)
++{
++}
++#endif
++
+ static int
+ radv_threaded_worker(void *opaque)
+ {
+    struct radv_device *device = opaque;
+    struct radv_threaded_recorder *rec = device->threaded;
+    radv_threaded_on_worker = true;
++   radv_threaded_place_worker();
+ 
+    mtx_lock(&rec->lock);
+    for (;;) {
+@@ -366,6 +430,143 @@ radv_threaded_queue_CmdPushConstants(VkCommandBuffer commandBuffer, VkPipelineLa
     list_addtail(&cmd->cmd_link, &queue->cmds);
  }
  
@@ -341,6 +425,283 @@ index a01b3bcc055..25cac45a251 100644
        cnd_timedwait(&queue->sync_cond, &queue->sync_lock, &until);
     }
  }
+diff --git a/src/util/disk_cache.c b/src/util/disk_cache.c
+index 1f4338820dd..fb9ec86e242 100644
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -106,6 +106,14 @@ disk_cache_type_create(const char *gpu_name,
+ 
+    uint8_t cache_version = CACHE_VERSION;
+    size_t cv_size = sizeof(cache_version);
++#if defined(__PROSPERO__)
++   /* PS5SX2 (2026-11-24): which step left the cache off, for the app's log (disk_cache_ps5_log): a console's cache folder held an
++    * index file alone, no entry, so a step after the folder failed without a word. */
++   const char *ps5_stage = "turned off (disk_cache_enabled: MESA_SHADER_CACHE_DISABLE, or not a normal user)";
++#define PS5_CACHE_STAGE(s) (ps5_stage = (s))
++#else
++#define PS5_CACHE_STAGE(s) ((void)0)
++#endif
+ 
+    /* A ralloc context for transient data during this invocation. */
+    local = ralloc_context(NULL);
+@@ -123,6 +131,7 @@ disk_cache_type_create(const char *gpu_name,
+    if (!disk_cache_enabled())
+       goto path_fail;
+ 
++   PS5_CACHE_STAGE("its folder could not be made");
+    const char *path =
+       disk_cache_generate_cache_dir(local, gpu_name, driver_id, cache_dir_name, cache_type, true);
+    if (!path)
+@@ -139,6 +148,7 @@ disk_cache_type_create(const char *gpu_name,
+    if (strcmp(driver_id, "make_check_uncompressed") == 0)
+       cache->compression_disabled = true;
+ 
++   PS5_CACHE_STAGE("its database or Fossilize file could not be opened");
+    if (cache_type == DISK_CACHE_SINGLE_FILE) {
+       if (!disk_cache_load_cache_index_foz(local, cache))
+          goto path_fail;
+@@ -155,6 +165,7 @@ disk_cache_type_create(const char *gpu_name,
+    cache->stats.enabled = debug_get_bool_option("MESA_SHADER_CACHE_SHOW_STATS",
+                                                 false);
+ 
++   PS5_CACHE_STAGE("its index could not be made or mapped");
+    if (!disk_cache_mmap_cache_index(local, cache))
+       goto path_fail;
+ 
+@@ -163,12 +174,22 @@ disk_cache_type_create(const char *gpu_name,
+    if (cache->type == DISK_CACHE_DATABASE)
+       mesa_cache_db_multipart_set_size_limit(&cache->cache_db, cache->max_size);
+ 
+-   if (!disk_cache_init_queue(cache))
++   if (!disk_cache_init_queue(cache)) {
++#if defined(__PROSPERO__)
++      disk_cache_ps5_log("[radv] shader disk cache %s: off: its writer threads could not start\n", cache->path);
++#endif
+       goto fail;
++   }
+ 
+    cache->path_init_failed = false;
+ 
+  path_fail:
++#if defined(__PROSPERO__)
++   disk_cache_ps5_log("[radv] shader disk cache %s: %s%s (type %d, max %" PRIu64 " MiB)\n", cache->path ? cache->path : "(no folder)",
++                      cache->path_init_failed ? "off: " : "ready", cache->path_init_failed ? ps5_stage : "",
++                      (int)cache_type, max_size >> 20);
++#endif
++#undef PS5_CACHE_STAGE
+ 
+    cache->driver_keys_blob_size = cv_size;
+ 
+diff --git a/src/util/disk_cache_os.c b/src/util/disk_cache_os.c
+index eefa2d51526..efed09434d4 100644
+--- a/src/util/disk_cache_os.c
++++ b/src/util/disk_cache_os.c
+@@ -24,8 +24,10 @@
+ 
+ #include <assert.h>
+ #include <inttypes.h>
++#include <stdarg.h>
+ #include <stdbool.h>
+ #include <stddef.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/types.h>
+@@ -115,6 +117,29 @@ disk_cache_get_function_identifier(void *ptr, blake3_hasher *ctx)
+ #define DISK_CACHE_FILE_MODE 0644
+ #endif
+ 
++#if defined(__PROSPERO__)
++/* PS5SX2 (2026-11-24): a line for the app's log (its deferred stderr, which the app writes to logs/stderr.log), through the hook the
++ * app exports (weak: without the app, to this library's stderr). The driver's own stderr does not reach the app's logs. */
++extern void ps5vk_log_hook(int stream, const char *text, size_t len) __attribute__((weak));
++
++void
++disk_cache_ps5_log(const char *fmt, ...)
++{
++   char line[512];
++   va_list args;
++   va_start(args, fmt);
++   const int n = vsnprintf(line, sizeof(line), fmt, args);
++   va_end(args);
++   if (n <= 0)
++      return;
++   const size_t len = (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1;
++   if (ps5vk_log_hook)
++      ps5vk_log_hook(2, line, len);
++   else
++      fputs(line, stderr);
++}
++#endif
++
+ /* A change of mode is a metadata write, near a millisecond on the console, so
+  * it is made only when the mode is not already so. */
+ static void
+@@ -1192,6 +1217,23 @@ disk_cache_mmap_cache_index(void *mem_ctx, struct disk_cache *cache)
+     */
+    cache->index_mmap = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                             MAP_SHARED, fd, 0);
++#if defined(__PROSPERO__)
++   /* PS5SX2 (2026-11-24): the console refuses to map the index shared (test 338's log: errno 0x80020016, EINVAL), and an
++    * anonymous mapping of its size as well, and the whole disk cache was then off without a word: the console's cache folders
++    * held this index alone, no entry, so every start compiled every pipeline. The database and single-file caches keep their
++    * entries in their own files and need nothing from this index across runs (its size count is the multi-file cache's), and
++    * the title's cache is its own (mesa_cache_db_multipart.c), so the index is then in the heap. */
++   if (cache->index_mmap == MAP_FAILED && cache->type != DISK_CACHE_MULTI_FILE) {
++      const int err = errno;
++      void *heap = calloc(1, size);
++      disk_cache_ps5_log("[radv] shader disk cache %s: the index can't be mapped shared (errno 0x%x): %s\n", cache->path,
++                         (unsigned)err, heap ? "kept in the heap instead" : "nor in the heap, so the disk cache is off");
++      if (heap) {
++         cache->index_mmap = heap;
++         cache->index_in_heap = true;
++      }
++   }
++#endif
+    if (cache->index_mmap == MAP_FAILED)
+       goto path_fail;
+    cache->index_mmap_size = size;
+@@ -1210,9 +1252,30 @@ path_fail:
+ void
+ disk_cache_destroy_mmap(struct disk_cache *cache)
+ {
++#if defined(__PROSPERO__)
++   if (cache->index_in_heap) { /* PS5SX2: disk_cache_mmap_cache_index */
++      free(cache->index_mmap);
++      cache->index_mmap = NULL;
++      cache->index_in_heap = false;
++      return;
++   }
++#endif
+    munmap(cache->index_mmap, cache->index_mmap_size);
+ }
+ 
++#if defined(__PROSPERO__)
++/* PS5SX2 (2026-11-24): the first entry stored, the first that could not be, and the first read back, each once, for the app's
++ * log: the proof that the console's disk cache works (it never stored anything before test 339). */
++static int ps5_said_stored, ps5_said_failed, ps5_said_read;
++
++static void
++disk_cache_ps5_once(int *said, const struct disk_cache *cache, const char *what)
++{
++   if (__atomic_exchange_n(said, 1, __ATOMIC_RELAXED) == 0)
++      disk_cache_ps5_log("[radv] shader disk cache %s: %s\n", cache->path, what);
++}
++#endif
++
+ void *
+ disk_cache_db_load_item(struct disk_cache *cache, const cache_key key,
+                         size_t *size)
+@@ -1222,6 +1285,9 @@ disk_cache_db_load_item(struct disk_cache *cache, const cache_key key,
+                                                          key, &cache_tem_size);
+    if (!cache_item)
+       return NULL;
++#if defined(__PROSPERO__)
++   disk_cache_ps5_once(&ps5_said_read, cache, "the first entry is read back");
++#endif
+ 
+    uint8_t *uncompressed_data =
+        parse_and_validate_cache_item(cache, cache_item, cache_tem_size, size);
+@@ -1242,6 +1308,10 @@ disk_cache_db_write_item_to_disk(struct disk_cache_put_job *dc_job)
+    bool r = mesa_cache_db_multipart_entry_write(&dc_job->cache->cache_db,
+                                                 dc_job->key, cache_blob.data,
+                                                 cache_blob.size);
++#if defined(__PROSPERO__)
++   disk_cache_ps5_once(r ? &ps5_said_stored : &ps5_said_failed, dc_job->cache,
++                       r ? "the first entry is stored" : "an entry could not be stored (the first such)");
++#endif
+ 
+    blob_finish(&cache_blob);
+    return r;
+diff --git a/src/util/disk_cache_os.h b/src/util/disk_cache_os.h
+index 8950839e463..2ecbe470656 100644
+--- a/src/util/disk_cache_os.h
++++ b/src/util/disk_cache_os.h
+@@ -77,6 +77,10 @@ struct disk_cache {
+    /* A pointer to the mmapped index file within the cache directory. */
+    uint8_t *index_mmap;
+    size_t index_mmap_size;
++#if defined(__PROSPERO__)
++   /* PS5SX2: the index is in the heap, not mapped (the console refuses to map its file shared): freed, not unmapped. */
++   bool index_in_heap;
++#endif
+ 
+    /* Pointer to total size of all objects in cache (within index_mmap) */
+    p_atomic_uint64_t *size;
+@@ -173,6 +177,12 @@ disk_cache_mmap_cache_index(void *mem_ctx, struct disk_cache *cache);
+ void
+ disk_cache_destroy_mmap(struct disk_cache *cache);
+ 
++#if defined(__PROSPERO__)
++/* PS5SX2: a line for the app's log (disk_cache_os.c). */
++void
++disk_cache_ps5_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++#endif
++
+ void *
+ disk_cache_db_load_item(struct disk_cache *cache, const cache_key key,
+                         size_t *size);
+diff --git a/src/util/mesa_cache_db.c b/src/util/mesa_cache_db.c
+index ae12f117f3b..9baaad6974c 100644
+--- a/src/util/mesa_cache_db.c
++++ b/src/util/mesa_cache_db.c
+@@ -29,6 +29,19 @@
+ #include "u_debug.h"
+ #include "u_qsort.h"
+ 
++#if defined(__PROSPERO__)
++#include <errno.h>
++/* PS5SX2: a line for the app's log (disk_cache_os.c). */
++void disk_cache_ps5_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
++
++/* The console's calls can leave errno in its own form (0x8002xxxx: test 338 logged 0x80020016 for EINVAL). */
++static int
++ps5_posix_errno(int e)
++{
++   return ((unsigned)e & 0xffff0000u) == 0x80020000u ? (int)((unsigned)e & 0xffffu) : e;
++}
++#endif
++
+ #define MESA_CACHE_DB_VERSION          1
+ #define MESA_CACHE_DB_MAGIC            "MESA_DB"
+ 
+@@ -788,10 +801,36 @@ mesa_cache_db_open_impl(struct mesa_cache_db *db, const char *cache_path, bool o
+    if (own) {
+       db->lock_fds[0] = open(db->cache.path, O_RDONLY | O_CLOEXEC);
+       db->lock_fds[1] = open(db->index.path, O_RDONLY | O_CLOEXEC);
++#if defined(__PROSPERO__)
++      /* PS5SX2 (2026-11-24): a lock the console refuses for any reason but another holder doesn't leave this part off: the
++       * title's cache folder is its own (radv_ps5_platform.c), and one PS5SX2 runs at a time. Each refusal is logged. */
++      if (db->lock_fds[0] < 0 || db->lock_fds[1] < 0) {
++         disk_cache_ps5_log("[radv] shader disk cache %s: its files can't be opened (errno 0x%x): this part is off\n",
++                            cache_path, (unsigned)errno);
++         goto close_locks;
++      }
++      for (unsigned i = 0; i < 2; i++) {
++         if (flock(db->lock_fds[i], LOCK_EX | LOCK_NB) == 0)
++            continue;
++         const int err = errno;
++         if (ps5_posix_errno(err) == EWOULDBLOCK) {
++            disk_cache_ps5_log("[radv] shader disk cache %s: another process holds it: this part is off\n", cache_path);
++            goto close_locks;
++         }
++         static bool said; /* parts are opened one at a time (mesa_cache_db_multipart.c) */
++         if (!said) {
++            said = true;
++            disk_cache_ps5_log("[radv] shader disk cache %s: no file locks here (errno 0x%x): used unlocked, as the title's own\n",
++                               cache_path, (unsigned)err);
++         }
++         break;
++      }
++#else
+       if (db->lock_fds[0] < 0 || db->lock_fds[1] < 0 ||
+           flock(db->lock_fds[0], LOCK_EX | LOCK_NB) < 0 ||
+           flock(db->lock_fds[1], LOCK_EX | LOCK_NB) < 0)
+          goto close_locks;
++#endif
+       db->owned = true;
+    }
+ 
 diff --git a/src/vulkan/wsi/wsi_common_videoout.c b/src/vulkan/wsi/wsi_common_videoout.c
 index 1f59ac2120e..c75dac525a5 100644
 --- a/src/vulkan/wsi/wsi_common_videoout.c
