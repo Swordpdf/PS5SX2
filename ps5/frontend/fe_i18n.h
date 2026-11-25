@@ -125,7 +125,7 @@ enum class Str : int
 	CopyDumpPct,        // 179: "Copying %d%%" (the disc-copy entry on the shelf)
 	CopyEtaMin,         // 179: "%d min left" (time left for the disc copy)
 	CopyEtaLessMin,     // 179: "under a minute left"
-	// 180 (AI-assisted): the sheet for all games' PS5SX2 group: System update and Session logs (fe_update.h). English only so far: the
+	// 180 (AI-assisted): the sheet for all games' PS5SX2 group: System update and Session logs (fe_update.h). English and pt-BR only so far: the
 	// other tables fall back to it (a lang/<code>.txt can translate them).
 	UpdateHeader,          // "PS5SX2" (the group's title)
 	UpdateRow,             // "System update"
@@ -149,7 +149,7 @@ enum class Str : int
 	LogsOn,                // "Sent"
 	LogsOff,               // "Off"
 	LogsHelp,              // what the row does
-	// bioscheck (2026-10-29, AI-assisted): the BIOS question before a start, and the open-source BIOS PS5SX2 ships (English only for now).
+	// bioscheck (2026-10-29, AI-assisted): the BIOS question before a start, and the open-source BIOS PS5SX2 ships (English and pt-BR only for now).
 	BiosChoiceTitle, // "No PS2 BIOS found": the BIOS question's headline
 	BiosChoiceIntro, // "Games need a PS2 BIOS to start. Sony's BIOS can't come with PS5SX2: yours comes from your own PS2.": the line under it
 	BiosUseOpen, // "Use the open-source BIOS": the first card
@@ -165,17 +165,17 @@ enum class Str : int
 	BiosOpenFailed, // "The open-source BIOS couldn't be set up (see boot.log).": the choice failed
 	NotifyNoBiosChoice, // "PS5SX2: no PS2 BIOS found, so the game didn't start. The menu offers the open-source BIOS, or put your own in %s.": a start without the shelf (a tile, a disc) refused (%s: the BIOS folder)
 	NotifyOpenBiosCantStart, // "PS5SX2: OpenPS2BIOS (experimental) can't start PS1 discs, audio CDs or DVD videos. Put your own PS2 BIOS in %s to play this one.": (%s: the BIOS folder)
-	ShelfScanning, // chdscan (AI-assisted): "Looking at new games  %d / %d": the shelf while the images not seen before are read (English only for now)
+	ShelfScanning, // chdscan (AI-assisted): "Looking at new games  %d / %d": the shelf while the images not seen before are read (English and pt-BR only for now)
 	// gamedb (2026-10-30): "Game database missing (%s): this app's own copy is used. The PS5SX2 Installer repairs it." (%s: the file)
 	ShelfNoGameDb,
-	UpdateDownloadingInstaller, // installer-dl (AI-assisted): "Downloading the installer...": System update fetches PS5SX2Installer.elf (English only for now)
+	UpdateDownloadingInstaller, // installer-dl (AI-assisted): "Downloading the installer...": System update fetches PS5SX2Installer.elf (English and pt-BR only for now)
 	// reloadtile (b185, AI-assisted; the owner: people can delete the Reload PS2 Disc tile and it doesn't come back): the sheet for all games' switch
-	// for the helper's "Reload PS2 Disc" tile (English only for now).
+	// for the helper's "Reload PS2 Disc" tile (English and pt-BR only for now).
 	ReloadTileRow,  // "Reload PS2 Disc tile"
 	ReloadTileOn,   // "On"
 	ReloadTileOff,  // "Off"
 	ReloadTileHelp, // what the row does
-	// 2.31 (AI-assisted): the in-game menu (fe_ingame.h; English only for now).
+	// 2.31 (AI-assisted): the in-game menu (fe_ingame.h; English and pt-BR only for now).
 	IngamePaused,           // "Paused": the Game tab's title
 	IngameTabGame,          // "Game": the first tab
 	IngameResume,           // "Resume game"
@@ -242,7 +242,7 @@ enum class Str : int
 	IngameJustNow,          // "Just now": a state saved while the menu is open
 	IngameSavedThisNext,    // "Saved for this game · used when the game starts next"
 	IngameSavedAllNext,     // "Saved for all games · used when a game starts next"
-	// 192 (AI-assisted; the owner: "bring the update button in the app itself somewhere more accessible"): L2 on the shelf (English only for now).
+	// 192 (AI-assisted; the owner: "bring the update button in the app itself somewhere more accessible"): L2 on the shelf (English and pt-BR only for now).
 	UpdateHintAvailable,    // "Update to %s" (%s: the release's name): the shelf's L2 hint when the start's look found a newer release
 	NoGamesNoAccess,        // GitHub #17: under "No games" when PS5SX2 could not leave its sandbox (no jailbreak answered)
 	Count
