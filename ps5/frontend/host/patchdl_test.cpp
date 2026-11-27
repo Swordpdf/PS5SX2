@@ -189,6 +189,104 @@ int main(int argc, char** argv)
 			"a file with its patches commented out is nothing online, not a failure: " + s.message);
 	}
 
+	// 2.16 (AI-assisted): the serials an executable names its memory card folders after.
+	{
+		const std::string s = std::string("\x7f" "ELF....BASLUS-20500\0..BESLES-52478\0BASLUS-20500\0BASLUS-205001\0BXSLUS-11111\0", 79);
+		const std::vector<uint8_t> elf(s.begin(), s.end());
+		const std::vector<std::string> got = fe::ExecutableSerials(elf);
+		Check(got.size() == 2 && got[0] == "SLUS-20500" && got[1] == "SLES-52478",
+			"ExecutableSerials finds BASLUS-20500 and BESLES-52478 once each, in order, and nothing else");
+		const std::string tree = R"({"sha":"x","tree":[{"path":"SLUS-20500_E169BAF8.pnach","mode":"100644"},)"
+		                         R"({"path":"SLUS-20500_E169BAF8.txt"},{"path":"SLUS-205001_00000000.pnach"},{"path":"SLES-52478_E2E67E23.pnach"}]})";
+		const std::vector<std::string> files = fe::TreeFilesForSerial(tree, "SLUS-20500");
+		Check(files.size() == 1 && files[0] == "SLUS-20500_E169BAF8.pnach", "TreeFilesForSerial takes only <serial>_<crc>.pnach");
+		// GitHub's own layout: a space after each colon, one key a line
+		const std::string github = "{\n  \"tree\": [\n    {\n      \"path\": \"SLUS-21423_7EA439F5.pnach\",\n      \"mode\": \"100644\"\n    }\n  ]\n}\n";
+		const std::vector<std::string> gh = fe::TreeFilesForSerial(github, "SLUS-21423");
+		Check(gh.size() == 1 && gh[0] == "SLUS-21423_7EA439F5.pnach", "and reads GitHub's answer as GitHub writes it");
+	}
+	// 2.16: nothing for the disc's own CRC: the fallback by serial.
+	{
+		const std::string pcsx2_tree = "https://api.github.com/repos/PCSX2/pcsx2_patches/git/trees/main:patches";
+		const std::string gab_tree = "https://api.github.com/repos/Gabominated/PCSX2/git/trees/main:PCSX2%20Patches";
+		const std::string cheats_tree = "https://api.github.com/repos/xs1l3n7x/pcsx2_cheats_collection/git/trees/main:cheats";
+		server[pcsx2_tree] = {200, R"({"tree":[{"path":"SLUS-21423_7EA439F5.pnach"},{"path":"SLUS-20500_E169BAF8.pnach"},)"
+		                           R"({"path":"SLES-52478_E2E67E23.pnach"},{"path":"SLUS-20946_AAAAAAAA.pnach"},{"path":"SLUS-20946_BBBBBBBB.pnach"}]})"};
+		server[gab_tree] = {200, R"({"tree":[{"path":"SLES-52478_E2E67E23.pnach"}]})"};
+		server[cheats_tree] = {200, R"({"tree":[]})"};
+		const std::string base = "https://raw.githubusercontent.com/PCSX2/pcsx2_patches/main/patches/";
+		server[base + "SLUS-21423_7EA439F5.pnach"] = {200, "gametitle=LCS\n[Widescreen 16:9]\npatch=1,EE,002918d0,word,468010a0\n"};
+		server[base + "SLUS-20500_E169BAF8.pnach"] = {200, "gametitle=RDR\n[Force 60FPS]\npatch=1,EE,201018AC,word,24030001\n"};
+		server[base + "SLES-52478_E2E67E23.pnach"] = {200, "gametitle=RDR PAL\n[50/60 FPS]\npatch=1,EE,001018AC,word,24030001\n"};
+
+		// A translation that kept the serial (GTA LCS, SLUS-21423, CRC 3AF039F8 against PCSX2's 7EA439F5).
+		const std::string lcs_elf = "\x7f" "ELF...BASLUS-21423";
+		{
+			asked.clear();
+			fe::OnlinePatches op(platform, patches, cheats, manifest);
+			const fe::OnlinePatchStatus s = op.FetchWithExecutable("SLUS-21423", 0x3AF039F8, std::vector<uint8_t>(lcs_elf.begin(), lcs_elf.end()));
+			const std::string file = Read(patches + "/SLUS-21423_3AF039F8_SLUS-21423.pnach");
+			Check(s.state == fe::OnlinePatchStatus::State::Done && s.message.find("from SLUS-21423_7EA439F5") != std::string::npos,
+				"same serial, other CRC: the serial's one file is found: " + s.message);
+			Check(file.find("[Widescreen 16:9 (from SLUS-21423_7EA439F5)]") != std::string::npos && file.find("// PS5SX2: ") == 0,
+				"it is kept under the disc's CRC, its group named after where it came from");
+			int trees = 0;
+			for (const std::string& u : asked)
+				trees += u.find("api.github.com") != std::string::npos;
+			Check(trees == 3, "each source's list asked once (" + std::to_string(trees) + ")");
+		}
+		// A rebuild with no serial of its own (Red Dead Revolver NORG: "NORG-RUS00"), its executable naming SLUS-20500 first,
+		// then SLES-52478: only the first serial found is taken (not the PAL release's too).
+		const std::string rdr = std::string("\x7f" "ELF..BASLUS-20500\0BESLES-52478", 30);
+		{
+			fe::OnlinePatches op(platform, patches, cheats, manifest);
+			const fe::OnlinePatchStatus s = op.FetchWithExecutable("NORG-RUS00", 0x87844524, std::vector<uint8_t>(rdr.begin(), rdr.end()));
+			Check(s.state == fe::OnlinePatchStatus::State::Done && Exists(patches + "/NORG-RUS00_87844524_SLUS-20500.pnach") &&
+					  !Exists(patches + "/NORG-RUS00_87844524_SLES-52478.pnach") &&
+					  !Exists(patches + "/NORG-RUS00_87844524_gabominated_SLES-52478.pnach"),
+				"no serial of its own: the executable's first serial wins: " + s.message);
+			const fe::OnlinePatchStatus again = op.FetchWithExecutable("NORG-RUS00", 0x87844524, std::vector<uint8_t>(rdr.begin(), rdr.end()));
+			Check(again.state == fe::OnlinePatchStatus::State::Done, "asking again keeps it (the file is this app's)");
+		}
+		// Two files for one serial (two releases): which one the disc was made from isn't known, so none is taken.
+		{
+			const std::string two = "\x7f" "ELF...BASLUS-20946";
+			fe::OnlinePatches op(platform, patches, cheats, manifest);
+			const fe::OnlinePatchStatus s = op.FetchWithExecutable("NORG-00000", 0x12121212, std::vector<uint8_t>(two.begin(), two.end()));
+			Check(s.message == "Nothing online for this game" && !Exists(patches + "/NORG-00000_12121212_SLUS-20946.pnach"),
+				"two releases of the serial: none taken: " + s.message);
+		}
+		// The lists can't be had (GitHub's hourly limit): said so, nothing written, and the next game asks again.
+		{
+			const auto saved = server[pcsx2_tree];
+			server[pcsx2_tree] = {403, R"({"message":"API rate limit exceeded"})"};
+			server[gab_tree] = {403, R"({"message":"API rate limit exceeded"})"};
+			server[cheats_tree] = {403, R"({"message":"API rate limit exceeded"})"};
+			fe::OnlinePatches op(platform, patches, cheats, manifest);
+			const std::string other = "\x7f" "ELF...BASLUS-21423";
+			const fe::OnlinePatchStatus s = op.FetchWithExecutable("SLUS-21423", 0x01020304, std::vector<uint8_t>(other.begin(), other.end()));
+			Check(s.state == fe::OnlinePatchStatus::State::Failed && s.message.find("HTTP 403") != std::string::npos &&
+					  !Exists(patches + "/SLUS-21423_01020304_SLUS-21423.pnach"),
+				"no file list (HTTP 403): a failure that says why, no file: " + s.message);
+			server[pcsx2_tree] = saved;
+			server[gab_tree] = {200, R"({"tree":[]})"};
+			server[cheats_tree] = {200, R"({"tree":[]})"};
+			const fe::OnlinePatchStatus again = op.FetchWithExecutable("SLUS-21423", 0x01020304, std::vector<uint8_t>(other.begin(), other.end()));
+			Check(again.state == fe::OnlinePatchStatus::State::Done && Exists(patches + "/SLUS-21423_01020304_SLUS-21423.pnach"),
+				"a list refused is not kept: asked again, it is found: " + again.message);
+		}
+		// The disc's own file is there: no fallback at all.
+		{
+			asked.clear();
+			fe::OnlinePatches op(platform, patches, cheats, manifest);
+			op.FetchWithExecutable("SLUS-20265", 0x79646C72, std::vector<uint8_t>(lcs_elf.begin(), lcs_elf.end()));
+			bool tree_asked = false;
+			for (const std::string& u : asked)
+				tree_asked |= u.find("api.github.com") != std::string::npos;
+			Check(!tree_asked && !Exists(patches + "/SLUS-20265_79646C72_SLUS-21423.pnach"), "a disc with its own file found asks no list");
+		}
+	}
+
 	// The sheet: the game's Cheats rows, on and off, and EmuCore/EnableCheats with them.
 	{
 		fe::OptionsPaths paths;
