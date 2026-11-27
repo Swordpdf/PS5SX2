@@ -1,0 +1,56 @@
+# PS5SX2 RADV build environment (ps5/radv/README.md): on top of the base image (Dockerfile), PS5SX2's RADV (PS5_Mesa with
+# ps5/radv/ps5sx2-radv.patch, built by ps5/radv/build-radv.sh) and the platform layer of the SDK fork revision it is linked
+# with, in PS5SX2_DEPS/radv/ where link-radv.sh reads them. ps5/docker/build-radv.sh passes ps5/radv as the "radv" context.
+#
+# Copyright (C) 2026 swordpdf
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+ARG BASE=ps5sx2-build
+FROM ${BASE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bison flex glslang-tools patch pkg-config python3-mako python3-packaging python3-pip python3-yaml rsync unzip wget \
+      libclang-18-dev libclang-cpp18-dev libclc-18-dev libllvmspirvlib-18-dev llvm-18-dev llvm-spirv-18 spirv-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir --break-system-packages meson==1.12.1
+
+# The revisions ps5/radv/README.md names: PS5_Vulkan 7f492b4 (the payload SDK RADV is compiled against, its cross file),
+# PS5_Mesa 75238ae4db3, and the SDK fork at 3345cde for the platform layer the eboot links (a descendant of the revision
+# PS5_Vulkan's setup pins, so one fetch holds both).
+ARG VULKAN_REV=7f492b4c6f67a4e8c8c67a4272cfeef22abea9cc
+ARG SDK_FORK_REV=3345cde7441f2d5f5432dd6d4f494cacbc974e28
+ARG MESA_REV=75238ae4db3249803df3deeba47340f6de27962e
+ENV RADV_WORK=/opt/radv-work
+RUN mkdir -p "$RADV_WORK" && cd "$RADV_WORK" \
+    && for repo in PS5_Vulkan:$VULKAN_REV:1 PS5_PayloadSDK:$SDK_FORK_REV:200 PS5_Mesa:$MESA_REV:1; do \
+         name=${repo%%:*}; rest=${repo#*:}; rev=${rest%%:*}; depth=${rest#*:}; \
+         git init -q "$name" && git -C "$name" fetch -q --depth "$depth" "https://github.com/mihawk-99/$name.git" "$rev" \
+         && git -C "$name" checkout -q "$rev"; \
+       done
+
+RUN cd "$RADV_WORK" && PS5_PAYLOAD_SDK_FORK="$RADV_WORK/PS5_PayloadSDK" bash PS5_Vulkan/tools/setup-native-dependencies.sh
+
+COPY --from=radv build-radv.sh ps5sx2-radv.patch $RADV_WORK/ps5sx2/
+RUN cd "$RADV_WORK" && CC=clang-18 CXX=clang++-18 PS5_MESA="$RADV_WORK/PS5_Mesa" PS5_VULKAN="$RADV_WORK/PS5_Vulkan" OUT="$RADV_WORK/radv-out" \
+      bash ps5sx2/build-radv.sh
+
+# The platform layer at SDK_FORK_REV, installed the fork's way into an SDK of its own.
+RUN cd "$RADV_WORK" && mkdir -p sdk-tree && git -C PS5_PayloadSDK archive "$SDK_FORK_REV" | tar -x -C sdk-tree \
+    && bash sdk-tree/platform/tools/setup-sdk.sh "$RADV_WORK/sdk-platform" "$SDK_FORK_REV" "$RADV_WORK/sdk-cache"
+
+# The AGC import stubs RADV calls (link-time symbols only), from the SDK fork's sce_stubs, built as its sce_stubs/Makefile
+# builds stubs, into the SDK the port links with.
+RUN for lib in libSceAgc libSceAgcDriver; do \
+         git -C "$RADV_WORK/PS5_PayloadSDK" show "$SDK_FORK_REV:sce_stubs/$lib.c" > "/tmp/$lib.c" \
+         && clang-18 -c -ffreestanding -fno-builtin -nostdlib -fPIC -target x86_64-sie-ps5 -fno-plt -fno-stack-protector \
+              -Wall -Werror -fvisibility-nodllstorageclass=default -o "/tmp/$lib.o" "/tmp/$lib.c" \
+         && ld.lld-18 -m elf_x86_64 -shared -soname "$lib.sprx" -o "$PS5_PAYLOAD_SDK/target/lib/$lib.so" "/tmp/$lib.o"; \
+       done
+
+# boot.log's "driver radv <revision>": link-radv.sh reads a 12-character revision from PROVENANCE.txt, build-radv.sh writes 11.
+ENV PS5_RADV_REV=75238ae4db3
+RUN mkdir -p "$PS5SX2_DEPS/radv" \
+    && cp "$RADV_WORK/radv-out/lib/libvulkan_radeon.ps5.a" "$RADV_WORK/radv-out/PROVENANCE.txt" "$PS5SX2_DEPS/radv/" \
+    && cp "$RADV_WORK/sdk-platform/target/lib/libps5platform.a" "$PS5SX2_DEPS/radv/" \
+    && cp /usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.builtins-x86_64.a "$PS5SX2_DEPS/radv/"
