@@ -13,8 +13,8 @@
 # What differs from the recipe, to keep this port's own behaviour where RADV isn't involved:
 #   - the names only PCSX2 uses and the recipe would rebind (clock_nanosleep, gmtime_r, getaddrinfo, freeaddrinfo) stay as
 #     link-vk.sh resolves them, and if_nameindex/if_freenameindex stay the port's (orbis-shims/ProsperoMisc.cpp);
-#   - the directory functions are the platform's as a family (RADV uses dirfd and rewinddir on its DIRs), so the port's
-#     own opendir/readdir/closedir (orbis-shims/dirshim.cpp) are left out of this link;
+#   - the directory functions forward to the platform's family (RADV uses dirfd and rewinddir on its DIRs) via
+#     orbis-shims/radv_dirshim.cpp so /nfs/ paths still reach OrbisNfs, while orbis-shims/dirshim.cpp is left out;
 #   - the archive carries its own zlib (a Mesa subproject), so the port's inflate sources (ps5/third_party/zlib) are left out.
 # The eboot finds out which driver it has at run time (include-orbis/OrbisDriver.h); nothing is compiled differently.
 #
@@ -100,11 +100,16 @@ for item in app_crt app_cpp_runtime; do
     -c "$NATIVE/tooling/native/$item.cpp" -o "$OUT/build/obj/$item.o"
 done
 sh "$NATIVE/tooling/prospero-clang18" -c "$here/radv-bindings.S" -o "$OUT/build/obj/radv-bindings.o"
+sh "$NATIVE/tooling/prospero-clang18" \
+  -std=c++20 -O2 -march=znver2 -msse4.1 -mavx2 -mno-vzeroupper -D_M_X86=1 -D__POSIX__=1 \
+  -Wall -Wextra -I"$here/include-orbis" \
+  -ffunction-sections -fdata-sections \
+  -c "$here/orbis-shims/radv_dirshim.cpp" -o "$OUT/build/obj/radv_dirshim.o"
 echo "[link-radv] main-boot ($TAG, test build $TEST_BUILD), crt and binding objects OK"
 
 # 2. The port's objects (Makefile.vk's list, in its order), without the ones RADV's link replaces (above).
 make -C "$here" -f Makefile.vk -s objects.txt PCSX2="$PCSX2" RYML="$RYML" PS5_PAYLOAD_SDK="$SDK"
-OBJS="$OUT/build/obj/app_crt.o $OUT/build/obj/app_cpp_runtime.o $OUT/build/obj/main-boot.o $OUT/build/obj/radv-bindings.o"
+OBJS="$OUT/build/obj/app_crt.o $OUT/build/obj/app_cpp_runtime.o $OUT/build/obj/main-boot.o $OUT/build/obj/radv-bindings.o $OUT/build/obj/radv_dirshim.o"
 left_out=()
 while IFS= read -r o; do
   case $o in
@@ -149,7 +154,8 @@ for name in malloc calloc realloc free posix_memalign aligned_alloc memalign \
     malloc_usable_size reallocf reallocarray getline getdelim; do
   radv_flags+=("--wrap=$name")
 done
-# qsort_r and localtime_r are bound by radv-bindings.S instead (see there).
+# qsort_r and localtime_r are bound by radv-bindings.S; opendir/readdir/rewinddir/dirfd/closedir are
+# provided by orbis-shims/radv_dirshim.cpp (NFS paths to OrbisNfs, everything else to ps5_*).
 bound=(mkstemps openlog popen pclose open_memstream __xuname __assert
   __memset_chk regcomp regexec regfree regerror newlocale freelocale
   strtod_l strtof_l dladdr utimensat localeconv_l strtoll_l strtoull_l strtold_l
@@ -160,7 +166,7 @@ bound=(mkstemps openlog popen pclose open_memstream __xuname __assert
   __cxa_thread_atexit_impl
   arc4random arc4random_buf arc4random_uniform statvfs fstatvfs
   futimens
-  opendir fdopendir readdir rewinddir dirfd closedir nl_langinfo nl_langinfo_l getpwuid_r
+  fdopendir nl_langinfo nl_langinfo_l getpwuid_r
   posix_fallocate access
   openat unlinkat fchmodat fstatat mkdirat renameat memfd_create)
 # 2026-11-23 (PS5_Vulkan 7f492b4's radv-link.sh): names bound only when the platform layer has them. strcasestr and mkstemp are
