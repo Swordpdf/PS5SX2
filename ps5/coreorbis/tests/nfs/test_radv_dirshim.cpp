@@ -1,9 +1,5 @@
 // Host unit test for ps5/coreorbis/orbis-shims/radv_dirshim.cpp (AI-assisted).
-// Verifies /nfs/ paths route to OrbisNfs while non-/nfs/ paths forward untouched to ps5_* platform calls.
-//
-// Compile & run on a POSIX host:
-//   c++ -std=c++20 -Wall -Wextra -I ps5/coreorbis/include-orbis ps5/coreorbis/orbis-shims/radv_dirshim.cpp ps5/coreorbis/tests/nfs/test_radv_dirshim.cpp -o /tmp/test_radv_dirshim
-//   /tmp/test_radv_dirshim
+// Run via: ps5/coreorbis/tests/nfs/test-radv-dirshim.sh
 
 #include "OrbisNfs.h"
 
@@ -21,21 +17,19 @@ struct MockNfsHandle
 {
 	std::vector<std::string> items;
 	size_t idx = 0;
-	bool closed = false;
 };
 
 int g_nfs_open_calls = 0;
 int g_nfs_close_calls = 0;
 bool g_nfs_fail_open = false;
-MockNfsHandle* g_last_nfs = nullptr;
 
 int g_ps5_open_calls = 0;
 int g_ps5_read_calls = 0;
 int g_ps5_close_calls = 0;
 int g_ps5_dirfd_calls = 0;
 int g_ps5_rewind_calls = 0;
-int g_ps5_fake_storage = 42;
-DIR* const g_ps5_sentinel = reinterpret_cast<DIR*>(&g_ps5_fake_storage);
+std::string g_last_ps5_path;
+DIR* g_ps5_sentinel = nullptr;
 struct dirent g_ps5_entry = {};
 } // namespace
 
@@ -54,9 +48,9 @@ void* OpenDir(const char* path)
 		errno = ENOENT;
 		return nullptr;
 	}
-	auto* h = new MockNfsHandle{{"Game1.chd", "Game2.iso"}, 0, false};
-	g_last_nfs = h;
-	return h;
+	if (std::strstr(path, "/sub"))
+		return new MockNfsHandle{{"SubGame.chd"}, 0};
+	return new MockNfsHandle{{"Game1.chd", "Game2.iso"}, 0};
 }
 
 bool ReadDir(void* dir, struct dirent* out)
@@ -82,8 +76,11 @@ void CloseDir(void* dir)
 extern "C" {
 DIR* ps5_opendir(const char* path)
 {
-	(void)path;
+	g_last_ps5_path = path ? path : "";
 	g_ps5_open_calls++;
+	g_ps5_read_calls = 0;
+	// Allocate a distinct sentinel per open so glibc's __attribute__((malloc)) on opendir holds under -O1+.
+	g_ps5_sentinel = reinterpret_cast<DIR*>(new int(42));
 	return g_ps5_sentinel;
 }
 
@@ -102,6 +99,8 @@ int ps5_closedir(DIR* dirp)
 {
 	assert(dirp == g_ps5_sentinel);
 	g_ps5_close_calls++;
+	delete reinterpret_cast<int*>(dirp);
+	g_ps5_sentinel = nullptr;
 	return 0;
 }
 
@@ -121,47 +120,61 @@ void ps5_rewinddir(DIR* dirp)
 
 int main()
 {
-	// 1. /nfs/ path goes to OrbisNfs, never to ps5_*
-	DIR* nd = opendir("/nfs/192.168.11.186/volume1/public/emulation/ps2/games");
-	assert(nd != nullptr);
-	assert(g_nfs_open_calls == 1);
-	assert(g_ps5_open_calls == 0);
+	// 1. Interleaved NFS + nested NFS + local RADV handles do not collide
+	DIR* nd1 = opendir("/nfs/192.168.11.186/volume1/public/emulation/ps2/games");
+	assert(nd1 != nullptr);
+	assert(g_nfs_open_calls == 1 && g_ps5_open_calls == 0);
 
-	errno = 0;
-	assert(dirfd(nd) == -1 && errno == ENOTSUP);
-	assert(g_ps5_dirfd_calls == 0);
+	DIR* nd2 = opendir("/nfs/192.168.11.186/volume1/public/emulation/ps2/games/sub");
+	assert(nd2 != nullptr && nd2 != nd1);
+	assert(g_nfs_open_calls == 2 && g_ps5_open_calls == 0);
 
-	rewinddir(nd);
-	assert(g_ps5_rewind_calls == 0);
-
-	struct dirent* e1 = readdir(nd);
-	assert(e1 != nullptr && std::strcmp(e1->d_name, "Game1.chd") == 0);
-	struct dirent* e2 = readdir(nd);
-	assert(e2 != nullptr && std::strcmp(e2->d_name, "Game2.iso") == 0);
-	assert(readdir(nd) == nullptr);
-	assert(closedir(nd) == 0);
-	assert(g_nfs_close_calls == 1);
-	assert(g_ps5_close_calls == 0);
-
-	// 2. Non-/nfs path passes untouched DIR* to ps5_* (preserving RADV dirfd/rewinddir)
 	DIR* ld = opendir("/data/PCSX2/radv-shader-cache");
 	assert(ld == g_ps5_sentinel);
-	assert(g_ps5_open_calls == 1);
+	assert(g_ps5_open_calls == 1 && g_last_ps5_path == "/data/PCSX2/radv-shader-cache");
+
+	// dirfd and rewinddir on NFS handle are safe and never touch ps5_*
+	errno = 0;
+	assert(dirfd(nd1) == -1 && errno == ENOTSUP);
+	assert(g_ps5_dirfd_calls == 0);
+	rewinddir(nd1);
+	assert(g_ps5_rewind_calls == 0);
+
+	// dirfd and rewinddir on local handle pass untouched DIR* to ps5_* (RADV requirement)
 	assert(dirfd(ld) == 77 && g_ps5_dirfd_calls == 1);
 	rewinddir(ld);
 	assert(g_ps5_rewind_calls == 1);
+
+	// Interleaved reads keep independent dirent buffers per open DIR
+	struct dirent* e1 = readdir(nd1);
+	struct dirent* esub = readdir(nd2);
 	struct dirent* le = readdir(ld);
-	assert(le != nullptr && std::strcmp(le->d_name, "shader.bin") == 0);
+	assert(e1 && std::strcmp(e1->d_name, "Game1.chd") == 0);
+	assert(esub && std::strcmp(esub->d_name, "SubGame.chd") == 0);
+	assert(le && std::strcmp(le->d_name, "shader.bin") == 0);
+	struct dirent* e2 = readdir(nd1);
+	assert(e2 && std::strcmp(e2->d_name, "Game2.iso") == 0);
+	assert(readdir(nd1) == nullptr);
+	assert(readdir(nd2) == nullptr);
 	assert(readdir(ld) == nullptr);
+
+	assert(closedir(nd2) == 0);
+	assert(closedir(nd1) == 0);
+	assert(g_nfs_close_calls == 2 && g_ps5_close_calls == 0);
 	assert(closedir(ld) == 0 && g_ps5_close_calls == 1);
 
-	// 3. Failed NFS opendir returns nullptr cleanly
+	// 2. Non-/nfs prefix lookalike (/nfsfoo) goes to ps5_*, not OrbisNfs
+	DIR* ld2 = opendir("/nfsfoo");
+	assert(ld2 == g_ps5_sentinel && g_ps5_open_calls == 2 && g_nfs_open_calls == 2);
+	assert(closedir(ld2) == 0 && g_ps5_close_calls == 2);
+
+	// 3. Failed NFS opendir returns nullptr with errno preserved and no leak
 	g_nfs_fail_open = true;
 	errno = 0;
 	assert(opendir("/nfs/192.168.11.186/missing") == nullptr);
 	assert(errno == ENOENT);
-	assert(g_ps5_open_calls == 1);
+	assert(g_ps5_open_calls == 2);
 
-	std::printf("test_radv_dirshim: all assertions passed\n");
+	std::printf("ALL PASSED\n");
 	return 0;
 }
